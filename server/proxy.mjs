@@ -3,6 +3,12 @@
 // Also the landing zone for the companion browser extension:
 //   POST /api/import  { items: [{provider, role, text, ts?, url?}] }
 //   GET  /api/imports -> { imports: [...] }
+// Outbox (blibs -> vendor tabs, delivered by the extension):
+//   POST /api/outbox        { provider, text } -> { ok, id } (enqueue)
+//   GET  /api/outbox/pending -> { items: [queued...] } (extension polls)
+//   POST /api/outbox/ack    { id, ok, error? } (extension confirms send)
+//   POST /api/outbox/retry  { id } (requeue a failed item)
+//   GET  /api/outbox         -> { items: [...] } (delivery statuses for blibs)
 // Run: npm run proxy   (listens on :8787)
 // The Vite dev server proxies /api -> :8787 (see vite.config.ts).
 import http from 'node:http';
@@ -44,6 +50,31 @@ function saveImports(items) {
 }
 const seen = new Set(loadImports().map((m) => `${m.provider}|${m.role}|${m.text}`));
 
+// ---- outbox store: messages blibs wants typed into vendor tabs ----
+const OUTBOX_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'outbox.json');
+function loadOutbox() {
+  try {
+    const raw = fs.readFileSync(OUTBOX_PATH, 'utf8');
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+function saveOutbox(items) {
+  try {
+    fs.writeFileSync(OUTBOX_PATH, JSON.stringify(items.slice(-500), null, 2));
+  } catch { /* ephemeral in some sandboxes */ }
+}
+function newOutId() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+async function readJson(req) {
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  return JSON.parse(body);
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type', 'Access-Control-Allow-Methods': 'POST,GET,OPTIONS' });
@@ -80,7 +111,65 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, { ok: true, added, total: store.length });
   }
 
-  if (req.url !== '/api/chat' || req.method !== 'POST') return send(res, 404, { error: 'use POST /api/chat or POST /api/import' });
+  // Blibs -> vendor tabs: enqueue a message for the extension to deliver.
+  if (req.url === '/api/outbox' && req.method === 'POST') {
+    let payload;
+    try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+    const provider = String(payload?.provider || 'custom').toLowerCase();
+    const text = String(payload?.text || '').trim().slice(0, 4000);
+    if (!text) return send(res, 400, { error: 'missing text' });
+    const store = loadOutbox();
+    const item = { id: newOutId(), provider, text, ts: Date.now(), status: 'queued', attempts: 0 };
+    store.push(item);
+    saveOutbox(store);
+    return send(res, 200, { ok: true, id: item.id });
+  }
+
+  // Extension polls this: oldest queued messages first.
+  if (req.url === '/api/outbox/pending' && req.method === 'GET') {
+    const items = loadOutbox().filter((m) => m.status === 'queued').slice(0, 20);
+    return send(res, 200, { items });
+  }
+
+  // Extension confirms (or reports failure for) a delivery.
+  if (req.url === '/api/outbox/ack' && req.method === 'POST') {
+    let payload;
+    try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+    const store = loadOutbox();
+    const item = store.find((m) => m.id === payload?.id);
+    if (!item) return send(res, 404, { error: 'unknown id' });
+    item.attempts = (item.attempts || 0) + 1;
+    if (payload?.ok) {
+      item.status = 'sent';
+      item.sentAt = Date.now();
+      delete item.error;
+    } else {
+      item.status = 'failed';
+      item.error = String(payload?.error || 'send failed').slice(0, 300);
+    }
+    saveOutbox(store);
+    return send(res, 200, { ok: true, id: item.id, status: item.status });
+  }
+
+  // Blibs "retry" button: requeue a failed (or even sent) item.
+  if (req.url === '/api/outbox/retry' && req.method === 'POST') {
+    let payload;
+    try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+    const store = loadOutbox();
+    const item = store.find((m) => m.id === payload?.id);
+    if (!item) return send(res, 404, { error: 'unknown id' });
+    item.status = 'queued';
+    delete item.error;
+    saveOutbox(store);
+    return send(res, 200, { ok: true, id: item.id, status: 'queued' });
+  }
+
+  // Blibs delivery-status panel / auto-pull tick.
+  if (req.url === '/api/outbox' && req.method === 'GET') {
+    return send(res, 200, { items: loadOutbox().slice(-200) });
+  }
+
+  if (req.url !== '/api/chat' || req.method !== 'POST') return send(res, 404, { error: 'use POST /api/chat, /api/import or /api/outbox' });
 
   let body = '';
   for await (const chunk of req) body += chunk;

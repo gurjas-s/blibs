@@ -23,6 +23,12 @@
     <button id="sync">Sync open vendor tabs now</button>
     <button id="open" class="ghost">Open blibs</button>
   </div>
+  <div class="row" style="margin-top:6px" title="Backup sweep over open vendor tabs. Real-time pushes happen automatically when chats change. 0 = off.">
+    <b style="font-size:11px">auto-sync every</b>
+    <input id="mins" type="number" min="0" max="1440" placeholder="1" style="width:56px; background:#0e1118; border:1px solid #232838; color:#e8eaf0; border-radius:6px; padding:5px 7px; font-size:12px" />
+    <span>min</span>
+    <button id="saveMins" class="ghost">Save</button>
+  </div>
   <div class="row" style="margin-top:6px" title="Only needed if `npm run proxy` runs on another machine (e.g. a VM). Use host:port, e.g. 192.168.5.15:8787. Empty = localhost.">
     <b style="font-size:11px">proxy host</b>
     <input id="host" placeholder="127.0.0.1:8787" style="flex:1; min-width:0; background:#0e1118; border:1px solid #232838; color:#e8eaf0; border-radius:6px; padding:5px 7px; font-size:12px" />

@@ -12,6 +12,18 @@ dist
 dist-ssr
 *.local
 
+# Env (keys!) — .env.example stays tracked, real .env never does
+.env
+.env.*.local
+
+# blibs runtime data: your real synced chats + queued sends live here.
+# The proxy recreates these files on demand — never commit them.
+server/imports.json
+server/outbox.json
+
+# Packaged extension artifact (built from extension/ via zip)
+blibs-extension.zip
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

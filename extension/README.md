@@ -11,20 +11,25 @@ Nothing leaves your machine.
 3. **Load unpacked** → select this `extension/` folder.
 4. Pin the ◍ blibs icon. Open + log in to `muse.ai`, `chatgpt.com`, `grok.com`
    (pinned tabs work best — the extension can only read tabs you have open).
-5. Click the icon → **Sync open vendor tabs now**.
-6. Open blibs (`npm run dev`) → inbox shows a new **“via extension”** section.
-   Hit **Pull from extension** to merge.
+5. That's it — syncing is automatic from here (real-time pushes on chat
+   changes + sweep every few minutes). The popup's Sync buttons are manual
+   overrides with diagnosis output.
+6. Open blibs (`npm run dev`) → the inbox **auto-pulls** every 15s by default
+   (toggle + interval above the inbox, "Pull now" for manual). Merged chats
+   carry `extension` badges.
 
-## How it works
+## How it works (now fully automatic)
 
-- `content.js` runs in each vendor page, finds message nodes
-  (`[data-message-author-role]` first, generic fallbacks after), and sends
-  `{ provider, role, text, ts, url }` to `background.js`.
+- `content.js` runs in each vendor page, finds message nodes, and pushes on
+  page load **plus automatically**: a debounced `MutationObserver` pushes
+  ~8s after chat content changes, with a 60s heartbeat backup.
 - `background.js` POSTs batches to `/api/import` (dedupe by
-  `provider|role|text`), plus a 10-min alarm nudge for open tabs.
-- `server/proxy.mjs` persists to `server/imports.json` (cap 2000, serves last 500).
-- `src/App.tsx` pulls `/api/imports` on demand and merges into the thread +
-  unified inbox with `source: 'extension'`.
+  `provider|role|text`), plus a configurable backup sweep (popup → auto-sync
+   every N min, default 1, `0` = off; real-time pushes stay on regardless).
+- Popup shows per-tab Sync (manual override), last attempt diagnosis, last
+  auto-sweep, and the proxy-host override for VM setups.
+- `server/proxy.mjs` persists pushes to `server/imports.json` (cap 2000,
+  serves last 500).
 
 ## Limits (honest POC notes)
 

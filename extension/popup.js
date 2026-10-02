@@ -12,7 +12,7 @@ async function render() {
   const tabsEl = document.getElementById('tabs');
   const statusEl = document.getElementById('status');
   const tabs = await chrome.tabs.query({ url: PATTERNS });
-  const state = await chrome.storage.local.get(['lastSyncAt', 'lastSyncAdded', 'lastSyncError', 'lastAttempt']);
+  const state = await chrome.storage.local.get(['lastSyncAt', 'lastSyncAdded', 'lastSyncError', 'lastAttempt', 'lastAutoAt', 'lastAutoAdded', 'autoSyncMinutes']);
 
   tabsEl.innerHTML = '';
   if (!tabs.length) {
@@ -35,7 +35,10 @@ async function render() {
       } catch (e) {
         showResult({ ok: false, reason: `background unreachable (reload the extension): ${e?.message || e}` });
       }
-      render();
+render();
+// Opening the popup doubles as a delivery trigger: anything blibs queued
+// gets pushed into tabs right away instead of waiting for the next sweep.
+chrome.runtime.sendMessage({ type: 'BLIBS_CHECK_OUTBOX' }).then(() => render()).catch(() => {});
     };
     div.appendChild(btn);
     tabsEl.appendChild(div);
@@ -54,6 +57,9 @@ async function render() {
   } else {
     txt += '\nlast attempt: none recorded — click a Sync button';
   }
+  const mins = state.autoSyncMinutes == null ? 1 : Number(state.autoSyncMinutes);
+  txt += `\nauto-sync: ${mins > 0 ? `every ${mins} min` : 'off'}` +
+    (state.lastAutoAt ? ` · last sweep ${new Date(state.lastAutoAt).toLocaleTimeString()} (+${state.lastAutoAdded ?? 0})` : ' · no sweep yet');
   statusEl.textContent = txt;
 }
 
@@ -75,9 +81,17 @@ document.getElementById('sync').onclick = async () => {
 document.getElementById('open').onclick = () => chrome.tabs.create({ url: 'http://localhost:5173/' });
 
 (async () => {
-  const { customProxyHost } = await chrome.storage.local.get(['customProxyHost']);
+  const { customProxyHost, autoSyncMinutes } = await chrome.storage.local.get(['customProxyHost', 'autoSyncMinutes']);
   if (customProxyHost) document.getElementById('host').value = customProxyHost;
+  if (autoSyncMinutes != null) document.getElementById('mins').value = autoSyncMinutes;
 })();
+document.getElementById('saveMins').onclick = async () => {
+  const raw = document.getElementById('mins').value.trim();
+  const v = raw === '' ? 5 : Math.max(0, Math.min(1440, Number(raw) || 0));
+  await chrome.storage.local.set({ autoSyncMinutes: v });
+  showResult(v > 0 ? `auto-sync sweep every ${v} min (real-time pushes are always on while tabs are open)` : 'auto-sync sweep off (real-time pushes still on while tabs are open)');
+  render();
+};
 document.getElementById('saveHost').onclick = async () => {
   const v = document.getElementById('host').value.trim();
   if (v) await chrome.storage.local.set({ customProxyHost: v });
