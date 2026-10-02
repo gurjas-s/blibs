@@ -8,7 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "proxy": "node server/proxy.mjs"
+    "proxy": "node server/proxy.mjs",
+    "desktop": "npm --prefix desktop start",
+    "desktop:test": "npm --prefix desktop test"
   },
   "dependencies": {
     "react": "^19.2.8",

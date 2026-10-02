@@ -1,0 +1,15 @@
+{
+  "name": "blibs-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "blibs desktop shell: persistent vendor sessions, no browser tabs needed",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --blibs-smoke",
+    "test": "node test-harness.js"
+  },
+  "devDependencies": {
+    "electron": "^34.0.0"
+  }
+}

@@ -24,6 +24,10 @@ server/outbox.json
 # Packaged extension artifact (built from extension/ via zip)
 blibs-extension.zip
 
+# Electron packaging output
+desktop/out
+desktop/dist
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

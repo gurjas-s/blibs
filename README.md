@@ -70,6 +70,18 @@ The extension and the panel must talk to the **same** proxy:
   point the extension at the proxy via the popup's **proxy host** field
   (`<vm-ip>:8787`, Save), or forward port 8787 to the VM like you do for 5173.
 
+## Desktop app (no browser tabs needed)
+
+`desktop/` is an Electron shell: the panel plus three persistent vendor
+sessions in one window. Run on your Mac:
+
+```bash
+npm install && npm run build   # repo root, one time
+cd desktop && npm install && npm start
+```
+
+Then **Agents → Log in** once per vendor. Details in `desktop/README.md`.
+
 ## Repo layout
 
 | Path | What |
@@ -79,7 +91,8 @@ The extension and the panel must talk to the **same** proxy:
 | `src/providers.ts` | The three real products (names/URLs) — the seam for future native APIs |
 | `src/types.ts` | `Agent` / `ChatMessage` |
 | `server/proxy.mjs` | Zero-dependency local backend: chat fan-out, import store, send outbox |
-| `extension/` | Manifest V3 companion: `content.js` (scrape + send), `background.js` (relay + sweeps), `popup.html/js` (status + controls) |
+| `extension/` | Manifest V3 companion (one machine: browser + proxy colocated) |
+| `desktop/` | Electron shell (persistent sessions, no browser tabs needed) |
 
 ## Proxy API
 
