@@ -1,0 +1,37 @@
+[
+  {
+    "provider": "muse",
+    "role": "agent",
+    "text": "11:47 AM",
+    "ts": 1790968179943,
+    "url": "https://muse.ai/"
+  },
+  {
+    "provider": "muse",
+    "role": "agent",
+    "text": "Hey! I’m your personal agent, not just a regular assistant. I can help take things off your plate.",
+    "ts": 1790968179943,
+    "url": "https://muse.ai/"
+  },
+  {
+    "provider": "muse",
+    "role": "agent",
+    "text": "Before we get started, what’s your name?",
+    "ts": 1790968179943,
+    "url": "https://muse.ai/"
+  },
+  {
+    "provider": "muse",
+    "role": "agent",
+    "text": "You:\n\nbob",
+    "ts": 1790968179943,
+    "url": "https://muse.ai/"
+  },
+  {
+    "provider": "muse",
+    "role": "agent",
+    "text": "What would you like to call me? You can always change this later.\n\nRen\nMerlin\nMuse",
+    "ts": 1790968179943,
+    "url": "https://muse.ai/"
+  }
+]

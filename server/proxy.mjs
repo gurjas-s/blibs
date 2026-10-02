@@ -1,0 +1,115 @@
+// Minimal local proxy: keeps API keys off the frontend bundle target
+// and fans out to Meta / OpenAI / xAI chat endpoints.
+// Also the landing zone for the companion browser extension:
+//   POST /api/import  { items: [{provider, role, text, ts?, url?}] }
+//   GET  /api/imports -> { imports: [...] }
+// Run: npm run proxy   (listens on :8787)
+// The Vite dev server proxies /api -> :8787 (see vite.config.ts).
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const PORT = process.env.PROXY_PORT || 8787;
+const STORE_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'imports.json');
+
+const ROUTES = {
+  muse: { url: 'https://api.meta.ai/v1/chat/completions', keyHeader: 'Authorization', bearer: true },
+  dots: { url: 'https://api.openai.com/v1/chat/completions', keyHeader: 'Authorization', bearer: true },
+  grok: { url: 'https://api.x.ai/v1/chat/completions', keyHeader: 'Authorization', bearer: true },
+  custom: { url: process.env.CUSTOM_API_URL || 'https://api.openai.com/v1/chat/completions', keyHeader: 'Authorization', bearer: true },
+};
+
+const MODELS = { muse: 'muse-spark-1.3', dots: 'gpt-5-mini', grok: 'grok-4-7', custom: 'gpt-5-mini' };
+
+function send(res, code, obj) {
+  res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  res.end(JSON.stringify(obj));
+}
+
+// ---- extension import store (file-backed, best-effort) ----
+function loadImports() {
+  try {
+    const raw = fs.readFileSync(STORE_PATH, 'utf8');
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+function saveImports(items) {
+  try {
+    fs.writeFileSync(STORE_PATH, JSON.stringify(items.slice(-2000), null, 2));
+  } catch { /* ephemeral in some sandboxes */ }
+}
+const seen = new Set(loadImports().map((m) => `${m.provider}|${m.role}|${m.text}`));
+
+const server = http.createServer(async (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type', 'Access-Control-Allow-Methods': 'POST,GET,OPTIONS' });
+    return res.end();
+  }
+  if (req.url === '/api/health') return send(res, 200, { ok: true });
+
+  // Extension -> blibs: fetch everything the extension has pushed.
+  if (req.url === '/api/imports' && req.method === 'GET') {
+    return send(res, 200, { imports: loadImports().slice(-500) });
+  }
+
+  // Extension -> blibs: push scraped messages from logged-in vendor tabs.
+  if (req.url === '/api/import' && req.method === 'POST') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let payload;
+    try { payload = JSON.parse(body); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    const store = loadImports();
+    let added = 0;
+    for (const it of items) {
+      const provider = String(it.provider || 'custom').toLowerCase();
+      const role = it.role === 'agent' ? 'agent' : 'user';
+      const text = String(it.text || '').trim().slice(0, 4000);
+      if (!text) continue;
+      const key = `${provider}|${role}|${text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      store.push({ provider, role, text, ts: Number(it.ts) || Date.now(), url: String(it.url || '').slice(0, 300) });
+      added++;
+    }
+    saveImports(store);
+    return send(res, 200, { ok: true, added, total: store.length });
+  }
+
+  if (req.url !== '/api/chat' || req.method !== 'POST') return send(res, 404, { error: 'use POST /api/chat or POST /api/import' });
+
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  let payload;
+  try { payload = JSON.parse(body); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+  const { provider = 'dots', apiKey, message, model } = payload;
+  if (!apiKey) return send(res, 400, { error: 'missing apiKey (paste it in API keys bar)' });
+  if (!message) return send(res, 400, { error: 'missing message' });
+  const route = ROUTES[provider] ?? ROUTES.dots;
+
+  try {
+    const upstream = await fetch(route.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', [route.keyHeader]: `${route.bearer ? 'Bearer ' : ''}${apiKey}` },
+      body: JSON.stringify({
+        model: model || MODELS[provider] || 'gpt-5-mini',
+        messages: [
+          { role: 'system', content: 'You are the user\'s personal agent inside blibs, a unified control panel. Be concise, agentic, propose next actions.' },
+          { role: 'user', content: message },
+        ],
+      }),
+    });
+    const data = await upstream.json();
+    if (!upstream.ok) return send(res, upstream.status, { error: data?.error?.message || 'upstream error', raw: data });
+    const reply = data?.choices?.[0]?.message?.content || JSON.stringify(data).slice(0, 2000);
+    return send(res, 200, { reply, provider });
+  } catch (e) {
+    return send(res, 502, { error: String(e) });
+  }
+});
+
+server.listen(PORT, () => console.log(`blibs proxy on http://localhost:${PORT}  (POST /api/chat)`));
