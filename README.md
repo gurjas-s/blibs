@@ -1,62 +1,119 @@
-# blibs — personal-agent control panel (POC)
+# blibs — one panel for your personal agents
 
-Yes, I understand the idea: **one control panel for personal agents** (the always-on,
-action-taking kind — Meta **Muse**, OpenAI **Dots**, xAI **Grok Bot**), not plain chatbots.
-This repo is a proof-of-concept: see **all chats in one inbox**, talk to each agent,
-or open the vendor's real app embedded next to it.
+blibs is a proof-of-concept control panel for **personal agents** — the always-on,
+action-taking kind (Meta **Muse**, OpenAI **Dots**, xAI **Grok**), not plain chatbots.
+Chat with all three from one UI, and reply from blibs straight into the real agent tab.
 
-## API findings (Oct 2026) — why embed + BYOK
+There is no public chat-history or send API for any of these consumer products
+(verified Oct 2026), and all three block iframing (`X-Frame-Options: SAMEORIGIN` /
+`DENY`). So blibs syncs through a **companion browser extension** that runs in your
+own logged-in tabs, with a tiny local proxy as the middleman.
 
-| Vendor | Consumer product | Public chat-history API? | What exists for devs |
-|---|---|---|---|
-| Meta — **Muse** | Muse app, muse.ai web, WhatsApp; runs on secure VM | **No** | Meta Model API (`dev.meta.ai`) with **Muse Spark** models + Muse Code/SDK; Connector Platform |
-| OpenAI — **Dots** | Inside ChatGPT/Slack/Teams, GPT-6 Astra, Pro/Business only (launched Sep 29 2026) | **No** standalone Dots API | OpenAI Responses/Chat Completions API, Agents SDK |
-| xAI — **Grok Bot** | Named bots on a persistent cloud computer (beta, via Cursor/SuperGrok) | **No** bot-session history API | xAI API at `api.x.ai/v1` (OpenAI-compatible), models `grok-4.7`, `grok-4.20-multi-agent` |
-
-So the POC uses the **adapter pattern**:
-- **Unified chat here** — talks live through your own keys (BYOK) via `server/proxy.mjs`,
-  otherwise a clearly-labeled **mock** so the UX is demoable with zero keys.
-- **Embedded app tab** — iframes `muse.meta.ai` / `chatgpt.com` / `grok.com`
-  (vendors often send `X-Frame-Options: DENY`, so a fallback "open in new tab" link is included).
-- When vendors ship history APIs, swap the mock/iframe for a real sync — the `ProviderMeta`
-  table in `src/providers.ts` is the seam.
-
-## Run it
-
-```bash
-npm install
-npm run dev      # frontend on :5173
-npm run proxy    # optional: :8787, keeps keys server-side; vite forwards /api
+```
+muse.ai / chatgpt.com / grok.com (your logged-in tabs)
+        ↕  extension reads chats, types your replies
+http://…:8787  server/proxy.mjs  (import store + send outbox)
+        ↕  /api/imports, /api/outbox*
+http://…:5173  blibs panel (Vite + React)
 ```
 
-Paste keys in the **API keys** bar (stored in `localStorage` only):
-`META_API_KEY` · `OPENAI_API_KEY` · `XAI_API_KEY`.
+## Prerequisites
 
-## Layout
+- Node.js 20+ (`node -v`)
+- A Chromium browser (Chrome / Edge / Brave) for the extension
 
-- **Left**: agent roster (Muse, Dots, Grok Bot + add your own).
-- **Center**: per-agent view with 3 tabs — `Unified chat` / `Embedded app` / `API / adapter`.
-- **Right**: unified inbox — search across *all* agents' chats.
-- Persistence is `localStorage` (`blibs-messages-v1`, `blibs-keys-v1`, `blibs-agents-v1`).
-  Swap for a DB + OAuth in production.
+## Setup
 
-## Companion extension (POC — the live sync path)
+```bash
+git clone git@github.com:<you>/blibs.git
+cd blibs
+npm install
+```
 
-Iframes are blocked by all three vendors (verified headers: `SAMEORIGIN` /
-`DENY`), so the site can't embed them. Instead `extension/` is a Manifest V3
-companion: with your permission it reads **your own logged-in tabs** on
-`muse.ai`, `chatgpt.com`, `grok.com` and POSTs chats to the local proxy
-(`POST /api/import`, persisted in `server/imports.json`). The inbox has a
-**Pull from extension** button (`GET /api/imports`) that merges them as
-`source: 'extension'` messages. Full install/sync instructions in
-`extension/README.md`. Yes — vendor tabs must be open + logged in; that is the
-documented trade-off until vendors ship history APIs.
+**Terminal 1 — backend (required):**
 
-## Files
+```bash
+npm run proxy
+# blibs proxy on http://localhost:8787
+```
 
-- `src/App.tsx` — whole panel (incl. Pull-from-extension merge)
-- `src/providers.ts` — vendor metadata, embed URLs, mock replies
-- `src/types.ts` — Agent / ChatMessage / ProviderMeta
-- `server/proxy.mjs` — zero-dependency fan-out to Meta/OpenAI/xAI + `/api/import(s)`
-- `extension/` — MV3 companion (manifest, content, background, popup)
-- `.env.example` — keys + optional custom endpoint
+**Terminal 2 — frontend:**
+
+```bash
+npm run dev
+# open http://localhost:5173
+```
+
+**Extension (one time):**
+
+1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select `extension/`.
+2. Open + log in to `https://muse.ai`, `https://chatgpt.com`, `https://grok.com` (pinned tabs work best).
+3. **Reload each vendor tab** after installing (content scripts only enter pages loaded post-install).
+4. Click the ◍ icon → per-tab **Sync**. The result box shows exactly what happened
+   (`collected: N`, selector used, or the error).
+
+Chats flow in automatically from there: the extension pushes ~seconds after chat
+content changes (plus a 1-minute backup sweep, configurable in the popup), and
+blibs auto-pulls every 15s (checkbox + interval in the sidebar).
+
+**Send from blibs:** type in the composer, hit Send. The message is queued on the
+proxy, the extension types it into the matching tab and sends it, and the badge
+under your message flips `Sending…` → `Sent` (or `Not delivered` + Retry).
+The agent's reply syncs back on its own.
+
+## Same machine vs split setup
+
+The extension and the panel must talk to the **same** proxy:
+
+- **Everything on one machine** (recommended): defaults just work.
+- **Browser on one machine, code on another** (e.g. Mac browser + Linux VM):
+  point the extension at the proxy via the popup's **proxy host** field
+  (`<vm-ip>:8787`, Save), or forward port 8787 to the VM like you do for 5173.
+
+## Repo layout
+
+| Path | What |
+|---|---|
+| `src/App.tsx` | Whole panel: agent list, threads, composer, auto-pull |
+| `src/App.css`, `src/index.css` | Flat slate theme (one accent, no gradients) |
+| `src/providers.ts` | The three real products (names/URLs) — the seam for future native APIs |
+| `src/types.ts` | `Agent` / `ChatMessage` |
+| `server/proxy.mjs` | Zero-dependency local backend: chat fan-out, import store, send outbox |
+| `extension/` | Manifest V3 companion: `content.js` (scrape + send), `background.js` (relay + sweeps), `popup.html/js` (status + controls) |
+
+## Proxy API
+
+| Endpoint | Who | What |
+|---|---|---|
+| `GET /api/health` | anyone | `{"ok":true}` — is the proxy up? |
+| `POST /api/import` | extension | push scraped chats `{items:[{provider,role,text,ts?,url?}]}` (deduped) |
+| `GET /api/imports` | panel | last 500 stored chats |
+| `POST /api/outbox` | panel | enqueue a reply `{provider,text}` → `{id}` |
+| `GET /api/outbox/pending` | extension | oldest queued sends |
+| `POST /api/outbox/ack` | extension | confirm delivery `{id,ok,error?}` |
+| `POST /api/outbox/retry` | panel | requeue a failed send |
+| `GET /api/outbox` | panel | delivery statuses (drives the Sent/failed badges) |
+| `POST /api/chat` | panel | BYOK model fan-out (legacy route, kept for API use) |
+
+Runtime data (`server/imports.json`, `server/outbox.json`) is gitignored and
+recreated on demand. Panel state lives in `localStorage` (`blibs-messages-v2`,
+`blibs-agents-v2`, …) — swap for a DB + OAuth in production.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| Extension: `tab not readable` | Reload the vendor tab (extension must predate the page load) |
+| Extension: `collected: 0` | Open a real conversation; if it persists, a vendor redesign broke `SELECTORS` in `content.js` — the result box prints per-selector hit counts |
+| Extension: `Failed to fetch` | Proxy unreachable from the browser — check `npm run proxy`, then the proxy-host field (see split setup above) |
+| Blibs: `Proxy unreachable` pill | Same — `/api/health` is the 5-second test |
+| Send stuck on `Sending…` | No open tab for that agent, or tab needs reload — reason shows after the extension's next sweep; hit Retry |
+| Your messages on the wrong side | Speaker detection runs on new syncs; clear blibs site data once to re-pull cleanly |
+
+## Limits (honest POC notes)
+
+- Only sees what's rendered in **open, logged-in desktop tabs**. Closed tabs,
+  mobile apps, and WhatsApp/Slack DMs are out of reach.
+- Sending is best-effort DOM automation (fill composer → click send); vendors
+  redesign pages, selectors need maintenance — failures always surface with a reason.
+- Personal use on your own accounts; check vendor ToS before productizing.
