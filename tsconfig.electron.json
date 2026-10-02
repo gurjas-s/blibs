@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.electron.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "ignoreDeprecations": "6.0",
+    "types": ["node"],
+    "outDir": "build",
+    "rootDir": "src",
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": false,
+    "declaration": true,
+    "sourceMap": false,
+    "moduleDetection": "force",
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": ["src/main/index.ts", "src/preload/agent.ts"]
+}

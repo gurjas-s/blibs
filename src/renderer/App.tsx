@@ -58,7 +58,7 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
-  const [statusLine, setStatusLine] = useState('Waiting for the extension — keep vendor tabs open and logged in.');
+  const [statusLine, setStatusLine] = useState('Waiting for sync — log in via the Agents menu.');
   const [lastPull, setLastPull] = useState<{ at: number; ok: boolean } | null>(null);
   const [autoPull, setAutoPull] = useState<boolean>(() => load(LS_AUTOPULL, true));
   const [pullSecs, setPullSecs] = useState<number>(() => load(LS_PULLSECS, 15));
@@ -98,9 +98,9 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: query ? 'auto' : 'smooth', block: 'end' });
   }, [thread.length, activeId, query]);
 
-  /** Merge extension imports, cleaning scrape artifacts and collapsing
+  /** Merge desktop imports, cleaning scrape artifacts and collapsing
    *  echoes of messages already sent from here (the "double message" bug). */
-  async function pullExtension(silent = false) {
+  async function pullImports(silent = false) {
     if (!silent) setStatusLine('Syncing…');
     try {
       const res = await fetch('/api/imports');
@@ -128,7 +128,7 @@ export default function App() {
             role: it.role === 'agent' ? 'agent' : 'user',
             text,
             ts: Number(it.ts) || Date.now(),
-            source: 'extension',
+            source: 'desktop',
           },
         ];
         merged++;
@@ -148,7 +148,7 @@ export default function App() {
       );
     } catch {
       setLastPull({ at: Date.now(), ok: false });
-      setStatusLine('Proxy unreachable — run `npm run proxy` on :8787.');
+      setStatusLine('Backend unreachable — restart the app.');
     }
   }
 
@@ -180,17 +180,17 @@ export default function App() {
   }
 
   useEffect(() => {
-    pullExtension(true);
+    pullImports(true);
     if (!autoPull) return;
     const id = setInterval(() => {
-      pullExtension(true);
+      pullImports(true);
       syncOutboxStatuses();
     }, Math.max(5, pullSecs) * 1000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoPull, pullSecs]);
 
-  /** Send into the real vendor tab via the extension outbox. */
+  /** Send into the real vendor session via the outbox. */
   async function send() {
     const text = input.trim();
     if (!text || sending) return;
@@ -198,7 +198,7 @@ export default function App() {
     setInput('');
     const userMsg: ChatMessage = {
       id: uid(), agentId: active.id, role: 'user', text,
-      ts: Date.now(), source: 'extension', via: 'tab', outStatus: 'queued',
+      ts: Date.now(), source: 'desktop', via: 'tab', outStatus: 'queued',
     };
     setMessages((m) => ({ ...m, [active.id]: [...(m[active.id] ?? []), userMsg] }));
     try {
@@ -214,7 +214,7 @@ export default function App() {
         ...m,
         [active.id]: (m[active.id] ?? []).map((x) => (x.id === userMsg.id ? { ...x, outId } : x)),
       }));
-      setStatusLine(`Sent to the open ${meta.product} tab — its reply syncs back automatically.`);
+      setStatusLine(`Sent to your logged-in ${meta.product} session — its reply syncs back automatically.`);
     } catch (e) {
       setMessages((m) => ({
         ...m,
@@ -222,7 +222,7 @@ export default function App() {
           x.id === userMsg.id ? { ...x, outStatus: 'failed' as const } : x,
         ),
       }));
-      setStatusLine(`Could not queue (${String(e)}). Is the proxy running? Your text is kept — retry below.`);
+      setStatusLine(`Could not queue (${String(e)}). Is the backend running? Your text is kept — retry below.`);
     }
     setSending(false);
   }
@@ -242,9 +242,9 @@ export default function App() {
         }
         return next;
       });
-      setStatusLine('Re-queued — the extension picks it up within a minute.');
+      setStatusLine('Re-queued — the app picks it up within a minute.');
     } catch {
-      setStatusLine('Retry failed — is the proxy running?');
+      setStatusLine('Retry failed — is the backend running?');
     }
   }
 
@@ -252,7 +252,7 @@ export default function App() {
     ? { cls: 'idle', label: 'Waiting for sync' }
     : lastPull.ok
       ? { cls: 'live', label: `Synced ${clock(lastPull.at)}` }
-      : { cls: 'down', label: 'Proxy unreachable' };
+      : { cls: 'down', label: 'Backend unreachable' };
 
   return (
     <div className="shell">
@@ -307,7 +307,7 @@ export default function App() {
                 <option value={300}>5m</option>
               </select>
             </label>
-            <p>Keep the vendor tabs open and logged in. Proxy on :8787.</p>
+            <p>Sessions live inside this app — use the Agents menu to log in.</p>
           </div>
         </aside>
 
@@ -328,9 +328,8 @@ export default function App() {
                 <p className="empty-title">{query ? 'No matches' : `No chats with ${active.name} yet`}</p>
                 {!query && (
                   <ol>
-                    <li>Run <code>npm run proxy</code> on :8787</li>
-                    <li>Load the companion extension, open + log in to {active.site.replace('https://', '')}</li>
-                    <li>Chats sync here on their own — replies you send go to the real tab</li>
+                    <li>Log in via the Agents menu (once per agent)</li>
+                    <li>Chats sync here on their own — replies you send go to the real session</li>
                   </ol>
                 )}
               </div>

@@ -7,7 +7,7 @@ export interface Agent {
   vendor: string;
   description: string;
   site: string;
-  /** epoch ms of last successful extension sync, null = never */
+  /** epoch ms of last successful desktop sync, null = never */
   lastSyncAt: number | null;
 }
 
@@ -17,12 +17,12 @@ export interface ChatMessage {
   role: 'user' | 'agent';
   text: string;
   ts: number;
-  source: 'extension' | 'mock' | 'api' | 'embed';
-  /** how a user message was delivered (vendor tab via extension, model API, or local mock) */
+  source: 'desktop' | 'extension' | 'mock' | 'api' | 'embed';
+  /** how a user message was delivered (vendor session in the app, model API, or local mock) */
   via?: 'tab' | 'model' | 'mock';
-  /** proxy outbox id for tab-routed messages */
+  /** proxy outbox id for session-routed messages */
   outId?: string;
-  /** delivery state of a tab-routed message */
+  /** delivery state of a session-routed message */
   outStatus?: 'queued' | 'sent' | 'failed';
 }
 

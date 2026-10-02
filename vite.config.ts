@@ -5,6 +5,7 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react()],
   server: {
+    // Mirrored by the desktop static server (src/main/index.ts) in `npm start`.
     proxy: {
       '/api': 'http://localhost:8787',
     },

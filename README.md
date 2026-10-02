@@ -1,132 +1,158 @@
-# blibs — one panel for your personal agents
+# blibs — one desktop app for your personal agents
 
-blibs is a proof-of-concept control panel for **personal agents** — the always-on,
+blibs is a desktop control panel for **personal agents** — the always-on,
 action-taking kind (Meta **Muse**, OpenAI **Dots**, xAI **Grok**), not plain chatbots.
-Chat with all three from one UI, and reply from blibs straight into the real agent tab.
+Chat with all three from one window, and reply from blibs straight into the real agent session.
 
 There is no public chat-history or send API for any of these consumer products
 (verified Oct 2026), and all three block iframing (`X-Frame-Options: SAMEORIGIN` /
-`DENY`). So blibs syncs through a **companion browser extension** that runs in your
-own logged-in tabs, with a tiny local proxy as the middleman.
+`DENY`). So blibs keeps three persistent vendor sessions alive inside the app
+itself — logged in, syncing — with a tiny local backend as the middleman.
 
 ```
-muse.ai / chatgpt.com / grok.com (your logged-in tabs)
-        ↕  extension reads chats, types your replies
-http://…:8787  server/proxy.mjs  (import store + send outbox)
+muse.ai / chatgpt.com / grok.com (persistent sessions inside the app)
+        ↕  built-in views read chats, type your replies
+http://127.0.0.1:8787  local backend  (import store + send outbox)
         ↕  /api/imports, /api/outbox*
-http://…:5173  blibs panel (Vite + React)
+blibs panel (Electron + React, served from inside the app on :5174)
 ```
 
-## Prerequisites
+## First run (new developer)
 
-- Node.js 20+ (`node -v`)
-- A Chromium browser (Chrome / Edge / Brave) for the extension
-
-## Setup
+Prerequisites: Node.js 20+ (`node -v`). No browser setup needed — sessions live in the app.
 
 ```bash
-git clone git@github.com:<you>/blibs.git
-cd blibs
-npm install
+npm install        # install everything (one package — see note below if Electron misbehaves)
+npm run build      # typecheck + compile + bundle the panel
+npm start          # launch the desktop app
 ```
 
-**Terminal 1 — backend (required):**
+Then **Agents → Log in to Muse / Dots / Grok** (once each). The login window
+shares cookies with the hidden sync view, so after login you can close it —
+syncing continues in the background.
 
-```bash
-npm run proxy
-# blibs proxy on http://localhost:8787
-```
+> **If `npm start` fails with `Electron failed to install correctly`:** npm ≥ 11
+> gates install scripts, so Electron's binary download never ran. Fix:
+>
+> ```bash
+> npm install-scripts approve electron
+> rm -rf node_modules/electron
+> npm install
+> ```
+>
+> If `node_modules/electron/dist/` is afterwards still just
+> `LICENSES.chromium.html` (the old `extract-zip` stalls on newer Node), unzip the
+> already-downloaded binary by hand:
+>
+> ```bash
+> unzip -q -o ~/Library/Caches/electron/*/electron-v34.5.8-darwin-arm64.zip \
+>   -d node_modules/electron/dist/
+> printf 'Electron.app/Contents/MacOS/Electron' > node_modules/electron/path.txt
+> ```
 
-**Terminal 2 — frontend:**
-
-```bash
-npm run dev
-# open http://localhost:5173
-```
-
-**Extension (one time):**
-
-1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select `extension/`.
-2. Open + log in to `https://muse.ai`, `https://chatgpt.com`, `https://grok.com` (pinned tabs work best).
-3. **Reload each vendor tab** after installing (content scripts only enter pages loaded post-install).
-4. Click the ◍ icon → per-tab **Sync**. The result box shows exactly what happened
-   (`collected: N`, selector used, or the error).
-
-Chats flow in automatically from there: the extension pushes ~seconds after chat
-content changes (plus a 1-minute backup sweep, configurable in the popup), and
-blibs auto-pulls every 15s (checkbox + interval in the sidebar).
+Chats flow in automatically: the app pushes seconds after chat content changes
+(plus a 1-minute backup sweep), and the panel auto-pulls every 15s
+(checkbox + interval in the sidebar).
 
 **Send from blibs:** type in the composer, hit Send. The message is queued on the
-proxy, the extension types it into the matching tab and sends it, and the badge
+backend, the app types it into the matching session and sends it, and the badge
 under your message flips `Sending…` → `Sent` (or `Not delivered` + Retry).
 The agent's reply syncs back on its own.
 
-## Same machine vs split setup
+## Scripts
 
-The extension and the panel must talk to the **same** proxy:
-
-- **Everything on one machine** (recommended): defaults just work.
-- **Browser on one machine, code on another** (e.g. Mac browser + Linux VM):
-  point the extension at the proxy via the popup's **proxy host** field
-  (`<vm-ip>:8787`, Save), or forward port 8787 to the VM like you do for 5173.
-
-## Desktop app (no browser tabs needed)
-
-`desktop/` is an Electron shell: the panel plus three persistent vendor
-sessions in one window. Run on your Mac:
-
-```bash
-npm install && npm run build   # repo root, one time
-cd desktop && npm install && npm start
-```
-
-Then **Agents → Log in** once per vendor. Details in `desktop/README.md`.
+| Command | What |
+|---|---|
+| `npm run build` | Full build: `tsc` (main + preload as CJS, backend as ESM) → CJS markers → Vite bundles the panel to `dist/` |
+| `npm start` | Launch the app (needs a prior `build`) |
+| `npm test` | Rebuilds, then runs the headless harness: stubs Electron, boots the real backend + panel, drives a fake send/receive loop |
+| `npm run smoke` | Boots the real app window, prints a JSON status line, quits — needs a display |
+| `npm run lint` | `oxlint` over the repo |
+| `npm run clean` | Wipe `build/` + `dist/` (then `build` again) |
 
 ## Repo layout
 
-| Path | What |
-|---|---|
-| `src/App.tsx` | Whole panel: agent list, threads, composer, auto-pull |
-| `src/App.css`, `src/index.css` | Flat slate theme (one accent, no gradients) |
-| `src/providers.ts` | The three real products (names/URLs) — the seam for future native APIs |
-| `src/types.ts` | `Agent` / `ChatMessage` |
-| `server/proxy.mjs` | Zero-dependency local backend: chat fan-out, import store, send outbox |
-| `extension/` | Manifest V3 companion (one machine: browser + proxy colocated) |
-| `desktop/` | Electron shell (persistent sessions, no browser tabs needed) |
+Standard Electron + Vite structure — one process per directory:
 
-## Proxy API
+```
+src/
+  main/         main process (Node + Electron APIs, no DOM)
+    index.ts        app lifecycle, backend + panel servers, vendor views,
+                    menu, outbox loop, 60s sweep / 30s drain timers
+    test-harness.ts headless tests (npm test)
+  preload/      bridge scripts (DOM + limited Electron IPC, no Node UI code)
+    agent.ts        scrape + send; injected into every vendor session
+  renderer/     React UI (DOM only — bundled by Vite into dist/)
+    App.tsx         agent list, threads, composer, auto-pull
+    main.tsx        React entry (loaded by index.html)
+    providers.ts    the three vendors — the seam for future native APIs
+    types.ts        Agent / ChatMessage
+    *.css, assets/ theme + static assets
+server/
+  proxy.ts      local backend (plain Node HTTP, zero deps): chat fan-out,
+                import store, send outbox. Spawned by the main process.
+scripts/
+  emit-cjs-markers.mjs  build step — see "Modules" below
+```
+
+Generated, never edited or committed: `build/` (compiled main/preload/backend),
+`dist/` (bundled panel), `node_modules/`. Runtime data (`server/imports.json`,
+`server/outbox.json`) is gitignored and recreated on demand. Panel state lives in
+`localStorage` (`blibs-messages-v2`, `blibs-agents-v2`, …) — swap for a DB + OAuth
+in production.
+
+## Modules (read this before touching the build)
+
+The root is `"type": "module"`, but Electron's main process and preload scripts
+must load as **CommonJS**, while the backend stays **ESM**. This is handled by
+tiny marker files the build regenerates — `build/main/package.json` and
+`build/preload/package.json`, each containing `{"type":"commonjs"}`:
+
+- `tsc -b --force` compiles `src/main` + `src/preload` (CJS) and `server` (ESM).
+  `--force` matters: without it, `tsc -b` trusts stale incremental state and can
+  silently skip emitting after `build/` is deleted.
+- `scripts/emit-cjs-markers.mjs` writes the markers.
+- `vite build` bundles `src/renderer` to `dist/`.
+
+Symptoms if you get this wrong: `exports is not defined in ES module scope`
+at `build/main/index.js` on `npm start` means the markers are missing — just
+re-run `npm run build`.
+
+## Backend API (internal, app ↔ panel)
 
 | Endpoint | Who | What |
 |---|---|---|
-| `GET /api/health` | anyone | `{"ok":true}` — is the proxy up? |
-| `POST /api/import` | extension | push scraped chats `{items:[{provider,role,text,ts?,url?}]}` (deduped) |
+| `GET /api/health` | anyone | `{"ok":true}` — is the backend up? |
+| `POST /api/import` | views | push scraped chats `{items:[{provider,role,text,ts?,url?}]}` (deduped) |
 | `GET /api/imports` | panel | last 500 stored chats |
 | `POST /api/outbox` | panel | enqueue a reply `{provider,text}` → `{id}` |
-| `GET /api/outbox/pending` | extension | oldest queued sends |
-| `POST /api/outbox/ack` | extension | confirm delivery `{id,ok,error?}` |
+| `GET /api/outbox/pending` | main | oldest queued sends |
+| `POST /api/outbox/ack` | main | confirm delivery `{id,ok,error?}` |
 | `POST /api/outbox/retry` | panel | requeue a failed send |
 | `GET /api/outbox` | panel | delivery statuses (drives the Sent/failed badges) |
 | `POST /api/chat` | panel | BYOK model fan-out (legacy route, kept for API use) |
 
-Runtime data (`server/imports.json`, `server/outbox.json`) is gitignored and
-recreated on demand. Panel state lives in `localStorage` (`blibs-messages-v2`,
-`blibs-agents-v2`, …) — swap for a DB + OAuth in production.
+Ports: backend `:8787` (`PROXY_PORT`), panel `:5174` (`BLIBS_UI_PORT`). The panel
+server forwards `/api/*` to the backend — the same mapping `vite.config.ts`
+declares for reference.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Extension: `tab not readable` | Reload the vendor tab (extension must predate the page load) |
-| Extension: `collected: 0` | Open a real conversation; if it persists, a vendor redesign broke `SELECTORS` in `content.js` — the result box prints per-selector hit counts |
-| Extension: `Failed to fetch` | Proxy unreachable from the browser — check `npm run proxy`, then the proxy-host field (see split setup above) |
-| Blibs: `Proxy unreachable` pill | Same — `/api/health` is the 5-second test |
-| Send stuck on `Sending…` | No open tab for that agent, or tab needs reload — reason shows after the extension's next sweep; hit Retry |
-| Your messages on the wrong side | Speaker detection runs on new syncs; clear blibs site data once to re-pull cleanly |
+| `Cannot find module '…/build/main/index.js'` on `npm start` | You skipped the build — run `npm run build` first (`build/` is generated) |
+| `exports is not defined in ES module scope` | CJS markers missing — re-run `npm run build` |
+| `Electron failed to install correctly` | Approve + reinstall Electron (see First run) |
+| Weird behavior right after `npm start` | Make sure `ELECTRON_RUN_AS_NODE` is **not** exported in your shell (`unset` it and remove it from `~/.zshrc` — it makes Electron act as plain Node) |
+| Blibs: `Backend unreachable` pill | Backend didn't boot with the app — restart; check the terminal for `[blibs] proxy exited` |
+| `EADDRINUSE` on `:5174`/`:8787` in `npm test` | A previous app instance is still running — quit it first |
+| Send stuck on `Sending…` | Session not logged in or page still loading — use Agents → Log in, then Retry |
+| Login lost after restart | Partitions persist per OS user; check you didn't clear app data |
 
 ## Limits (honest POC notes)
 
-- Only sees what's rendered in **open, logged-in desktop tabs**. Closed tabs,
-  mobile apps, and WhatsApp/Slack DMs are out of reach.
+- Only sees what's rendered in the **logged-in in-app sessions**. Mobile apps
+  and WhatsApp/Slack DMs are out of reach.
 - Sending is best-effort DOM automation (fill composer → click send); vendors
   redesign pages, selectors need maintenance — failures always surface with a reason.
 - Personal use on your own accounts; check vendor ToS before productizing.

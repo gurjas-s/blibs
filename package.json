@@ -1,16 +1,17 @@
 {
-  "name": "dots-blibs",
+  "name": "blibs",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "blibs desktop app: one panel for your personal agents, with persistent vendor sessions built in",
   "type": "module",
+  "main": "build/main/index.js",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "lint": "oxlint",
-    "preview": "vite preview",
-    "proxy": "node server/proxy.mjs",
-    "desktop": "npm --prefix desktop start",
-    "desktop:test": "npm --prefix desktop test"
+    "build": "tsc -b --force && node scripts/emit-cjs-markers.mjs && vite build",
+    "clean": "rm -rf build dist",
+    "start": "electron .",
+    "smoke": "electron . --blibs-smoke",
+    "test": "npm run build && tsx src/main/test-harness.ts",
+    "lint": "oxlint"
   },
   "dependencies": {
     "react": "^19.2.8",
@@ -21,8 +22,14 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^34.0.0",
     "oxlint": "^1.81.0",
+    "tsx": "^4.19.0",
     "typescript": "~6.0.2",
     "vite": "^8.3.0"
+  },
+  "allowScripts": {
+    "electron@34.5.8": true,
+    "esbuild@0.28.2": true
   }
 }

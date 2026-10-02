@@ -7,9 +7,11 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Build output
 node_modules
 dist
 dist-ssr
+build
 *.local
 
 # Env (keys!) — .env.example stays tracked, real .env never does
@@ -21,12 +23,9 @@ dist-ssr
 server/imports.json
 server/outbox.json
 
-# Packaged extension artifact (built from extension/ via zip)
-blibs-extension.zip
-
-# Electron packaging output
-desktop/out
-desktop/dist
+# Packaged app output
+out
+dist-electron
 
 # Editor directories and files
 .vscode/*
