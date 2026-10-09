@@ -78,3 +78,14 @@ test('invalid requests return actionable HTTP errors', async () => {
   assert.equal((await invalid.json()).error, 'invalid JSON');
   assert.equal((await fetch(base + '/missing')).status, 404);
 });
+
+test('a lost queue response can be retried without creating a second send', async () => {
+  const body = { provider: 'dots', text: 'retry once', clientId: 'stable-client-id' };
+  const first = await post('/api/outbox', body);
+  const second = await post('/api/outbox', body);
+  assert.equal(first.data.id, second.data.id);
+  assert.equal((await post('/api/outbox', { ...body, text: 'different message' })).status, 409);
+  await post('/api/outbox/ack', { id: first.data.id, ok: true });
+  assert.equal((await post('/api/outbox', body)).data.status, 'sent');
+  assert.equal((await post('/api/outbox/retry', { id: first.data.id })).status, 409);
+});

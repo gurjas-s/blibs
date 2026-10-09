@@ -24,6 +24,7 @@ export interface ChatMessage {
   outId?: string;
   /** delivery state of a session-routed message */
   outStatus?: 'queued' | 'sent' | 'failed';
+  outError?: string;
 }
 
 export interface ProviderMeta {

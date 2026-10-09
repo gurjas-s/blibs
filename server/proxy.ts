@@ -55,6 +55,7 @@ interface OutboxItem {
   attempts: number;
   sentAt?: number;
   error?: string;
+  clientId?: string;
 }
 
 function send(res: ServerResponse, code: number, obj: unknown): void {
@@ -154,10 +155,16 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         const text = String(payload?.text || '').trim().slice(0, 4000);
         if (!text) return send(res, 400, { error: 'missing text' });
         const store = loadOutbox();
-        const item: OutboxItem = { id: newOutId(), provider, text, ts: Date.now(), status: 'queued', attempts: 0 };
+      const clientId = typeof payload?.clientId === 'string' ? payload.clientId.slice(0, 100) : undefined;
+      const existing = clientId && store.find((item) => item.clientId === clientId);
+      if (existing) {
+        if (existing.provider !== provider || existing.text !== text) return send(res, 409, { error: 'This message ID already belongs to another message.' });
+        return send(res, 200, { ok: true, id: existing.id, status: existing.status });
+      }
+      const item: OutboxItem = { id: newOutId(), provider, text, ts: Date.now(), status: 'queued', attempts: 0, clientId };
         store.push(item);
         saveOutbox(store);
-        return send(res, 200, { ok: true, id: item.id });
+      return send(res, 200, { ok: true, id: item.id, status: item.status });
       }
 
       // Main process polls this: oldest queued messages first.
@@ -186,13 +193,14 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         return send(res, 200, { ok: true, id: item.id, status: item.status });
       }
 
-      // Blibs "retry" button: requeue a failed (or even sent) item.
+      // Only failed messages can be sent again. A repeated retry remains idempotent.
       if (req.url === '/api/outbox/retry' && req.method === 'POST') {
         let payload: Record<string, unknown>;
         try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
         const store = loadOutbox();
         const item = store.find((m) => m.id === payload?.id);
         if (!item) return send(res, 404, { error: 'unknown id' });
+        if (item.status === 'sent') return send(res, 409, { error: 'This message has already been sent.' });
         item.status = 'queued';
         delete item.error;
         saveOutbox(store);
