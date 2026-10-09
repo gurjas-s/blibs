@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { SEED_AGENTS, providerFor } from './providers';
 import type { Agent, ChatMessage } from './types';
+import { cleanImportText } from './text';
 
 const LS_MSGS = 'blibs-messages-v2';
 const LS_AGENTS = 'blibs-agents-v2';
@@ -35,20 +36,6 @@ function timeAgo(ts: number | null): string {
 
 function clock(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-}
-
-/**
- * Scraped vendor DOMs leak UI chrome into the text ("Assistant message:",
- * "User message:", "You:", widget tokens like [[hatch_widget:…]]).
- * Strip it so synced chats read like chats.
- */
-function cleanImportText(raw: string): string {
-  return raw
-    .replace(/\[\[[^\]]*\]\]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/^(assistant message|user message|you)\s*:\s*/i, '')
-    .trim();
 }
 
 export default function App() {
