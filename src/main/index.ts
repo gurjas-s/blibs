@@ -222,6 +222,9 @@ function attachVendorViews(): void {
     });
     // Keep a usable viewport for DOM visibility checks without covering the panel.
     view.setBounds({ x: 0, y: 0, width: 1100, height: 800 });
+    view.webContents.on('did-start-loading', () => {
+      setSession(v.id, { state: 'loading', reason: 'Loading your conversation.' });
+    });
     view.webContents.on('did-fail-load', (_event, code, description) => {
       if (code !== -3) setSession(v.id, { state: 'error', reason: `Could not load ${v.name}: ${description}` });
     });
@@ -250,6 +253,7 @@ export function openLogin(vendorId: string): void {
   win.on('closed', () => {
     loginWindows.delete(v.id);
     loginReady.delete(v.id);
+    setSession(v.id, { state: 'loading', reason: 'Reconnecting your saved sign-in.' });
     _views.get(v.id)?.webContents.reload();
   });
   void win.loadURL(v.url);
@@ -373,7 +377,11 @@ async function deliverPending(reason: string): Promise<{ drained: number; error?
     return { drained: 0, error: 'proxy unreachable' };
   }
   let drained = 0;
-  for (const item of pending.slice(0, 5)) {
+  const deliverable = pending.filter((item) => {
+    const session = _sessions.get(item.provider);
+    return !session || session.state === 'ready';
+  });
+  for (const item of deliverable.slice(0, 5)) {
     // Leave queued replies intact while a saved session is loading or expired.
     const session = _sessions.get(item.provider);
     if (session && session.state !== 'ready') continue;
@@ -413,14 +421,17 @@ export function wireIpc(): void {
   ipcMain.on('blibs:session', (event: IpcMainEvent, report: SessionReport) => {
     const provider = providerForEvent(event);
     if (!provider || !['loading', 'ready', 'signed-out', 'error'].includes(report?.state)) return;
-    setSession(provider, { state: report.state, reason: String(report.reason || '').slice(0, 300) });
     // Cookies are shared, but the hidden page must reload to pick up a new login.
     if (loginWindows.get(provider)?.webContents === event.sender) {
       if (report.state === 'ready' && !loginReady.has(provider)) {
         loginReady.add(provider);
+        setSession(provider, { state: 'loading', reason: 'Signed in. Loading your conversation.' });
         _views.get(provider)?.webContents.reload();
       } else if (report.state === 'signed-out') loginReady.delete(provider);
+      // Only the sending view can report that it is ready for queued replies.
+      return;
     }
+    setSession(provider, { state: report.state, reason: String(report.reason || '').slice(0, 300) });
     if (report.state === 'ready') void drainOutbox('session-ready');
   });
   // Preload pushes (page load, DOM mutations, heartbeat).
