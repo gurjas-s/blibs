@@ -1,5 +1,7 @@
 # blibs — one desktop app for your personal agents
 
+[![CI](https://github.com/gurjas-s/blibs/actions/workflows/ci.yml/badge.svg)](https://github.com/gurjas-s/blibs/actions/workflows/ci.yml)
+
 blibs is a desktop control panel for **personal agents** — the always-on,
 action-taking kind (Meta **Muse**, OpenAI **Dots**, xAI **Grok**), not plain chatbots.
 Chat with all three from one window, and reply from blibs straight into the real agent session.
@@ -19,7 +21,7 @@ blibs panel (Electron + React, served from inside the app on :5174)
 
 ## First run (new developer)
 
-Prerequisites: Node.js 20+ (`node -v`). No browser setup needed — sessions live in the app.
+Prerequisites: Node.js 24 (`node -v`). No browser setup needed — sessions live in the app.
 
 ```bash
 npm install        # install everything (one package — see note below if Electron misbehaves)
@@ -65,10 +67,15 @@ The agent's reply syncs back on its own.
 |---|---|
 | `npm run build` | Full build: `tsc` (main + preload as CJS, backend as ESM) → CJS markers → Vite bundles the panel to `dist/` |
 | `npm start` | Launch the app (needs a prior `build`) |
-| `npm test` | Rebuilds, then runs the headless harness: stubs Electron, boots the real backend + panel, drives a fake send/receive loop |
+| `npm test` | Rebuilds, runs unit and HTTP route tests, then runs the desktop harness with temporary stores and ports |
 | `npm run smoke` | Boots the real app window, prints a JSON status line, quits — needs a display |
 | `npm run lint` | `oxlint` over the repo |
 | `npm run clean` | Wipe `build/` + `dist/` (then `build` again) |
+| `npm run verify:clean-build` | Delete generated output, rebuild with the existing incremental cache, and check that all required output was regenerated |
+
+CI runs on Linux and Windows for every push and pull request. To block merging
+when checks fail, a repository admin must require both **Build, lint, and test**
+checks in the default branch's protection rules. See `AGENTS.md` for contribution guidance.
 
 ## Repo layout
 

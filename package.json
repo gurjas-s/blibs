@@ -7,10 +7,11 @@
   "main": "build/main/index.js",
   "scripts": {
     "build": "tsc -b --force && node scripts/emit-cjs-markers.mjs && vite build",
-    "clean": "rm -rf build dist",
+    "clean": "node scripts/clean.mjs",
     "start": "electron .",
     "smoke": "electron . --blibs-smoke",
-    "test": "npm run build && tsx src/main/test-harness.ts",
+    "test": "npm run build && node --import tsx --test tests/*.test.ts && tsx src/main/test-harness.ts",
+    "verify:clean-build": "node scripts/verify-clean-build.mjs",
     "lint": "oxlint"
   },
   "dependencies": {
