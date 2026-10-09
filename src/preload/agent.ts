@@ -186,7 +186,7 @@ interface SendOutcome {
   debug: SendDebug;
 }
 
-function trySend(text: string): SendOutcome {
+async function trySend(text: string): Promise<SendOutcome> {
   const debug: SendDebug = { editors: 0, sendButtons: 0 };
   if (!text.trim()) return { ok: false, reason: 'empty text', debug };
   if (detectSession().state === 'signed-out') {
@@ -201,6 +201,11 @@ function trySend(text: string): SendOutcome {
   ed.focus();
   try {
     if (ed.isContentEditable) {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(ed);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
       document.execCommand('insertText', false, text);
       ed.dispatchEvent(new InputEvent('input', { bubbles: true }));
     } else {
@@ -216,6 +221,8 @@ function trySend(text: string): SendOutcome {
   } catch (e) {
     return { ok: false, reason: `fill failed: ${(e as Error)?.message || e}`, debug };
   }
+  // Let the vendor update its composer and enable the send control.
+  await new Promise((resolve) => setTimeout(resolve, 100));
   const btnSels = ['button[aria-label*="send" i]', 'button[data-testid*="send"]', 'button[type="submit"]'];
   let btn: Element | null = null;
   let btnSel = '';
@@ -237,12 +244,19 @@ function trySend(text: string): SendOutcome {
   debug.sendButtonSel = btnSel;
   if (btn) {
     (btn as HTMLButtonElement).click();
-    return { ok: true, method: `button:${btnSel}`, debug };
+  } else {
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      ed.dispatchEvent(new KeyboardEvent(type, { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13 }));
+    }
   }
-  for (const type of ['keydown', 'keypress', 'keyup']) {
-    ed.dispatchEvent(new KeyboardEvent(type, { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13 }));
+  // Synthetic events can be ignored. Do not mark a message sent while it is
+  // still sitting in the composer.
+  for (let attempt = 0; attempt < 40; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const remaining = ed.isContentEditable ? ed.innerText : (ed as HTMLTextAreaElement).value;
+    if (!remaining?.trim()) return { ok: true, method: btn ? `button:${btnSel}` : 'enter-key', debug };
   }
-  return { ok: true, method: 'enter-key', debug };
+  return { ok: false, reason: 'The agent did not accept the message. Open the conversation, then retry.', debug };
 }
 
 setTimeout(() => push('load'), 4000);
@@ -255,10 +269,10 @@ ipcRenderer.on('blibs:collect-now', (_e, msg: { reqId?: string }) => {
   push('manual');
 });
 
-ipcRenderer.on('blibs:send', (_e, msg: { reqId?: string; text?: unknown }) => {
+ipcRenderer.on('blibs:send', async (_e, msg: { reqId?: string; text?: unknown }) => {
   let r: SendOutcome;
   try {
-    r = trySend(String(msg?.text || ''));
+    r = await trySend(String(msg?.text || ''));
   } catch (e) {
     r = { ok: false, reason: `send crashed: ${(e as Error)?.message || e}`, debug: { editors: 0, sendButtons: 0 } };
   }

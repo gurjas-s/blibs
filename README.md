@@ -67,6 +67,16 @@ backend, the app types it into the matching session and sends it, and the badge
 under your message flips `Sending…` → `Sent` (or `Not delivered` + Retry).
 The agent's reply syncs back on its own.
 
+Use **Enter** to send and **Shift+Enter** for a new line. Each message shows
+**Queued**, **Sent**, or **Not sent**. Select **Retry** on a failed message;
+retrying a queue request does not create a second send. Delivery status keeps
+updating when automatic chat sync is off. Vendor delivery is confirmed when the
+composer clears after sending; this does not guarantee the vendor's server has
+finished processing the message.
+
+Messages retain line breaks and fenced code blocks. New replies keep your
+reading position; select **New messages** to jump to the latest reply.
+
 ## Scripts
 
 | Command | What |
@@ -160,7 +170,8 @@ declares for reference.
 | Weird behavior right after `npm start` | Make sure `ELECTRON_RUN_AS_NODE` is **not** exported in your shell (`unset` it and remove it from `~/.zshrc` — it makes Electron act as plain Node) |
 | Blibs: `Backend unreachable` pill | Backend didn't boot with the app — restart; check the terminal for `[blibs] proxy exited` |
 | `EADDRINUSE` on `:5174`/`:8787` in `npm test` | A previous app instance is still running — quit it first |
-| Send stuck on `Sending…` | Session not logged in or page still loading — use Agents → Log in, then Retry |
+| Message stays `Queued` | Check the agent's sign-in status. Sign in or open its conversation to resume sending. |
+| Message shows `Not sent` | Read the reason below the message, then select **Retry**. |
 | Login lost after restart | Partitions persist per OS user; check you didn't clear app data |
 
 ## Limits (honest POC notes)

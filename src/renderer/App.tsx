@@ -1,70 +1,82 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import './App.css';
 import { SEED_AGENTS, providerFor } from './providers';
 import type { Agent, ChatMessage, VendorSession } from './types';
-import { cleanImportText } from './text';
+import { mergeImports } from './messages';
+import type { ImportedMessage, Messages } from './messages';
 import SessionStatus from './SessionStatus';
+import ChatThread from './ChatThread';
 
 const LS_MSGS = 'blibs-messages-v2';
 const LS_AGENTS = 'blibs-agents-v2';
 const LS_AUTOPULL = 'blibs-autopull-v1';
 const LS_PULLSECS = 'blibs-pullsecs-v1';
 
-function uid() {
-  return Math.random().toString(36).slice(2, 10);
-}
-
 function load<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
+  try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback; } catch { return fallback; }
 }
-
-function timeAgo(ts: number | null): string {
-  if (!ts) return 'not synced yet';
-  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (s < 45) return 'just now';
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+function save(key: string, value: unknown) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Keep this session usable when storage is full. */ }
 }
-
-function clock(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+function timeAgo(timestamp: number | null): string {
+  if (!timestamp) return 'Waiting for chats';
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return 'Synced just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `Synced ${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Synced ${hours} hr ago`;
+  return `Synced ${Math.floor(hours / 24)} days ago`;
+}
+async function request<T>(url: string, body?: unknown): Promise<T> {
+  const response = await fetch(url, body === undefined ? undefined : {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'Could not complete this request. Try again.');
+  return data as T;
 }
 
 export default function App() {
-  const [agents, setAgents] = useState<Agent[]>(() => load(LS_AGENTS, SEED_AGENTS));
-  const [messages, setMessages] = useState<Record<string, ChatMessage[]>>(() => load(LS_MSGS, {}));
-  const [activeId, setActiveId] = useState(agents[0]?.id ?? 'muse');
+  const [agents, setAgents] = useState<Agent[]>(() => {
+    const stored = load<Agent[]>(LS_AGENTS, SEED_AGENTS);
+    return Array.isArray(stored) && stored.length ? stored : SEED_AGENTS;
+  });
+  const [messages, setMessages] = useState<Messages>(() => load(LS_MSGS, {}));
+  const [activeId, setActiveId] = useState(agents[0].id);
   const [query, setQuery] = useState('');
-  const [input, setInput] = useState('');
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
-  const [statusLine, setStatusLine] = useState('Waiting for sync — log in via the Agents menu.');
+  const [retrying, setRetrying] = useState<string[]>([]);
+  const [scrollRequest, setScrollRequest] = useState(0);
+  const [statusLine, setStatusLine] = useState('Choose an agent to view your chats.');
   const [lastPull, setLastPull] = useState<{ at: number; ok: boolean } | null>(null);
-  const [autoPull, setAutoPull] = useState<boolean>(() => load(LS_AUTOPULL, true));
-  const [pullSecs, setPullSecs] = useState<number>(() => load(LS_PULLSECS, 15));
+  const [autoPull, setAutoPull] = useState(() => load(LS_AUTOPULL, true));
+  const [pullSecs, setPullSecs] = useState(() => load(LS_PULLSECS, 15));
   const [sessions, setSessions] = useState<VendorSession[]>([]);
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  const active = agents.find((a) => a.id === activeId) ?? agents[0];
+  const active = agents.find((agent) => agent.id === activeId) || agents[0];
   const meta = providerFor(active);
   const activeSession = sessions.find((session) => session.provider === active.provider);
+  const input = drafts[active.id] || '';
+  const providerKey = JSON.stringify(agents.map(({ id, provider }) => ({ id, provider })));
+  const routes = useMemo(() => JSON.parse(providerKey) as Pick<Agent, 'id' | 'provider'>[], [providerKey]);
 
+  useEffect(() => { save(LS_MSGS, messages); }, [messages]);
+  useEffect(() => { save(LS_AGENTS, agents); }, [agents]);
+  useEffect(() => { save(LS_AUTOPULL, autoPull); }, [autoPull]);
+  useEffect(() => { save(LS_PULLSECS, pullSecs); }, [pullSecs]);
   useEffect(() => {
     let disposed = false;
-    const refresh = async () => {
+    async function refresh() {
       try {
         const next = await window.blibs?.sessions();
         if (!disposed && next) setSessions(next);
-      } catch { /* The next poll retries the desktop connection. */ }
-    };
+      } catch {
+        if (!disposed) setSessions(SEED_AGENTS.map((agent) => ({
+          provider: agent.provider, state: 'error', reason: 'Could not check sign-in. Try opening the agent again.', updatedAt: Date.now(), lastSyncAt: null,
+        })));
+      }
+    }
     void refresh();
     const timer = setInterval(() => { void refresh(); }, 5000);
     return () => { disposed = true; clearInterval(timer); };
@@ -80,316 +92,151 @@ export default function App() {
     }
   }
 
-  const messagesRef = useRef(messages);
-  const agentsRef = useRef(agents);
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-  useEffect(() => {
-    agentsRef.current = agents;
-  }, [agents]);
-  useEffect(() => {
-    localStorage.setItem(LS_MSGS, JSON.stringify(messages));
-  }, [messages]);
-  useEffect(() => {
-    localStorage.setItem(LS_AGENTS, JSON.stringify(agents));
-  }, [agents]);
-  useEffect(() => {
-    localStorage.setItem(LS_AUTOPULL, JSON.stringify(autoPull));
-  }, [autoPull]);
-  useEffect(() => {
-    localStorage.setItem(LS_PULLSECS, JSON.stringify(pullSecs));
-  }, [pullSecs]);
-
-  const thread = useMemo(() => {
-    const list = [...(messages[active.id] ?? [])].sort((a, b) => a.ts - b.ts);
-    const q = query.trim().toLowerCase();
-    return q ? list.filter((m) => m.text.toLowerCase().includes(q)) : list;
-  }, [messages, active.id, query]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: query ? 'auto' : 'smooth', block: 'end' });
-  }, [thread.length, activeId, query]);
-
-  /** Merge desktop imports, cleaning scrape artifacts and collapsing
-   *  echoes of messages already sent from here (the "double message" bug). */
-  async function pullImports(silent = false) {
-    if (!silent) setStatusLine('Syncing…');
+  const pullImports = useCallback(async (silent = false) => {
+    if (!silent) setStatusLine('Syncing your chats…');
     try {
-      const res = await fetch('/api/imports');
-      if (!res.ok) throw new Error(`proxy HTTP ${res.status}`);
-      const data = await res.json();
-      const items: { provider: string; role: string; text: string; ts: number }[] = data?.imports ?? [];
-      const cur = messagesRef.current;
-      const ags = agentsRef.current;
-      const next: typeof cur = { ...cur };
-      let merged = 0;
-      for (const it of items) {
-        const text = cleanImportText(it.text || '');
-        if (!text) continue;
-        const prov = String(it.provider || 'custom');
-        const target = ags.find((a) => a.provider === prov)?.id;
-        if (!target) continue;
-        const norm = text.toLowerCase();
-        const dup = (next[target] ?? []).some((m) => cleanImportText(m.text).toLowerCase() === norm);
-        if (dup) continue;
-        next[target] = [
-          ...(next[target] ?? []),
-          {
-            id: uid(),
-            agentId: target,
-            role: it.role === 'agent' ? 'agent' : 'user',
-            text,
-            ts: Number(it.ts) || Date.now(),
-            source: 'desktop',
-          },
-        ];
-        merged++;
-      }
-      if (merged) {
-        setMessages(next);
-        const now = Date.now();
-        setAgents((list) =>
-          list.map((a) => (next[a.id] && next[a.id].length !== (cur[a.id] ?? []).length ? { ...a, lastSyncAt: now } : a)),
-        );
-      }
+      const data = await request<{ imports: ImportedMessage[] }>('/api/imports');
+      setMessages((current) => mergeImports(current, routes, data.imports));
+      const latest = new Map<string, number>();
+      for (const message of data.imports) latest.set(message.provider, Math.max(latest.get(message.provider) || 0, message.ts));
+      setAgents((current) => current.map((agent) => {
+        const timestamp = latest.get(agent.provider);
+        return timestamp && timestamp > (agent.lastSyncAt || 0) ? { ...agent, lastSyncAt: timestamp } : agent;
+      }));
       setLastPull({ at: Date.now(), ok: true });
-      setStatusLine(
-        merged
-          ? `${merged} new message${merged === 1 ? '' : 's'} synced`
-          : 'Up to date — new chats appear here automatically',
-      );
+      if (!silent) setStatusLine('Your chats are up to date.');
     } catch {
       setLastPull({ at: Date.now(), ok: false });
-      setStatusLine('Backend unreachable — restart the app.');
+      if (!silent) setStatusLine('Could not sync your chats. Select Sync now to try again.');
     }
-  }
-
-  async function syncOutboxStatuses() {
-    try {
-      const res = await fetch('/api/outbox');
-      if (!res.ok) return;
-      const data = await res.json();
-      const byId = new Map<string, string>((data?.items ?? []).map((o: { id: string; status: string }) => [o.id, o.status]));
-      if (!byId.size) return;
-      const cur = messagesRef.current;
-      let changed = false;
-      const next: typeof cur = {};
-      for (const [agentId, list] of Object.entries(cur)) {
-        next[agentId] = list.map((m) => {
-          if (!m.outId) return m;
-          const st = byId.get(m.outId) as ChatMessage['outStatus'] | undefined;
-          if (st && st !== m.outStatus) {
-            changed = true;
-            return { ...m, outStatus: st };
-          }
-          return m;
-        });
-      }
-      if (changed) setMessages(next);
-    } catch {
-      /* proxy down — status line already says so */
-    }
-  }
+  }, [routes]);
 
   useEffect(() => {
-    pullImports(true);
+    // eslint-disable-next-line react/set-state-in-effect -- This starts a fetch; state updates occur after its response.
+    void pullImports(true);
     if (!autoPull) return;
-    const id = setInterval(() => {
-      pullImports(true);
-      syncOutboxStatuses();
-    }, Math.max(5, pullSecs) * 1000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoPull, pullSecs]);
+    const timer = setInterval(() => { void pullImports(true); }, Math.max(5, pullSecs) * 1000);
+    return () => clearInterval(timer);
+  }, [autoPull, pullSecs, pullImports]);
 
-  /** Send into the real vendor session via the outbox. */
+  useEffect(() => {
+    let disposed = false;
+    async function refresh() {
+      try {
+        const data = await request<{ items: { id: string; status: ChatMessage['outStatus']; error?: string }[] }>('/api/outbox');
+        if (disposed) return;
+        const byId = new Map(data.items.map((item) => [item.id, item]));
+        setMessages((current) => {
+          let changed = false;
+          const next: Messages = {};
+          for (const [id, list] of Object.entries(current)) next[id] = list.map((message) => {
+            const item = message.outId && byId.get(message.outId);
+            if (!item || (item.status === message.outStatus && item.error === message.outError)) return message;
+            changed = true;
+            return { ...message, outStatus: item.status, outError: item.error };
+          });
+          return changed ? next : current;
+        });
+      } catch { /* Retain delivery states and retry on the next tick. */ }
+    }
+    void refresh();
+    const timer = setInterval(() => { void refresh(); }, 2000);
+    return () => { disposed = true; clearInterval(timer); };
+  }, []);
+
+  const thread = useMemo(() => {
+    const list = [...(messages[active.id] || [])].sort((a, b) => a.ts - b.ts);
+    const term = query.trim().toLowerCase();
+    return term ? list.filter((message) => message.text.toLowerCase().includes(term)) : list;
+  }, [messages, active.id, query]);
+
+  function updateMessage(message: ChatMessage, changes: Partial<ChatMessage>) {
+    setMessages((current) => ({ ...current, [message.agentId]: (current[message.agentId] || []).map((item) => item.id === message.id ? { ...item, ...changes } : item) }));
+  }
+  async function queue(message: ChatMessage, provider: string) {
+    try {
+      const data = await request<{ id: string; status: ChatMessage['outStatus'] }>('/api/outbox', { provider, text: message.text, clientId: message.id });
+      updateMessage(message, { outId: data.id, outStatus: data.status || 'queued', outError: undefined });
+      setStatusLine('Message queued. It will send when the agent is connected.');
+    } catch (error) {
+      updateMessage(message, { outStatus: 'failed', outError: 'Could not queue this message. Select Retry to try again.' });
+      setStatusLine(error instanceof Error ? error.message : 'Could not queue your message. Try again.');
+    }
+  }
   async function send() {
     const text = input.trim();
     if (!text || sending) return;
+    const message: ChatMessage = { id: crypto.randomUUID(), agentId: active.id, role: 'user', text, ts: Date.now(), source: 'desktop', via: 'tab', outStatus: 'queued' };
     setSending(true);
-    setInput('');
-    const userMsg: ChatMessage = {
-      id: uid(), agentId: active.id, role: 'user', text,
-      ts: Date.now(), source: 'desktop', via: 'tab', outStatus: 'queued',
-    };
-    setMessages((m) => ({ ...m, [active.id]: [...(m[active.id] ?? []), userMsg] }));
-    try {
-      const res = await fetch('/api/outbox', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: meta.id, text }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.id) throw new Error(data?.error || `proxy HTTP ${res.status}`);
-      const outId = data.id as string;
-      setMessages((m) => ({
-        ...m,
-        [active.id]: (m[active.id] ?? []).map((x) => (x.id === userMsg.id ? { ...x, outId } : x)),
-      }));
-      setStatusLine(`Sent to your logged-in ${meta.product} session — its reply syncs back automatically.`);
-    } catch (e) {
-      setMessages((m) => ({
-        ...m,
-        [active.id]: (m[active.id] ?? []).map((x) =>
-          x.id === userMsg.id ? { ...x, outStatus: 'failed' as const } : x,
-        ),
-      }));
-      setStatusLine(`Could not queue (${String(e)}). Is the backend running? Your text is kept — retry below.`);
-    }
+    setDrafts((current) => ({ ...current, [active.id]: '' }));
+    setMessages((current) => ({ ...current, [active.id]: [...(current[active.id] || []), message] }));
+    setScrollRequest((value) => value + 1);
+    await queue(message, meta.id);
     setSending(false);
   }
-
-  async function retryOutbox(outId: string) {
+  async function retry(message: ChatMessage) {
+    if (retrying.includes(message.id)) return;
+    setRetrying((current) => [...current, message.id]);
     try {
-      const res = await fetch('/api/outbox/retry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: outId }),
-      });
-      if (!res.ok) throw new Error(`proxy HTTP ${res.status}`);
-      setMessages((m) => {
-        const next = { ...m };
-        for (const [agentId, list] of Object.entries(next)) {
-          next[agentId] = list.map((x) => (x.outId === outId ? { ...x, outStatus: 'queued' as const } : x));
-        }
-        return next;
-      });
-      setStatusLine('Re-queued — the app picks it up within a minute.');
+      if (!message.outId) await queue(message, agents.find((agent) => agent.id === message.agentId)!.provider);
+      else {
+        await request('/api/outbox/retry', { id: message.outId });
+        updateMessage(message, { outStatus: 'queued', outError: undefined });
+        setStatusLine('Message queued again. It will send when the agent is connected.');
+      }
     } catch {
-      setStatusLine('Retry failed — is the backend running?');
-    }
+      updateMessage(message, { outError: 'Could not retry this message. Check your connection and try again.' });
+    } finally { setRetrying((current) => current.filter((id) => id !== message.id)); }
   }
 
-  const pill = !lastPull
-    ? { cls: 'idle', label: 'Waiting for sync' }
-    : lastPull.ok
-      ? { cls: 'live', label: `Synced ${clock(lastPull.at)}` }
-      : { cls: 'down', label: 'Backend unreachable' };
+  const pillLabel = lastPull?.ok ? 'Chats connected' : lastPull ? 'Sync unavailable' : 'Connecting';
+  const empty = <div className="empty">
+    <p className="empty-title">{query ? 'No matching messages' : activeSession?.state === 'signed-out' ? `Sign in to ${active.name}` : activeSession?.state === 'error' ? `Could not connect to ${active.name}` : activeSession?.state === 'ready' ? 'Waiting for your first chat' : `Connecting to ${active.name}`}</p>
+    <p>{query ? 'Try a different search.' : activeSession?.state === 'ready' ? `Open a conversation in ${active.name}. Your messages will appear here automatically.` : activeSession?.reason || 'Checking your saved sign-in. This may take a moment.'}</p>
+    {!query && <button className="sign-in" onClick={() => signIn(active.provider)}>{activeSession?.state === 'ready' ? `Open ${active.name}` : `Sign in to ${active.name}`}</button>}
+  </div>;
 
-  return (
-    <div className="shell">
-      <header className="topbar">
-        <div className="brand">
-          <span className="mark">b</span>
-          <strong>blibs</strong>
-        </div>
-        <div className="search">
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={`Search ${active.name}…`}
-            aria-label="Search current chat"
-          />
-        </div>
-        <div className={`sync-pill ${pill.cls}`} title={statusLine}>
-          <span className="dot" />
-          {pill.label}
-        </div>
-      </header>
-
-      <div className="layout">
-        <aside className="sidebar">
-          <p className="section-label">Agents</p>
-          {agents.map((a) => (
-            <div key={a.id} className={`agent ${a.id === activeId ? 'active' : ''}`}>
-              <button className="agent-main" onClick={() => setActiveId(a.id)}>
-                <span className="avatar">{a.name.charAt(0)}</span>
-                <span className="ameta">
-                  <span className="aname">{a.name}</span>
-                  <span className="avendor">{a.vendor}</span>
-                  <SessionStatus session={sessions.find((session) => session.provider === a.provider)} />
-                  <span className="async">{a.lastSyncAt ? `Synced ${timeAgo(a.lastSyncAt)}` : 'Waiting for chats'}</span>
-                </span>
-              </button>
-              <a className="open-tab" href={a.site} target="_blank" rel="noreferrer" title={`Open ${a.name} in a new tab`}>
-                ↗
-              </a>
-              {sessions.find((session) => session.provider === a.provider)?.state === 'signed-out' && (
-                <button className="sign-in" onClick={() => signIn(a.provider)} aria-label={`Sign in to ${a.name}`}>Sign in</button>
-              )}
-            </div>
-          ))}
-          <div className="side-foot">
-            <label className="auto-row" title="Pull synced chats on a timer">
-              <input type="checkbox" checked={autoPull} onChange={(e) => setAutoPull(e.target.checked)} />
-              Auto-sync
-              <select value={pullSecs} onChange={(e) => setPullSecs(Number(e.target.value))} aria-label="Auto-sync interval">
-                <option value={15}>15s</option>
-                <option value={30}>30s</option>
-                <option value={60}>1m</option>
-                <option value={300}>5m</option>
-              </select>
-            </label>
-            <p>Sessions live inside this app — use the Agents menu to log in.</p>
-          </div>
-        </aside>
-
-        <main className="main">
-          <div className="thread-head">
-            <div>
-              <h1>{active.name}</h1>
-              <p>{active.description}</p>
-            </div>
-            <a className="open-tab big" href={active.site} target="_blank" rel="noreferrer">
-              Open {active.name} ↗
-            </a>
-          </div>
-
-          <div className="thread">
-            {activeSession?.state === 'signed-out' && (
-              <div className="session-notice" role="status">
-                <p>Sign in to {active.name} to sync your chats. Your saved messages are still here.</p>
-                <button className="sign-in" onClick={() => signIn(active.provider)}>Sign in to {active.name}</button>
-              </div>
-            )}
-            {thread.length === 0 && (
-              <div className="empty">
-                <p className="empty-title">{query ? 'No matches' : `No chats with ${active.name} yet`}</p>
-                {!query && (
-                  <ol>
-                    <li>Log in via the Agents menu (once per agent)</li>
-                    <li>Chats sync here on their own — replies you send go to the real session</li>
-                  </ol>
-                )}
-              </div>
-            )}
-            {thread.map((m) => (
-              <div key={m.id} className={`msg ${m.role}`} title={new Date(m.ts).toLocaleString()}>
-                <p>{m.text}</p>
-                {m.role === 'user' && m.via === 'tab' && m.outStatus && m.outStatus !== 'sent' && (
-                  <span className={`receipt ${m.outStatus}`}>
-                    {m.outStatus === 'queued' ? 'Sending…' : 'Not delivered'}
-                    {m.outStatus === 'failed' && m.outId && (
-                      <button onClick={() => retryOutbox(m.outId!)}>Retry</button>
-                    )}
-                  </span>
-                )}
-                {m.role === 'user' && m.via === 'tab' && m.outStatus === 'sent' && (
-                  <span className="receipt sent">Sent</span>
-                )}
-              </div>
-            ))}
-            <div ref={bottomRef} />
-          </div>
-
-          <div className="composer">
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') send();
-              }}
-              placeholder={`Message ${active.name}…`}
-              aria-label={`Message ${active.name}`}
-            />
-            <button className="primary" onClick={send} disabled={sending || !input.trim()}>
-              Send
+  return <div className="shell">
+    <header className="topbar">
+      <div className="brand"><span className="mark" aria-hidden="true">b</span><strong>blibs</strong></div>
+      <div className="search"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${active.name}…`} aria-label="Search current chat" /></div>
+      <div className={`sync-pill ${lastPull?.ok ? 'live' : lastPull ? 'down' : 'idle'}`} role="status"><span className="dot" aria-hidden="true" />{pillLabel}</div>
+    </header>
+    <div className="layout">
+      <aside className="sidebar" aria-label="Agents">
+        <p className="section-label">Agents</p>
+        <div className="agent-list">{agents.map((agent) => {
+          const session = sessions.find((item) => item.provider === agent.provider);
+          return <div key={agent.id} className={`agent-card ${agent.id === active.id ? 'active' : ''}`}>
+            <button className="agent-main" aria-pressed={agent.id === active.id} onClick={() => { setActiveId(agent.id); setQuery(''); }}>
+              <span className="avatar" aria-hidden="true">{agent.name.charAt(0)}</span>
+              <span className="ameta"><span className="aname">{agent.name}</span><span className="avendor">{agent.vendor}</span>
+                <SessionStatus session={session} /><span className="async">{timeAgo(session?.lastSyncAt || agent.lastSyncAt)}</span>
+              </span>
             </button>
-          </div>
-          <p className="status-line">{statusLine}</p>
-        </main>
-      </div>
+            {session?.state === 'error' && <p className="agent-error">{session.reason}</p>}
+            {session?.state !== 'ready' && <button className="sign-in" onClick={() => signIn(agent.provider)} aria-label={`Sign in to ${agent.name}`}>Sign in</button>}
+          </div>;
+        })}</div>
+        <div className="side-foot">
+          <button className="sign-in" onClick={() => pullImports()}>Sync now</button>
+          <label className="auto-row"><input type="checkbox" checked={autoPull} onChange={(event) => setAutoPull(event.target.checked)} />Sync automatically</label>
+          <label className="interval-row">Check every <select value={pullSecs} onChange={(event) => setPullSecs(Number(event.target.value))} aria-label="Sync frequency">
+            <option value={15}>15 seconds</option><option value={30}>30 seconds</option><option value={60}>1 minute</option><option value={300}>5 minutes</option>
+          </select></label>
+        </div>
+      </aside>
+      <main className="main">
+        <div className="thread-head"><div><h1>{active.name}</h1><SessionStatus session={activeSession} /></div><button className="sign-in" onClick={() => signIn(active.provider)}>{activeSession?.state === 'ready' ? `Open ${active.name}` : `Sign in to ${active.name}`}</button></div>
+        {lastPull && !lastPull.ok && <div className="connection-notice" role="alert">Chats could not sync. Your saved messages are still available. <button onClick={() => pullImports()}>Try again</button></div>}
+        <ChatThread key={active.id} messages={thread} agentName={active.name} query={query} empty={empty} onRetry={retry} retrying={retrying} scrollRequest={scrollRequest}
+          notice={activeSession?.state === 'signed-out' && thread.length > 0 ? <div className="session-notice" role="status"><p>Sign in to {active.name} to sync new chats and send queued messages.</p><button className="sign-in" onClick={() => signIn(active.provider)}>Sign in to {active.name}</button></div> : undefined} />
+        <div className="composer"><textarea value={input} rows={2} maxLength={4000} onChange={(event) => setDrafts((current) => ({ ...current, [active.id]: event.target.value }))} onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); }
+        }} placeholder={`Message ${active.name}…`} aria-label={`Message ${active.name}`} /><button className="primary" onClick={send} disabled={sending || !input.trim()}>{sending ? 'Queuing…' : 'Send'}</button></div>
+        <p className="composer-hint">Enter to send · Shift+Enter for a new line</p>
+        <p className="status-line" role="status">{statusLine}</p>
+      </main>
     </div>
-  );
+  </div>;
 }
