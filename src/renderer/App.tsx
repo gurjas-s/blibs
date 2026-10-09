@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { SEED_AGENTS, providerFor } from './providers';
-import type { Agent, ChatMessage } from './types';
+import type { Agent, ChatMessage, VendorSession } from './types';
 import { cleanImportText } from './text';
+import SessionStatus from './SessionStatus';
 
 const LS_MSGS = 'blibs-messages-v2';
 const LS_AGENTS = 'blibs-agents-v2';
@@ -49,10 +50,35 @@ export default function App() {
   const [lastPull, setLastPull] = useState<{ at: number; ok: boolean } | null>(null);
   const [autoPull, setAutoPull] = useState<boolean>(() => load(LS_AUTOPULL, true));
   const [pullSecs, setPullSecs] = useState<number>(() => load(LS_PULLSECS, 15));
+  const [sessions, setSessions] = useState<VendorSession[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const active = agents.find((a) => a.id === activeId) ?? agents[0];
   const meta = providerFor(active);
+  const activeSession = sessions.find((session) => session.provider === active.provider);
+
+  useEffect(() => {
+    let disposed = false;
+    const refresh = async () => {
+      try {
+        const next = await window.blibs?.sessions();
+        if (!disposed && next) setSessions(next);
+      } catch { /* The next poll retries the desktop connection. */ }
+    };
+    void refresh();
+    const timer = setInterval(() => { void refresh(); }, 5000);
+    return () => { disposed = true; clearInterval(timer); };
+  }, []);
+
+  async function signIn(provider: string) {
+    try {
+      if (!window.blibs) throw new Error('Open the desktop app to sign in.');
+      await window.blibs.signIn(provider);
+      setStatusLine('Complete sign-in in the window that opened. Your chats will sync automatically.');
+    } catch (error) {
+      setStatusLine(error instanceof Error ? error.message : 'Could not open sign-in. Try again.');
+    }
+  }
 
   const messagesRef = useRef(messages);
   const agentsRef = useRef(agents);
@@ -272,15 +298,16 @@ export default function App() {
                 <span className="ameta">
                   <span className="aname">{a.name}</span>
                   <span className="avendor">{a.vendor}</span>
-                  <span className={`async ${a.lastSyncAt ? 'live' : ''}`}>
-                    <span className="dot" />
-                    {a.lastSyncAt ? `synced ${timeAgo(a.lastSyncAt)}` : 'not synced yet'}
-                  </span>
+                  <SessionStatus session={sessions.find((session) => session.provider === a.provider)} />
+                  <span className="async">{a.lastSyncAt ? `Synced ${timeAgo(a.lastSyncAt)}` : 'Waiting for chats'}</span>
                 </span>
               </button>
               <a className="open-tab" href={a.site} target="_blank" rel="noreferrer" title={`Open ${a.name} in a new tab`}>
                 ↗
               </a>
+              {sessions.find((session) => session.provider === a.provider)?.state === 'signed-out' && (
+                <button className="sign-in" onClick={() => signIn(a.provider)} aria-label={`Sign in to ${a.name}`}>Sign in</button>
+              )}
             </div>
           ))}
           <div className="side-foot">
@@ -310,6 +337,12 @@ export default function App() {
           </div>
 
           <div className="thread">
+            {activeSession?.state === 'signed-out' && (
+              <div className="session-notice" role="status">
+                <p>Sign in to {active.name} to sync your chats. Your saved messages are still here.</p>
+                <button className="sign-in" onClick={() => signIn(active.provider)}>Sign in to {active.name}</button>
+              </div>
+            )}
             {thread.length === 0 && (
               <div className="empty">
                 <p className="empty-title">{query ? 'No matches' : `No chats with ${active.name} yet`}</p>

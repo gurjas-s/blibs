@@ -33,3 +33,13 @@ export interface ProviderMeta {
   site: string;
   blurb: string;
 }
+
+export type { VendorSession } from '../preload/agent';
+declare global {
+  interface Window {
+    blibs?: {
+      sessions(): Promise<import('../preload/agent').VendorSession[]>;
+      signIn(provider: string): Promise<{ ok: boolean }>;
+    };
+  }
+}

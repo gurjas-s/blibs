@@ -103,6 +103,7 @@ button { font: inherit; cursor: pointer; }
   margin: 0 8px 8px;
 }
 .agent {
+  flex-wrap: wrap;
   display: flex; align-items: center; gap: 4px;
   border-radius: var(--radius);
   border: 1px solid transparent;
@@ -131,6 +132,16 @@ button { font: inherit; cursor: pointer; }
 .async { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--faint); margin-top: 2px; }
 .async .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
 .async.live .dot { background: var(--green); }
+.session-status { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dim); }
+.session-status .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
+.session-status.ready .dot { background: var(--green); }
+.session-status.signed-out, .session-status.error { color: var(--red); }
+.session-status.signed-out .dot, .session-status.error .dot { background: var(--red); }
+.sign-in { border: 1px solid var(--line); background: var(--raised); color: var(--text); border-radius: 7px; padding: 6px 10px; }
+.sign-in:hover { border-color: var(--accent); }
+.agent > .sign-in { margin: 0 8px 6px 53px; }
+.session-notice { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; background: var(--panel); }
+.session-notice p { margin: 0 0 8px; }
 .open-tab {
   color: var(--faint); text-decoration: none;
   font-size: 14px; padding: 6px 8px; border-radius: 7px;

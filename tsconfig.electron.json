@@ -21,5 +21,5 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["src/main/index.ts", "src/preload/agent.ts"]
+  "include": ["src/main/index.ts", "src/preload/*.ts"]
 }

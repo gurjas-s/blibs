@@ -8,9 +8,9 @@
 import { ipcRenderer } from 'electron';
 
 const PROVIDER_BY_HOST: Array<[RegExp, string]> = [
-  [/muse\.ai$/, 'muse'],
-  [/chatgpt\.com$/, 'dots'],
-  [/grok\.com$/, 'grok'],
+  [/(^|\.)muse\.ai$/, 'muse'],
+  [/(^|\.)chatgpt\.com$/, 'dots'],
+  [/(^|\.)grok\.com$/, 'grok'],
 ];
 
 function detectProvider(): string {
@@ -110,6 +110,8 @@ let pushedOnce = false;
 
 function push(reason: string): void {
   try {
+    const session = reportSession();
+    if (session.state !== 'ready') return;
     const payload = collect();
     if (!payload.items.length && pushedOnce) return;
     pushedOnce = true;
@@ -128,6 +130,49 @@ function visible(el: Element): boolean {
   }
 }
 
+export type SessionState = 'loading' | 'ready' | 'signed-out' | 'error';
+export interface SessionReport {
+  state: SessionState;
+  reason: string;
+}
+export interface VendorSession extends SessionReport {
+  provider: string;
+  updatedAt: number;
+  lastSyncAt: number | null;
+}
+
+/** Use explicit login signals; an empty conversation alone is not a login wall. */
+export function detectSession(): SessionReport {
+  const loginPath = /\/(login|log-in|signin|sign-in)(\/|$)|\/auth\/(login|signin|sign-in)/i;
+  if (loginPath.test(location.pathname) || /(^|\.)auth\.openai\.com$/.test(location.hostname)) {
+    return { state: 'signed-out', reason: 'Sign in to sync your chats.' };
+  }
+  if (detectProvider() === 'custom') {
+    return { state: 'error', reason: 'Open the agent conversation to resume syncing.' };
+  }
+  const hasVisible = (selector: string) => [...document.querySelectorAll(selector)].some(visible);
+  // Signed-in controls take precedence over navigation links to login pages.
+  if (hasVisible('[data-testid="profile-button"], [data-testid="user-menu"], button[aria-label*="account" i], a[href*="logout"]')) {
+    return { state: 'ready', reason: 'Signed in. Chats sync automatically.' };
+  }
+  const loginButton = [...document.querySelectorAll('button, a')].some((element) =>
+    visible(element) && /^(log in|sign in)\b/i.test((element.textContent || '').trim()),
+  );
+  if (loginButton || hasVisible('button[data-testid="login-button"], a[href*="/auth/login"], a[href="/login"], form input[type="password"]')) {
+    return { state: 'signed-out', reason: 'Sign in to sync your chats.' };
+  }
+  if (hasVisible('div[contenteditable="true"], textarea, [role="textbox"]')) {
+    return { state: 'ready', reason: 'Signed in. Chats sync automatically.' };
+  }
+  return { state: 'loading', reason: 'Waiting for the conversation to load.' };
+}
+
+function reportSession(): SessionReport {
+  const session = detectSession();
+  ipcRenderer.send('blibs:session', session);
+  return session;
+}
+
 interface SendDebug {
   editors: number;
   sendButtons: number;
@@ -144,6 +189,9 @@ interface SendOutcome {
 function trySend(text: string): SendOutcome {
   const debug: SendDebug = { editors: 0, sendButtons: 0 };
   if (!text.trim()) return { ok: false, reason: 'empty text', debug };
+  if (detectSession().state === 'signed-out') {
+    return { ok: false, reason: 'Sign in before sending this message.', debug };
+  }
   const editors = [
     ...document.querySelectorAll('div[contenteditable="true"], textarea, [role="textbox"]'),
   ].filter(visible);
@@ -201,7 +249,8 @@ setTimeout(() => push('load'), 4000);
 setTimeout(() => push('load-late'), 12000);
 
 ipcRenderer.on('blibs:collect-now', (_e, msg: { reqId?: string }) => {
-  const payload = collect();
+  const session = reportSession();
+  const payload = session.state === 'ready' ? collect() : { items: [] };
   ipcRenderer.send('blibs:collect-result', { reqId: msg?.reqId, ok: true, ...payload });
   push('manual');
 });
@@ -244,3 +293,4 @@ try {
   /* observer unavailable — sweep covers us */
 }
 setInterval(() => push('interval'), 60000);
+setInterval(() => reportSession(), 15000);
