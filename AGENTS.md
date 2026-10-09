@@ -36,15 +36,13 @@ Keep `--force` in the TypeScript build command.
 ## Contributions
 
 - Use one branch and focused commit per issue. Explain the behavior and validation in the PR.
+- **Write all PR descriptions, titles, comments, and review feedback in ast100-ste language.**
 - Keep new logic typed and test changes that affect delivery, storage, or session state.
-- Use plain, task-oriented language. Follow the Google developer documentation
-  style guide when project usage does not answer a writing question.
+- Use plain, task-oriented language. Follow the Google developer documentation style guide when project usage does not answer a writing question.
 - Keep the flat slate theme with one accent color.
 - Do not edit or commit `build/`, `dist/`, `node_modules/`, real chat data, or credentials.
-- Keep vendor session access in the main process and preload. Validate IPC senders
-  and do not expose arbitrary IPC or navigation to the renderer.
-- Keep session credentials in Electron's persistent partitions. Ask the user to
-  sign in when a vendor requires credentials or a CAPTCHA.
+- Keep vendor session access in the main process and preload. Validate IPC senders and do not expose arbitrary IPC or navigation to the renderer.
+- Keep session credentials in Electron's persistent partitions. Ask the user to sign in when a vendor requires credentials or a CAPTCHA.
 
 ## CI
 
