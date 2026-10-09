@@ -162,7 +162,7 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
 
       // Main process polls this: oldest queued messages first.
       if (req.url === '/api/outbox/pending' && req.method === 'GET') {
-        const items = loadOutbox().filter((m) => m.status === 'queued').slice(0, 20);
+        const items = loadOutbox().filter((m) => m.status === 'queued');
         return send(res, 200, { items });
       }
 

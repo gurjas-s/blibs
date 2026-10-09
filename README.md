@@ -33,6 +33,12 @@ Then **Agents → Log in to Muse / Dots / Grok** (once each). The login window
 shares cookies with the hidden sync view, so after login you can close it —
 syncing continues in the background.
 
+You can also select **Sign in** beside an agent in the panel. blibs checks saved
+sessions on startup and shows each agent's connection state. If a session
+expires, saved chats stay available and queued replies wait for sign-in.
+Complete any required password or verification step in the vendor's sign-in
+window. Repeated sign-in requests focus the same window.
+
 > **If `npm start` fails with `Electron failed to install correctly`:** npm ≥ 11
 > gates install scripts, so Electron's binary download never ran. Fix:
 >
@@ -103,8 +109,9 @@ scripts/
 ```
 
 Generated, never edited or committed: `build/` (compiled main/preload/backend),
-`dist/` (bundled panel), `node_modules/`. Runtime data (`server/imports.json`,
-`server/outbox.json`) is gitignored and recreated on demand. Panel state lives in
+`dist/` (bundled panel), `node_modules/`. The desktop app stores runtime data in
+the `chats` directory under Electron's user data directory. Tests set
+`BLIBS_DATA_DIR` to a temporary directory. Panel state lives in
 `localStorage` (`blibs-messages-v2`, `blibs-agents-v2`, …) — swap for a DB + OAuth
 in production.
 

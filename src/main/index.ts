@@ -15,6 +15,7 @@
 // Run: npm install && npm run build && npm start
 import { app, BrowserWindow, BrowserView, Menu, ipcMain } from 'electron';
 import type { IpcMainEvent } from 'electron';
+import type { SessionReport, VendorSession } from '../preload/agent';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import http from 'node:http';
@@ -26,6 +27,7 @@ export const UI_PORT = Number(process.env.BLIBS_UI_PORT || 5173 + 1);
 const ROOT = path.join(__dirname, '..', '..');
 const DIST = path.join(ROOT, 'dist');
 const PRELOAD = path.join(__dirname, '..', 'preload', 'agent.js');
+const PANEL_PRELOAD = path.join(__dirname, '..', 'preload', 'panel.js');
 const PROXY_ENTRY = path.join(__dirname, '..', 'server', 'proxy.js');
 
 interface Vendor {
@@ -55,7 +57,14 @@ let mainWin: BrowserWindow | null = null;
 export const _views = new Map<string, BrowserView>();
 /** reqId -> resolve (main -> preload request/response) */
 export const _pending = new Map<string, (result: CollectResult | SendResult) => void>();
+const pendingSenders = new Map<string, Electron.WebContents>();
 let reqSeq = 0;
+const loginWindows = new Map<string, BrowserWindow>();
+const loginReady = new Set<string>();
+export const _sessions = new Map<string, VendorSession>(VENDORS.map((vendor) => [vendor.id, {
+  provider: vendor.id, state: 'loading', reason: 'Checking your saved session.', updatedAt: Date.now(), lastSyncAt: null,
+}]));
+let draining: Promise<{ drained: number; error?: string }> | null = null;
 
 interface ScrapeItem {
   provider?: unknown;
@@ -113,7 +122,10 @@ export function startProxy(): ChildProcess {
   if (proxyChild) return proxyChild;
   proxyChild = spawn(process.execPath, [PROXY_ENTRY], {
     stdio: 'inherit',
-    env: { ...process.env, PROXY_PORT: String(PROXY_PORT) },
+    env: {
+      ...process.env, PROXY_PORT: String(PROXY_PORT), ELECTRON_RUN_AS_NODE: '1',
+      BLIBS_DATA_DIR: process.env.BLIBS_DATA_DIR || path.join(app.getPath('userData'), 'chats'),
+    },
   });
   proxyChild.on('exit', (code) => {
     console.error(`[blibs] proxy exited (${code})`);
@@ -191,6 +203,8 @@ function createMainWindow(): BrowserWindow {
     height: 860,
     title: 'blibs',
     backgroundColor: '#101216',
+    show: !process.argv.includes('--blibs-smoke'),
+    webPreferences: { preload: PANEL_PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   void mainWin.loadURL(`http://127.0.0.1:${UI_PORT}/`);
   mainWin.on('closed', () => {
@@ -204,27 +218,67 @@ function attachVendorViews(): void {
   for (const v of VENDORS) {
     if (_views.has(v.id)) continue;
     const view = new BrowserView({
-      webPreferences: { preload: PRELOAD, partition: v.partition },
+      webPreferences: { preload: PRELOAD, partition: v.partition, backgroundThrottling: false },
     });
-    mainWin.addBrowserView(view);
-    view.setBounds({ x: 0, y: 0, width: 0, height: 0 }); // hidden but alive
+    // Keep a usable viewport for DOM visibility checks without covering the panel.
+    view.setBounds({ x: 0, y: 0, width: 1100, height: 800 });
+    view.webContents.on('did-start-loading', () => {
+      setSession(v.id, { state: 'loading', reason: 'Loading your conversation.' });
+    });
+    view.webContents.on('did-fail-load', (_event, code, description) => {
+      if (code !== -3) setSession(v.id, { state: 'error', reason: `Could not load ${v.name}: ${description}` });
+    });
     void view.webContents.loadURL(v.url);
     _views.set(v.id, view);
   }
 }
 
 /** Visible login window sharing the hidden view's partition (same cookies). */
-function openLogin(vendorId: string): void {
+export function openLogin(vendorId: string): void {
   const v = VENDORS.find((x) => x.id === vendorId);
   if (!v) return;
+  const existing = loginWindows.get(v.id);
+  if (existing && !existing.isDestroyed()) {
+    existing.focus();
+    return;
+  }
   const win = new BrowserWindow({
     width: 1100,
     height: 800,
     title: `${v.name} — log in`,
     backgroundColor: '#101216',
-    webPreferences: { partition: v.partition },
+    webPreferences: { partition: v.partition, preload: PRELOAD },
+  });
+  loginWindows.set(v.id, win);
+  win.on('closed', () => {
+    loginWindows.delete(v.id);
+    loginReady.delete(v.id);
+    setSession(v.id, { state: 'loading', reason: 'Reconnecting your saved sign-in.' });
+    _views.get(v.id)?.webContents.reload();
   });
   void win.loadURL(v.url);
+}
+
+function setSession(provider: string, report: SessionReport): void {
+  const previous = _sessions.get(provider);
+  if (!previous) return;
+  _sessions.set(provider, { ...previous, ...report, updatedAt: Date.now() });
+}
+
+function providerForSender(sender: Electron.WebContents): string | undefined {
+  for (const [provider, view] of _views) if (view.webContents === sender) return provider;
+  for (const [provider, win] of loginWindows) if (win.webContents === sender) return provider;
+  return undefined;
+}
+
+function providerForEvent(event: IpcMainEvent): string | undefined {
+  if (event.senderFrame !== event.sender.mainFrame) return undefined;
+  return providerForSender(event.sender);
+}
+
+function isPanelSender(event: Electron.IpcMainInvokeEvent): boolean {
+  if (event.sender !== mainWin?.webContents || event.senderFrame !== mainWin.webContents.mainFrame) return false;
+  try { return new URL(event.senderFrame.url).origin === `http://127.0.0.1:${UI_PORT}`; } catch { return false; }
 }
 
 function buildMenu(): void {
@@ -267,12 +321,16 @@ function askView(vendorId: string, channel: string, payload: Record<string, unkn
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       _pending.delete(reqId);
+      pendingSenders.delete(reqId);
       reject(new Error('view timeout (page still loading?)'));
     }, 20000);
     _pending.set(reqId, (result) => {
       clearTimeout(timer);
+      _pending.delete(reqId);
+      pendingSenders.delete(reqId);
       resolve(result);
     });
+    pendingSenders.set(reqId, view.webContents);
     view.webContents.send(channel, { reqId, ...(payload || {}) });
   });
 }
@@ -305,6 +363,12 @@ export async function sweep(reason: string): Promise<{ added: number }> {
 
 /** Blibs -> views: type queued messages into the matching vendor view. */
 export async function drainOutbox(reason: string): Promise<{ drained: number; error?: string }> {
+  if (draining) return draining;
+  draining = deliverPending(reason).finally(() => { draining = null; });
+  return draining;
+}
+
+async function deliverPending(reason: string): Promise<{ drained: number; error?: string }> {
   let pending: OutboxItem[] = [];
   try {
     const data = await proxyGet<{ items?: OutboxItem[] }>('/api/outbox/pending');
@@ -313,7 +377,14 @@ export async function drainOutbox(reason: string): Promise<{ drained: number; er
     return { drained: 0, error: 'proxy unreachable' };
   }
   let drained = 0;
-  for (const item of pending.slice(0, 5)) {
+  const deliverable = pending.filter((item) => {
+    const session = _sessions.get(item.provider);
+    return !session || session.state === 'ready';
+  });
+  for (const item of deliverable.slice(0, 5)) {
+    // Leave queued replies intact while a saved session is loading or expired.
+    const session = _sessions.get(item.provider);
+    if (session && session.state !== 'ready') continue;
     if (!_views.has(String(item.provider || '').toLowerCase())) {
       await ackOutbox(item.id, false, `no view for provider "${item.provider}"`);
       continue;
@@ -335,20 +406,58 @@ async function ackOutbox(id: string, ok: boolean, error?: string): Promise<void>
   } catch { /* ack lost — item stays queued, retried next sweep */ }
 }
 
-function wireIpc(): void {
+export function wireIpc(): void {
+  ipcMain.handle('blibs:sessions', (event) => {
+    if (!isPanelSender(event)) throw new Error('This request must come from the blibs panel.');
+    return [..._sessions.values()];
+  });
+  ipcMain.handle('blibs:sign-in', (event, provider: unknown) => {
+    if (!isPanelSender(event) || typeof provider !== 'string' || !_sessions.has(provider)) {
+      throw new Error('Choose an agent in the blibs panel.');
+    }
+    openLogin(provider);
+    return { ok: true };
+  });
+  ipcMain.on('blibs:session', (event: IpcMainEvent, report: SessionReport) => {
+    const provider = providerForEvent(event);
+    if (!provider || !['loading', 'ready', 'signed-out', 'error'].includes(report?.state)) return;
+    // Cookies are shared, but the hidden page must reload to pick up a new login.
+    if (loginWindows.get(provider)?.webContents === event.sender) {
+      if (report.state === 'ready' && !loginReady.has(provider)) {
+        loginReady.add(provider);
+        setSession(provider, { state: 'loading', reason: 'Signed in. Loading your conversation.' });
+        _views.get(provider)?.webContents.reload();
+      } else if (report.state === 'signed-out') loginReady.delete(provider);
+      // Only the sending view can report that it is ready for queued replies.
+      return;
+    }
+    setSession(provider, { state: report.state, reason: String(report.reason || '').slice(0, 300) });
+    if (report.state === 'ready') void drainOutbox('session-ready');
+  });
   // Preload pushes (page load, DOM mutations, heartbeat).
-  ipcMain.on('blibs:scrape', (_e: IpcMainEvent, payload: CollectResult) => {
-    void relayScrape(payload).then(() => drainOutbox('scrape'));
+  ipcMain.on('blibs:scrape', (event: IpcMainEvent, payload: CollectResult) => {
+    const provider = providerForEvent(event);
+    if (!provider || !Array.isArray(payload?.items)) return;
+    const items = payload.items.map((item) => ({ ...item, provider }));
+    void relayScrape({ items }).then((result) => {
+      if (result.ok) {
+        const session = _sessions.get(provider)!;
+        _sessions.set(provider, { ...session, lastSyncAt: Date.now() });
+      }
+      return drainOutbox('scrape');
+    });
   });
   // Preload answers to main-initiated requests.
-  ipcMain.on('blibs:collect-result', (_e: IpcMainEvent, msg: CollectResult) => {
+  ipcMain.on('blibs:collect-result', (event: IpcMainEvent, msg: CollectResult) => {
+    if (pendingSenders.get(msg?.reqId || '') !== event.sender) return;
     const done = _pending.get(msg?.reqId || '');
     if (done) {
       _pending.delete(msg.reqId as string);
       done(msg);
     }
   });
-  ipcMain.on('blibs:send-result', (_e: IpcMainEvent, msg: SendResult) => {
+  ipcMain.on('blibs:send-result', (event: IpcMainEvent, msg: SendResult) => {
+    if (pendingSenders.get(msg?.reqId || '') !== event.sender) return;
     const done = _pending.get(msg?.reqId || '');
     if (done) {
       _pending.delete(msg.reqId as string);
