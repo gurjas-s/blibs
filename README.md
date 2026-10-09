@@ -29,9 +29,16 @@ npm run build      # typecheck + compile + bundle the panel
 npm start          # launch the desktop app
 ```
 
-Then **Agents → Log in to Muse / Dots / Grok** (once each). The login window
-shares cookies with the hidden sync view, so after login you can close it —
-syncing continues in the background.
+On first launch, select **Get started**, sign in to the agents you use, and
+continue to **Sync your first chat**. Open a conversation in a connected agent.
+When its chat arrives, select **View chat** to start using the panel.
+Saved sign-ins connect automatically, and setup shows each agent's progress.
+You can connect more agents later or replay the flow with **Set up agents**.
+Setup saves progress between launches. Select **Set up later** to go straight
+to the panel; you can reopen setup whenever you want.
+
+The sign-in window shares cookies with the background session. You can close
+it after signing in; syncing continues.
 
 You can also select **Sign in** beside an agent in the panel. blibs checks saved
 sessions on startup and shows each agent's connection state. If a session
@@ -64,7 +71,7 @@ Chats flow in automatically: the app pushes seconds after chat content changes
 
 **Send from blibs:** type in the composer, hit Send. The message is queued on the
 backend, the app types it into the matching session and sends it, and the badge
-under your message flips `Sending…` → `Sent` (or `Not delivered` + Retry).
+under your message changes from **Queued** to **Sent**, or **Not sent** with a **Retry** button.
 The agent's reply syncs back on its own.
 
 Use **Enter** to send and **Shift+Enter** for a new line. Each message shows
@@ -149,7 +156,7 @@ re-run `npm run build`.
 | `GET /api/health` | anyone | `{"ok":true}` — is the backend up? |
 | `POST /api/import` | views | push scraped chats `{items:[{provider,role,text,ts?,url?}]}` (deduped) |
 | `GET /api/imports` | panel | last 500 stored chats |
-| `POST /api/outbox` | panel | enqueue a reply `{provider,text}` → `{id}` |
+| `POST /api/outbox` | panel | enqueue a reply `{provider,text,clientId?}` → `{id,status}`; reuse `clientId` when retrying a queue request |
 | `GET /api/outbox/pending` | main | oldest queued sends |
 | `POST /api/outbox/ack` | main | confirm delivery `{id,ok,error?}` |
 | `POST /api/outbox/retry` | panel | requeue a failed send |
