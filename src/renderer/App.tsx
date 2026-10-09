@@ -6,6 +6,8 @@ import { mergeImports } from './messages';
 import type { ImportedMessage, Messages } from './messages';
 import SessionStatus from './SessionStatus';
 import ChatThread from './ChatThread';
+import Onboarding from './Onboarding';
+import { ONBOARDING_KEY, readOnboarding } from './onboarding-state';
 
 const LS_MSGS = 'blibs-messages-v2';
 const LS_AGENTS = 'blibs-agents-v2';
@@ -54,6 +56,7 @@ export default function App() {
   const [autoPull, setAutoPull] = useState(() => load(LS_AUTOPULL, true));
   const [pullSecs, setPullSecs] = useState(() => load(LS_PULLSECS, 15));
   const [sessions, setSessions] = useState<VendorSession[]>([]);
+  const [onboarding, setOnboarding] = useState(() => readOnboarding(load(ONBOARDING_KEY, null)));
   const active = agents.find((agent) => agent.id === activeId) || agents[0];
   const meta = providerFor(active);
   const activeSession = sessions.find((session) => session.provider === active.provider);
@@ -65,6 +68,7 @@ export default function App() {
   useEffect(() => { save(LS_AGENTS, agents); }, [agents]);
   useEffect(() => { save(LS_AUTOPULL, autoPull); }, [autoPull]);
   useEffect(() => { save(LS_PULLSECS, pullSecs); }, [pullSecs]);
+  useEffect(() => { save(ONBOARDING_KEY, onboarding); }, [onboarding]);
   useEffect(() => {
     let disposed = false;
     async function refresh() {
@@ -87,8 +91,11 @@ export default function App() {
       if (!window.blibs) throw new Error('Open the desktop app to sign in.');
       await window.blibs.signIn(provider);
       setStatusLine('Complete sign-in in the window that opened. Your chats will sync automatically.');
+      return undefined;
     } catch (error) {
-      setStatusLine(error instanceof Error ? error.message : 'Could not open sign-in. Try again.');
+      const message = error instanceof Error ? error.message : 'Could not open sign-in. Try again.';
+      setStatusLine(message);
+      return message;
     }
   }
 
@@ -114,10 +121,11 @@ export default function App() {
   useEffect(() => {
     // eslint-disable-next-line react/set-state-in-effect -- This starts a fetch; state updates occur after its response.
     void pullImports(true);
-    if (!autoPull) return;
-    const timer = setInterval(() => { void pullImports(true); }, Math.max(5, pullSecs) * 1000);
+    const settingUp = onboarding.step === 'sync';
+    if (!autoPull && !settingUp) return;
+    const timer = setInterval(() => { void pullImports(true); }, (settingUp ? 5 : Math.max(5, pullSecs)) * 1000);
     return () => clearInterval(timer);
-  }, [autoPull, pullSecs, pullImports]);
+  }, [autoPull, pullSecs, pullImports, onboarding.step]);
 
   useEffect(() => {
     let disposed = false;
@@ -219,6 +227,7 @@ export default function App() {
           </div>;
         })}</div>
         <div className="side-foot">
+          <button className="sign-in" onClick={() => setOnboarding({ step: 'welcome', providers: [] })}>Set up agents</button>
           <button className="sign-in" onClick={() => pullImports()}>Sync now</button>
           <label className="auto-row"><input type="checkbox" checked={autoPull} onChange={(event) => setAutoPull(event.target.checked)} />Sync automatically</label>
           <label className="interval-row">Check every <select value={pullSecs} onChange={(event) => setPullSecs(Number(event.target.value))} aria-label="Sync frequency">
@@ -238,5 +247,6 @@ export default function App() {
         <p className="status-line" role="status">{statusLine}</p>
       </main>
     </div>
+    {onboarding.step !== 'complete' && <Onboarding progress={onboarding} agents={agents} sessions={sessions} messages={messages} syncUnavailable={lastPull?.ok === false} onChange={setOnboarding} onSignIn={signIn} onSync={() => pullImports()} onSelect={setActiveId} />}
   </div>;
 }

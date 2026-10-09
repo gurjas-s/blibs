@@ -21,6 +21,10 @@ const sessions: VendorSession[] = [
   { provider: 'dots', state: 'signed-out', reason: 'Sign in to sync your chats.', updatedAt: now, lastSyncAt: null },
   { provider: 'grok', state: 'error', reason: 'Could not reach Grok. Try opening the agent again.', updatedAt: now, lastSyncAt: null },
 ];
+const fresh = process.argv.includes('--fresh');
+if (fresh) for (const session of sessions) {
+  session.state = 'signed-out'; session.reason = 'Sign in to sync your chats.'; session.lastSyncAt = null;
+}
 if (!process.argv.includes('--fresh')) await fetch(base + '/api/import', {
   method: 'POST', body: JSON.stringify({ items: Array.from({ length: 14 }, (_, index) => ({
     provider: 'muse', role: index % 3 ? 'agent' : 'user', ts: now - (14 - index) * 90000,
@@ -42,7 +46,9 @@ const panel = http.createServer((request, response) => {
       const { provider } = JSON.parse(body);
       const session = sessions.find((item) => item.provider === provider);
       if (session) { session.state = 'ready'; session.reason = 'Signed in. Chats sync automatically.'; }
-      await fetch(base + '/api/import', { method: 'POST', body: JSON.stringify({ items: [{ provider, role: 'agent', text: 'Welcome! Your first chat is synced.', ts: Date.now() }] }) });
+      const importChat = () => fetch(base + '/api/import', { method: 'POST', body: JSON.stringify({ items: [{ provider, role: 'agent', text: 'Welcome! Your first chat is synced.', ts: Date.now() }] }) });
+      if (fresh) setTimeout(() => { void importChat(); }, 10000);
+      else await importChat();
       response.setHeader('Content-Type', 'application/json');
       return response.end('{"ok":true}');
     }
@@ -72,7 +78,8 @@ const panel = http.createServer((request, response) => {
     response.end(file.endsWith('.html') ? contents.toString().replace('<head>', '<head>' + bridge) : contents);
   })().catch(() => { response.writeHead(500); response.end(); });
 });
-panel.listen(15175, '127.0.0.1', () => console.log('Preview at http://127.0.0.1:15175'));
+const port = Number(process.env.BLIBS_PREVIEW_PORT || 15175);
+panel.listen(port, '127.0.0.1', () => console.log(`Preview at http://127.0.0.1:${port}`));
 function stop() { panel.close(); backend.close(() => { rmSync(dataDir, { recursive: true, force: true }); process.exit(0); }); }
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);

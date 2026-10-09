@@ -484,7 +484,7 @@ async function boot(): Promise<void> {
 async function smoke(): Promise<void> {
   // --blibs-smoke: used to verify the shell where a display exists.
   await new Promise((r) => setTimeout(r, 4000));
-  const report: { views: string[]; uiPort: number; proxyPort: number; proxy?: string } = {
+  const report: { views: string[]; uiPort: number; proxyPort: number; proxy?: string; panelBridge?: string } = {
     views: [..._views.keys()],
     uiPort: UI_PORT,
     proxyPort: PROXY_PORT,
@@ -495,9 +495,15 @@ async function smoke(): Promise<void> {
   } catch (e) {
     report.proxy = `unreachable: ${String(e)}`;
   }
+  try {
+    const sessions = await mainWin?.webContents.executeJavaScript('window.blibs.sessions()') as VendorSession[] | undefined;
+    report.panelBridge = sessions?.length === VENDORS.length ? 'ok' : 'missing sessions';
+  } catch (error) {
+    report.panelBridge = `unreachable: ${String(error)}`;
+  }
   console.log(`[blibs-smoke] ${JSON.stringify(report)}`);
   app.quit();
-  if (!report.views.length || report.proxy !== 'ok') process.exitCode = 1;
+  if (!report.views.length || report.proxy !== 'ok' || report.panelBridge !== 'ok') process.exitCode = 1;
 }
 
 if (!process.env.BLIBS_NO_AUTOSTART) {
