@@ -1,0 +1,341 @@
+{
+  "version": "synthetic-decisions-v1",
+  "partition": "tuning",
+  "createdAt": "2026-10-13T21:18:31.318Z",
+  "models": {
+    "embedding": "bge-small-en-v1.5-q8_0:f046db1dc724cf4f6f0a0c5917e922823b73eb1d27b8f9a9c2797f7866974804",
+    "generation": "qwen2.5-1.5b-instruct-q4_k_m:6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+    "runtime": "llama.cpp b11598 CPU",
+    "temperature": 0,
+    "seed": 7,
+    "threadsPerModel": 2
+  },
+  "environment": {
+    "node": "v24.21.0",
+    "platform": "win32",
+    "cpu": "AMD Ryzen 5 8640HS w/ Radeon 760M Graphics     ",
+    "memoryGiB": 13.758594512939453
+  },
+  "corpus": {
+    "messages": 35,
+    "questionsTotal": 40,
+    "evaluated": 12,
+    "answerable": 10,
+    "expectedAbstentions": 2,
+    "chunksIndexed": 35,
+    "indexMs": 1005.9248
+  },
+  "metrics": {
+    "keywordRecall3": 1,
+    "keywordRecall5": 1,
+    "hybridRecall3": 1,
+    "hybridRecall5": 1,
+    "answerCompleteness": 0.9,
+    "citationSupportPrecision": 1,
+    "abstentionAccuracy": 1,
+    "falseAbstentions": 1,
+    "sourceUrlPreservation": 1,
+    "keywordP50Ms": 1.2165999999997439,
+    "hybridP50Ms": 30.16020000000026,
+    "hybridP95Ms": 37.21730000000025,
+    "answerP50Ms": 1740.556,
+    "answerP95Ms": 5792.357300000001
+  },
+  "supportDefinition": "Each claim must cite a labeled supporting message, preserve its exact sentence, and answer the labeled question. Completeness additionally requires all labeled facts/sources. True but irrelevant quotes fail support. Source URL preservation does not validate fictitious fixture threads on vendor sites.",
+  "rows": [
+    {
+      "id": "literal-0",
+      "kind": "answerable",
+      "query": "What database stores Atlas conversation history?",
+      "keywordRecall3": 1,
+      "keywordRecall5": 1,
+      "hybridRecall3": 1,
+      "hybridRecall5": 1,
+      "keywordMs": 4.917000000000144,
+      "hybridMs": 26.110500000000002,
+      "answerMs": 1938.0022,
+      "answerComplete": true,
+      "expectedAbstain": false,
+      "abstained": false,
+      "supportedClaims": 1,
+      "claims": 1,
+      "sourceUrlsPreserved": true,
+      "answer": "Atlas stores conversation history in SQLite on the local machine.",
+      "citations": [
+        {
+          "source": "atlas-storage",
+          "quote": "Atlas stores conversation history in SQLite on the local machine."
+        }
+      ]
+    },
+    {
+      "id": "literal-1",
+      "kind": "answerable",
+      "query": "What does Atlas create before JSON migration?",
+      "keywordRecall3": 1,
+      "keywordRecall5": 1,
+      "hybridRecall3": 1,
+      "hybridRecall5": 1,
+      "keywordMs": 1.1608000000001084,
+      "hybridMs": 32.303100000000086,
+      "answerMs": 1740.556,
+      "answerComplete": true,
+      "expectedAbstain": false,
+      "abstained": false,
+      "supportedClaims": 1,
+      "claims": 1,
+      "sourceUrlsPreserved": true,
+      "answer": "Atlas writes a backup before importing the old JSON history.",
+      "citations": [
+        {
+          "source": "atlas-backup",
+          "quote": "Atlas writes a backup before importing the old JSON history."
+        }
+      ]
+    },
+    {
+      "id": "literal-2",
+      "kind": "answerable",
+      "query": "What is the Atlas search privacy decision?",
+      "keywordRecall3": 1,
+      "keywordRecall5": 1,
+      "hybridRecall3": 1,
+      "hybridRecall5": 1,
+      "keywordMs": 2.4472999999998137,
+      "hybridMs": 30.16020000000026,
+      "answerMs": 5792.357300000001,
+      "answerComplete": true,
+      "expectedAbstain": false,
+      "abstained": false,
+      "supportedClaims": 1,
+      "claims": 1,
+      "sourceUrlsPreserved": true,
+      "answer": "Atlas keeps private conversation content on the device and never uploads it for search.",
+      "citations": [
+        {
+          "source": "atlas-privacy",
+          "quote": "Atlas keeps private conversation content on the device and never uploads it for search."
+        }
+      ]
+    },
+    {
+      "id": "literal-3",
+      "kind": "answerable",
+      "query": "Who owns the Atlas migration review?",
+      "keywordRecall3": 1,
+      "keywordRecall5": 1,
+      "hybridRecall3": 1,
+      "hybridRecall5": 1,
+      "keywordMs": 1.617500000000291,
+      "hybridMs": 33.25220000000081,
+      "answerMs": 1544.2050999999992,
+      "answerComplete": true,
+      "expectedAbstain": false,
+      "abstained": false,
+      "supportedClaims": 1,
+      "claims": 1,
+      "sourceUrlsPreserved": true,
+      "answer": "Mira owns the Atlas migration review.",
+      "citations": [
+        {
+          "source": "atlas-owner",
+          "quote": "Mira owns the Atlas migration review."
+        }
+      ]
+    },
+    {
+      "id": "literal-4",
+      "kind": "answerable",
+      "query": "How many times does Beacon retry failed jobs?",
+      "keywordRecall3": 1,
+      "keywordRecall5": 1,
+      "hybridRecall3": 1,
+      "hybridRecall5": 1,
+      "keywordMs": 0.7982000000010885,
+      "hybridMs": 25.656699999999546,
+      "answerMs": 1756.2466000000004,
+      "answerComplete": true,
+      "expectedAbstain": false,
+      "abstained": false,
+      "supportedClaims": 1,
+      "claims": 1,
+      "sourceUrlsPreserved": true,
+      "answer": "Beacon retries failed jobs three times before moving them to the dead letter queue.",
+      "citations": [
+        {
+          "source": "beacon-retry",
+          "quote": "Beacon retries failed jobs three times before moving them to the dead letter queue."
+        }
+      ]
+    },
+    {
+      "id": "literal-5",
+      "kind": "answerable",
+      "query": "When does Beacon alert on queue age?",
+      "keywordRecall3": 1,
+      "keywordRecall5": 1,
+      "hybridRecall3": 1,
+      "hybridRecall5": 1,
+      "keywordMs": 1.2546999999995023,
+      "hybridMs": 33.54249999999956,
+      "answerMs": 2037.0326999999997,
+      "answerComplete": true,
+      "expectedAbstain": false,
+      "abstained": false,
+      "supportedClaims": 1,
+      "claims": 1,
+      "sourceUrlsPreserved": true,
+      "answer": "Beacon alerts the operator when queue age exceeds 120 seconds.",
+      "citations": [
+        {
+          "source": "beacon-alert",
+          "quote": "Beacon alerts the operator when queue age exceeds 120 seconds."
+        }
+      ]
+    },
+    {
+      "id": "literal-6",
+      "kind": "answerable",
+      "query": "Which values identify duplicate Beacon jobs?",
+      "keywordRecall3": 1,
+      "keywordRecall5": 1,
+      "hybridRecall3": 1,
+      "hybridRecall5": 1,
+      "keywordMs": 2.4386000000013155,
+      "hybridMs": 37.21730000000025,
+      "answerMs": 1715.3907,
+      "answerComplete": true,
+      "expectedAbstain": false,
+      "abstained": false,
+      "supportedClaims": 1,
+      "claims": 1,
+      "sourceUrlsPreserved": true,
+      "answer": "Beacon identifies duplicate jobs using a booking ID and observation timestamp.",
+      "citations": [
+        {
+          "source": "beacon-dedup",
+          "quote": "Beacon identifies duplicate jobs using a booking ID and observation timestamp."
+        }
+      ]
+    },
+    {
+      "id": "literal-7",
+      "kind": "answerable",
+      "query": "Which region runs the Beacon demonstration?",
+      "keywordRecall3": 1,
+      "keywordRecall5": 1,
+      "hybridRecall3": 1,
+      "hybridRecall5": 1,
+      "keywordMs": 0.9700999999986379,
+      "hybridMs": 24.372200000001612,
+      "answerMs": 1261.078599999997,
+      "answerComplete": false,
+      "expectedAbstain": false,
+      "abstained": true,
+      "supportedClaims": 0,
+      "claims": 0,
+      "sourceUrlsPreserved": true,
+      "answer": "I could not find enough supporting evidence in the imported conversations.",
+      "citations": []
+    },
+    {
+      "id": "literal-8",
+      "kind": "answerable",
+      "query": "What file format stores Cedar market snapshots?",
+      "keywordRecall3": 1,
+      "keywordRecall5": 1,
+      "hybridRecall3": 1,
+      "hybridRecall5": 1,
+      "keywordMs": 1.2165999999997439,
+      "hybridMs": 35.09639999999854,
+      "answerMs": 1676.6051999999981,
+      "answerComplete": true,
+      "expectedAbstain": false,
+      "abstained": false,
+      "supportedClaims": 1,
+      "claims": 1,
+      "sourceUrlsPreserved": true,
+      "answer": "Cedar stores market snapshots as partitioned Parquet files.",
+      "citations": [
+        {
+          "source": "cedar-format",
+          "quote": "Cedar stores market snapshots as partitioned Parquet files."
+        }
+      ]
+    },
+    {
+      "id": "literal-9",
+      "kind": "answerable",
+      "query": "What timezone does Cedar use for quote validation?",
+      "keywordRecall3": 1,
+      "keywordRecall5": 1,
+      "hybridRecall3": 1,
+      "hybridRecall5": 1,
+      "keywordMs": 1.1067000000002736,
+      "hybridMs": 29.285400000000664,
+      "answerMs": 1619.2716,
+      "answerComplete": true,
+      "expectedAbstain": false,
+      "abstained": false,
+      "supportedClaims": 1,
+      "claims": 1,
+      "sourceUrlsPreserved": true,
+      "answer": "Cedar converts all quote timestamps to UTC before validation.",
+      "citations": [
+        {
+          "source": "cedar-time",
+          "quote": "Cedar converts all quote timestamps to UTC before validation."
+        }
+      ]
+    },
+    {
+      "id": "missing-tune",
+      "kind": "unanswerable",
+      "query": "What is the Atlas annual revenue?",
+      "keywordRecall3": null,
+      "keywordRecall5": null,
+      "hybridRecall3": null,
+      "hybridRecall5": null,
+      "keywordMs": 0.7397999999993772,
+      "hybridMs": 26.033400000000256,
+      "answerMs": 3885.8103999999985,
+      "answerComplete": false,
+      "expectedAbstain": true,
+      "abstained": true,
+      "supportedClaims": 0,
+      "claims": 0,
+      "sourceUrlsPreserved": true,
+      "answer": "I could not find enough supporting evidence in the imported conversations.",
+      "citations": []
+    },
+    {
+      "id": "ambiguous-tune",
+      "kind": "ambiguous",
+      "query": "Who owns the review?",
+      "keywordRecall3": null,
+      "keywordRecall5": null,
+      "hybridRecall3": null,
+      "hybridRecall5": null,
+      "keywordMs": 0.5733000000000175,
+      "hybridMs": 26.624299999999494,
+      "answerMs": 25.608799999998155,
+      "answerComplete": false,
+      "expectedAbstain": true,
+      "abstained": true,
+      "supportedClaims": 0,
+      "claims": 0,
+      "sourceUrlsPreserved": true,
+      "answer": "I could not find enough supporting evidence in the imported conversations.",
+      "citations": []
+    }
+  ],
+  "provenance": {
+    "retrievalSourceSha256": "cad8aa9000f13452c83fd17fc4561a1b9b2a1816fe107bd29f58e1bf0f546679",
+    "selection": "one exact sentence, two for explicit conflict; conservative deictic ambiguity check",
+    "maxGenerationTokens": 240,
+    "chunkCharacters": 1000,
+    "chunkOverlap": 150,
+    "cosineThreshold": 0.35,
+    "rankFusionConstant": 60
+  }
+}

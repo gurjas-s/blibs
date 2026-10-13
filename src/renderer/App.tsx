@@ -3,6 +3,7 @@ import './App.css';
 import { SEED_AGENTS, providerFor } from './providers';
 import type { Agent, ChatMessage } from './types';
 import { cleanImportText } from './text';
+import SearchPanel from './SearchPanel';
 
 const LS_MSGS = 'blibs-messages-v2';
 const LS_AGENTS = 'blibs-agents-v2';
@@ -43,6 +44,7 @@ export default function App() {
   const [messages, setMessages] = useState<Record<string, ChatMessage[]>>(() => load(LS_MSGS, {}));
   const [activeId, setActiveId] = useState(agents[0]?.id ?? 'muse');
   const [query, setQuery] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [statusLine, setStatusLine] = useState('Waiting for sync — log in via the Agents menu.');
@@ -93,7 +95,7 @@ export default function App() {
       const res = await fetch('/api/imports');
       if (!res.ok) throw new Error(`proxy HTTP ${res.status}`);
       const data = await res.json();
-      const items: { provider: string; role: string; text: string; ts: number }[] = data?.imports ?? [];
+      const items: { id: string; provider: string; role: string; text: string; ts: number }[] = data?.imports ?? [];
       const cur = messagesRef.current;
       const ags = agentsRef.current;
       const next: typeof cur = { ...cur };
@@ -104,13 +106,17 @@ export default function App() {
         const prov = String(it.provider || 'custom');
         const target = ags.find((a) => a.provider === prov)?.id;
         if (!target) continue;
-        const norm = text.toLowerCase();
-        const dup = (next[target] ?? []).some((m) => cleanImportText(m.text).toLowerCase() === norm);
-        if (dup) continue;
+        const role = it.role === 'agent' ? 'agent' : 'user';
+        const existing = (next[target] ?? []).find(m => m.historyId === it.id || (!m.historyId && m.role === role && cleanImportText(m.text) === text && (m.ts === it.ts || (m.via === 'tab' && Math.abs(m.ts - it.ts) < 60000))));
+        if (existing) {
+          if (existing.historyId !== it.id || existing.text !== text) { next[target] = next[target].map(m => m.id === existing.id ? { ...m, historyId: it.id, text } : m); merged++; }
+          continue;
+        }
         next[target] = [
           ...(next[target] ?? []),
           {
-            id: uid(),
+            id: `history:${it.id}`,
+            historyId: it.id,
             agentId: target,
             role: it.role === 'agent' ? 'agent' : 'user',
             text,
@@ -249,12 +255,14 @@ export default function App() {
           <strong>blibs</strong>
         </div>
         <div className="search">
+          {showHistory ? <span>Local conversation history</span> :
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={`Search ${active.name}…`}
             aria-label="Search current chat"
           />
+          }
         </div>
         <div className={`sync-pill ${pill.cls}`} title={statusLine}>
           <span className="dot" />
@@ -267,7 +275,7 @@ export default function App() {
           <p className="section-label">Agents</p>
           {agents.map((a) => (
             <div key={a.id} className={`agent ${a.id === activeId ? 'active' : ''}`}>
-              <button className="agent-main" onClick={() => setActiveId(a.id)}>
+              <button className="agent-main" onClick={() => { setActiveId(a.id); setShowHistory(false); }}>
                 <span className="avatar">{a.name.charAt(0)}</span>
                 <span className="ameta">
                   <span className="aname">{a.name}</span>
@@ -284,6 +292,7 @@ export default function App() {
             </div>
           ))}
           <div className="side-foot">
+            <button className={`history-nav ${showHistory ? 'selected' : ''}`} onClick={() => setShowHistory(true)}>Search all conversations</button>
             <label className="auto-row" title="Pull synced chats on a timer">
               <input type="checkbox" checked={autoPull} onChange={(e) => setAutoPull(e.target.checked)} />
               Auto-sync
@@ -299,6 +308,7 @@ export default function App() {
         </aside>
 
         <main className="main">
+          {showHistory ? <SearchPanel /> : <>
           <div className="thread-head">
             <div>
               <h1>{active.name}</h1>
@@ -355,6 +365,7 @@ export default function App() {
             </button>
           </div>
           <p className="status-line">{statusLine}</p>
+          </>}
         </main>
       </div>
     </div>

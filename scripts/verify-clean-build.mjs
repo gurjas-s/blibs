@@ -11,7 +11,7 @@ const result = spawnSync(process.execPath, [process.env.npm_execpath, 'run', 'bu
   stdio: 'inherit',
 });
 assert.equal(result.status, 0, 'The build must succeed after generated output is removed.');
-for (const file of ['build/main/index.js', 'build/preload/agent.js', 'build/server/proxy.js', 'dist/index.html']) {
+for (const file of ['build/main/index.js', 'build/preload/agent.js', 'build/server/proxy.js', 'build/server/history.js', 'build/server/retrieval.js', 'dist/index.html']) {
   assert.ok(existsSync(new URL(`../${file}`, import.meta.url)), `The clean build did not regenerate ${file}.`);
 }
 for (const directory of ['main', 'preload']) {

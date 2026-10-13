@@ -12,7 +12,8 @@
     "smoke": "electron . --blibs-smoke",
     "test": "npm run build && node --import tsx --test tests/*.test.ts && tsx src/main/test-harness.ts",
     "verify:clean-build": "node scripts/verify-clean-build.mjs",
-    "lint": "oxlint"
+    "lint": "oxlint",
+    "evaluate:search": "tsx scripts/evaluate-retrieval.ts"
   },
   "dependencies": {
     "react": "^19.2.8",
