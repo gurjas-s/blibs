@@ -65,6 +65,8 @@ interface ScrapeItem {
   text: string;
   ts: number;
   url: string;
+  sourceId: string;
+  identity: string;
 }
 
 interface CollectPayload {
@@ -94,14 +96,14 @@ function collect(): CollectPayload {
     }
   }
   const items: ScrapeItem[] = [];
-  const seen = new Set<string>();
-  for (const el of nodes.slice(-100)) {
+  for (const [index, el] of nodes.entries()) {
+    if (index < nodes.length - 100) continue;
     const text = ((el as HTMLElement).innerText || '').trim().replace(/\n{3,}/g, '\n\n').slice(0, 4000);
     if (text.length < 2) continue;
-    const key = text.slice(0, 200);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    items.push({ provider, role: roleOf(el), text, ts: Date.now(), url: location.href });
+    const role = roleOf(el);
+    const vendorId = el.getAttribute('data-message-id') || el.getAttribute('data-turn-id') || el.id;
+    items.push({ provider, role, text, ts: Date.now(), url: location.href,
+      sourceId: vendorId ? `${vendorId}:${role}` : `rendered:${role}:${index}`, identity: vendorId ? 'source-id' : 'rendered-position' });
   }
   return { provider, items, url: location.href, collectedAt: Date.now(), debug: { used, counts } };
 }

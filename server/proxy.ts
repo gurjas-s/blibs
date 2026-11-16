@@ -14,6 +14,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { HistoryStore, copyIfAbsent } from './history.js';
+import { RetrievalService } from './retrieval.js';
+import type { LocalModels } from './retrieval.js';
+import type { SearchFilters } from './history.js';
 
 const PORT = Number(process.env.PROXY_PORT || 8787);
 const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -38,14 +42,6 @@ const MODELS: Record<string, string> = {
   custom: 'gpt-5-mini',
 };
 
-interface ImportItem {
-  provider: string;
-  role: string;
-  text: string;
-  ts: number;
-  url: string;
-}
-
 interface OutboxItem {
   id: string;
   provider: string;
@@ -58,32 +54,25 @@ interface OutboxItem {
 }
 
 function send(res: ServerResponse, code: number, obj: unknown): void {
-  res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  res.writeHead(code, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(obj));
 }
 
 /** Each server owns its store and deduplication state. Tests use a temporary directory. */
-export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER_DIR): http.Server {
+export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER_DIR, models: LocalModels = {}): http.Server {
   fs.mkdirSync(dataDir, { recursive: true });
-  const STORE_PATH = path.join(dataDir, 'imports.json');
-  const OUTBOX_PATH = path.join(dataDir, 'outbox.json');
-
-  // ---- import store (file-backed, best-effort) ----
-  function loadImports(): ImportItem[] {
-    try {
-      const raw = fs.readFileSync(STORE_PATH, 'utf8');
-      const data: unknown = JSON.parse(raw);
-      return Array.isArray(data) ? (data as ImportItem[]) : [];
-    } catch {
-      return [];
+  // Copy retained legacy files on first desktop startup. Originals and delivery records are preserved.
+  const legacyDir = process.env.BLIBS_LEGACY_DIR;
+  if (legacyDir && path.resolve(legacyDir) !== path.resolve(dataDir)) {
+    for (const name of ['imports.json', 'outbox.json']) {
+      const source = path.join(legacyDir, name), target = path.join(dataDir, name);
+      copyIfAbsent(source, target);
     }
   }
-  function saveImports(items: ImportItem[]): void {
-    try {
-      fs.writeFileSync(STORE_PATH, JSON.stringify(items.slice(-2000), null, 2));
-    } catch { /* ephemeral in some sandboxes */ }
-  }
-  const seen = new Set(loadImports().map((m) => `${m.provider}|${m.role}|${m.text}`));
+  const OUTBOX_PATH = path.join(dataDir, 'outbox.json');
+  const history = new HistoryStore(dataDir);
+  const retrieval = new RetrievalService(history, models);
+  retrieval.schedule();
 
   // ---- outbox store: messages blibs wants typed into vendor views ----
   function loadOutbox(): OutboxItem[] {
@@ -105,45 +94,75 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
   }
   async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
     let body = '';
-    for await (const chunk of req) body += chunk;
+    for await (const chunk of req) { body += chunk; if (body.length > 4_000_000) throw new Error('Request exceeds 4 MB.'); }
     return JSON.parse(body) as Record<string, unknown>;
   }
 
   const server = http.createServer((req, res) => {
     void (async () => {
+      const address = server.address();
+      const backendPort = address && typeof address !== 'string' ? address.port : PORT;
+      const allowed = new Set([`127.0.0.1:${backendPort}`, `127.0.0.1:${Number(process.env.BLIBS_UI_PORT || 5174)}`]);
+      if (!req.headers.host || !allowed.has(req.headers.host)) return send(res, 403, { error: 'Untrusted local API host.' });
+      if (req.headers.origin && ![...allowed].some(host => req.headers.origin === `http://${host}`)) return send(res, 403, { error: 'Untrusted origin. Open the local blibs panel.' });
+      if (req.headers.origin) res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
       if (req.method === 'OPTIONS') {
-        res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type', 'Access-Control-Allow-Methods': 'POST,GET,OPTIONS' });
+        res.writeHead(204, { 'Access-Control-Allow-Headers': 'content-type', 'Access-Control-Allow-Methods': 'POST,GET,OPTIONS', 'Vary': 'Origin' });
         return res.end();
       }
       if (req.url === '/api/health') return send(res, 200, { ok: true });
+      const routeUrl = new URL(req.url || '/', 'http://127.0.0.1');
+      if (routeUrl.pathname === '/api/history' && req.method === 'GET') {
+        const limit = Math.min(500, Math.max(1, Number(routeUrl.searchParams.get('limit')) || 100));
+        const offset = Math.max(0, Number(routeUrl.searchParams.get('offset')) || 0);
+        return send(res, 200, { items: history.list(limit, offset), total: history.count() });
+      }
+      if (routeUrl.pathname.startsWith('/api/history/') && req.method === 'GET') {
+        const item = history.message(routeUrl.pathname.slice('/api/history/'.length));
+        return send(res, item ? 200 : 404, item ? { item } : { error: 'Unknown message.' });
+      }
+      if (req.url === '/api/index' && req.method === 'GET') return send(res, 200, retrieval.status());
+      if (req.url === '/api/index' && req.method === 'POST') {
+        let payload: Record<string, unknown>;
+        try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+        if (payload.action === 'cancel') await retrieval.cancel();
+        else { if (payload.action === 'rebuild') { await retrieval.cancel(); history.rebuild(); } void retrieval.startIndex(); }
+        return send(res, 200, retrieval.status());
+      }
+      if ((req.url === '/api/search' || req.url === '/api/ask') && req.method === 'POST') {
+        let payload: Record<string, unknown>;
+        try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+        const query = typeof payload.query === 'string' ? payload.query.trim() : '';
+        if (!query || query.length > 1000) return send(res, 400, { error: 'Enter a question or search query of 1–1,000 characters.' });
+        const rawFilters = payload.filters && typeof payload.filters === 'object' ? payload.filters as Record<string, unknown> : {};
+        const filters: SearchFilters = {};
+        for (const key of ['provider', 'threadId'] as const) if (typeof rawFilters[key] === 'string') filters[key] = rawFilters[key].slice(0, 500);
+        for (const key of ['from', 'to'] as const) if (rawFilters[key] !== undefined) {
+          if (typeof rawFilters[key] !== 'number' || !Number.isFinite(rawFilters[key])) return send(res, 400, { error: 'Date filters must be finite epoch milliseconds.' });
+          filters[key] = rawFilters[key];
+        }
+        const controller = new AbortController();
+        res.once('close', () => { if (!res.writableEnded) controller.abort(); });
+        try {
+          const data = req.url === '/api/ask' ? await retrieval.ask(query, filters, controller.signal) : await retrieval.search(query, filters, payload.mode === 'keyword' ? 'keyword' : 'hybrid', Math.min(50, Math.max(1, Number(payload.limit) || 10)), Math.max(0, Number(payload.offset) || 0), controller.signal);
+          return send(res, 200, data);
+        } catch (error) { if (!controller.signal.aborted) return send(res, 503, { error: String(error) }); return; }
+      }
 
       // Desktop views -> blibs: fetch everything scraped so far.
       if (req.url === '/api/imports' && req.method === 'GET') {
-        return send(res, 200, { imports: loadImports().slice(-500) });
+        return send(res, 200, { imports: history.recent() });
       }
 
       // Desktop views -> blibs: push scraped messages from vendor sessions.
       if (req.url === '/api/import' && req.method === 'POST') {
-        let body = '';
-        for await (const chunk of req) body += chunk;
-        let payload: { items?: unknown };
-        try { payload = JSON.parse(body) as { items?: unknown }; } catch { return send(res, 400, { error: 'invalid JSON' }); }
-        const items = Array.isArray(payload?.items) ? (payload.items as Record<string, unknown>[]) : [];
-        const store = loadImports();
-        let added = 0;
-        for (const it of items) {
-          const provider = String(it.provider || 'custom').toLowerCase();
-          const role = it.role === 'agent' ? 'agent' : 'user';
-          const text = String(it.text || '').trim().slice(0, 4000);
-          if (!text) continue;
-          const key = `${provider}|${role}|${text}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          store.push({ provider, role, text, ts: Number(it.ts) || Date.now(), url: String(it.url || '').slice(0, 300) });
-          added++;
-        }
-        saveImports(store);
-        return send(res, 200, { ok: true, added, total: store.length });
+        let payload: Record<string, unknown>;
+        try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        if (items.length > 2000) return send(res, 400, { error: 'Import at most 2,000 messages per request.' });
+        const report = history.import(items);
+        retrieval.schedule();
+        return send(res, 200, { ok: true, ...report });
       }
 
       // Blibs -> vendor views: enqueue a message for delivery.
@@ -238,7 +257,7 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
       try { send(res, 500, { error: String(e) }); } catch { /* already sent */ }
     });
   });
-
+  server.on('close', () => { void retrieval.close(); });
   return server;
 }
 

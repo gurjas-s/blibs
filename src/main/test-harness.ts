@@ -122,13 +122,13 @@ try {
   assert.ok(r.imports.some((m) => m.text === MARKER), 'import store has scrape');
   console.log('ok  - sweep collect -> import store');
 
-  api.shutdown();
+  await api.shutdown();
   rmSync(dataDir, { recursive: true, force: true });
   console.log('ALL DESKTOP HARNESS TESTS PASSED');
   process.exit(0);
 } catch (e) {
   console.error('HARNESS FAILED:', e);
-  try { api.shutdown(); } catch { /* ignore */ }
+  try { await api.shutdown(); } catch { /* ignore */ }
   rmSync(dataDir, { recursive: true, force: true });
   process.exit(1);
 }

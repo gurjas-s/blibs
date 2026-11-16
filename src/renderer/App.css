@@ -256,3 +256,27 @@ button { font: inherit; cursor: pointer; }
   .thread, .composer, .status-line { padding-inline: 16px; }
   .msg { max-width: 92%; }
 }
+:root { color-scheme: dark; }
+.history-nav { width: 100%; margin-bottom: 18px; padding: 12px; }
+.history-nav.selected { border-color: var(--accent, #829bef); }
+.history-search { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.history-form { padding: 0 28px 18px; }
+.history-form label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #a8b0c0; }
+.history-form input, .history-form select { border: 1px solid #343c49; background: #161b23; border-radius: 7px; padding: 10px; color: #e2e6ed; min-width: 0; }
+.history-filters { display: grid; grid-template-columns: 1fr 2fr 1fr 1fr; gap: 10px; margin: 14px 0; }
+.history-actions, .index-state { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.history-actions button, .index-state button, .history-result button, .source-detail button, .citation { padding: 7px 12px; border: 1px solid #3a4453; border-radius: 6px; background: #202735; color: #e2e6ed; cursor: pointer; }
+.history-actions button:disabled, .index-state button:disabled { opacity: .5; cursor: default; }
+.index-state { padding: 10px 28px; font-size: 11px; color: #a8b0c0; border-block: 1px solid #303845; }
+.history-notice { padding: 10px 28px; color: #e8c67b; font-size: 12px; }
+.history-results { overflow: auto; padding: 16px 28px; }
+.history-result, .grounded-answer, .source-detail { border: 1px solid #343c49; border-radius: 9px; padding: 18px; margin-bottom: 14px; background: #161b23; }
+.grounded-answer, .source-detail { border-color: #718ccf; }
+.history-results h2 { font-size: 16px; margin: 0 0 12px; }
+.history-results p, .history-results blockquote { white-space: pre-wrap; line-height: 1.6; overflow-wrap: anywhere; }
+.result-provenance { display: flex; gap: 12px; font-size: 12px; color: #a8b0c0; }
+.result-thread { font-size: 11px; color: #8f9aad; }
+.history-result a, .source-detail a { margin: 0 12px; color: #96b1ed; }
+.history-result small { display: block; margin-top: 12px; color: #8f9aad; }
+.citation { color: #96b1ed; font-size: 12px; }
+@media (max-width: 900px) { .history-filters { grid-template-columns: 1fr 1fr; } }

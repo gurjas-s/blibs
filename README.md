@@ -68,6 +68,7 @@ The agent's reply syncs back on its own.
 | `npm run build` | Full build: `tsc` (main + preload as CJS, backend as ESM) → CJS markers → Vite bundles the panel to `dist/` |
 | `npm start` | Launch the app (needs a prior `build`) |
 | `npm test` | Rebuilds, runs unit and HTTP route tests, then runs the desktop harness with temporary stores and ports |
+| `npm run test:desktop` | Tests search and citations in an isolated Electron renderer after building; needs a display, but no model downloads |
 | `npm run smoke` | Boots the real app window, prints a JSON status line, quits — needs a display |
 | `npm run lint` | `oxlint` over the repo |
 | `npm run clean` | Wipe `build/` + `dist/` (then `build` again) |
@@ -130,8 +131,13 @@ re-run `npm run build`.
 | Endpoint | Who | What |
 |---|---|---|
 | `GET /api/health` | anyone | `{"ok":true}` — is the backend up? |
-| `POST /api/import` | views | push scraped chats `{items:[{provider,role,text,ts?,url?}]}` (deduped) |
+| `POST /api/import` | views | push scraped chats `{items:[{provider,role,text,ts?,url?,sourceId?,threadId?,identity?}]}` (repeatable source identity) |
 | `GET /api/imports` | panel | last 500 stored chats |
+| `GET /api/history?limit=100&offset=0` | panel | paginated retained SQLite history |
+| `GET /api/history/:id` | panel | exact retained citation source |
+| `POST /api/search` | panel | keyword/hybrid search with provider, thread, and date filters |
+| `POST /api/ask` | panel | experimental local extractive answers with validated evidence quotes |
+| `GET/POST /api/index` | panel | model/index status; resume, cancel, or rebuild vectors |
 | `POST /api/outbox` | panel | enqueue a reply `{provider,text}` → `{id}` |
 | `GET /api/outbox/pending` | main | oldest queued sends |
 | `POST /api/outbox/ack` | main | confirm delivery `{id,ok,error?}` |
@@ -157,6 +163,15 @@ declares for reference.
 | Login lost after restart | Partitions persist per OS user; check you didn't clear app data |
 
 ## Limits (honest POC notes)
+
+**Conversation search:** Use **Search all conversations** in the sidebar. Keyword
+search works without model setup. Optional free local BGE embeddings add semantic
+retrieval, and a small local Qwen model can select cited evidence sentences.
+Local answering is experimental: accurate quotes can still be irrelevant or
+incomplete. Review the sources. Read [setup, migration, and test
+instructions](docs/conversation-search.md) before enabling models. Runtime data
+now lives in Electron's user-data history directory, with a preserved legacy
+JSON backup; retained history is not capped at the panel's 500 messages.
 
 - Only sees what's rendered in the **logged-in in-app sessions**. Mobile apps
   and WhatsApp/Slack DMs are out of reach.

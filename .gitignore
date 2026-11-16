@@ -22,6 +22,9 @@ build
 # The proxy recreates these files on demand — never commit them.
 server/imports.json
 server/outbox.json
+*.sqlite*
+server/imports.pre-sqlite.json
+.local-models/
 
 # Packaged app output
 out

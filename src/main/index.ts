@@ -49,6 +49,7 @@ try {
 } catch { /* ignore */ }
 
 let proxyChild: ChildProcess | null = null;
+let proxySetupError = '';
 let staticServer: http.Server | null = null;
 let mainWin: BrowserWindow | null = null;
 /** provider id -> BrowserView (hidden but alive) */
@@ -111,13 +112,23 @@ async function proxyGet<T = Record<string, unknown>>(p: string): Promise<T> {
 
 export function startProxy(): ChildProcess {
   if (proxyChild) return proxyChild;
-  proxyChild = spawn(process.execPath, [PROXY_ENTRY], {
+  // Electron 34 embeds Node 20; the SQLite backend needs the documented Node 24 runtime.
+  proxyChild = spawn(process.env.BLIBS_NODE_PATH || 'node', [PROXY_ENTRY], {
     stdio: 'inherit',
-    env: { ...process.env, PROXY_PORT: String(PROXY_PORT) },
+    windowsHide: true,
+    env: { ...process.env, PROXY_PORT: String(PROXY_PORT),
+      BLIBS_DATA_DIR: process.env.BLIBS_DATA_DIR || path.join(app.getPath('userData'), 'history'),
+      BLIBS_LEGACY_DIR: process.env.BLIBS_LEGACY_DIR || path.dirname(PROXY_ENTRY) },
+  });
+  proxyChild.on('error', (error) => {
+    proxySetupError = `The history backend needs Node.js 24. Install it or set BLIBS_NODE_PATH to its executable. ${error.message}`;
+    console.error(`[blibs] ${proxySetupError}`);
+    proxyChild = null;
   });
   proxyChild.on('exit', (code) => {
     console.error(`[blibs] proxy exited (${code})`);
     proxyChild = null;
+    if (code) proxySetupError = `The backend exited (${code}). Use Node.js 24; set BLIBS_NODE_PATH if it is not on PATH. Check the history schema and terminal output.`;
   });
   return proxyChild;
 }
@@ -136,6 +147,10 @@ export function startStatic(): http.Server {
   if (staticServer) return staticServer;
   staticServer = http.createServer((req, res) => {
     const url = req.url || '/';
+    const trustedOrigin = `http://127.0.0.1:${UI_PORT}`;
+    if (req.headers.host !== `127.0.0.1:${UI_PORT}` || (req.headers.origin && req.headers.origin !== trustedOrigin)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Untrusted panel origin or host.' })); return;
+    }
     // API fan-out to the proxy (mirrors vite.config.ts in dev).
     if (url.startsWith('/api/')) {
       const target = proxyUrl(url);
@@ -143,18 +158,21 @@ export function startStatic(): http.Server {
       req.on('data', (c: Buffer) => chunks.push(c));
       req.on('end', () => {
         void (async () => {
+          const controller = new AbortController();
+          res.once('close', () => { if (!res.writableEnded) controller.abort(); });
           try {
             const up = await fetch(target, {
               method: req.method,
               headers: { 'Content-Type': 'application/json' },
               body: chunks.length ? Buffer.concat(chunks) : undefined,
+              signal: controller.signal,
             });
             const text = await up.text();
-            res.writeHead(up.status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.writeHead(up.status, { 'Content-Type': 'application/json' });
             res.end(text);
           } catch (e) {
             res.writeHead(502, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: `proxy unreachable: ${String(e)}` }));
+            res.end(JSON.stringify({ error: proxySetupError || `proxy unreachable: ${String(e)}` }));
           }
         })();
       });
@@ -185,7 +203,7 @@ export function startStatic(): http.Server {
 
 // ---------- windows & views ----------
 
-function createMainWindow(): BrowserWindow {
+export function createMainWindow(): BrowserWindow {
   mainWin = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -193,6 +211,14 @@ function createMainWindow(): BrowserWindow {
     backgroundColor: '#101216',
   });
   void mainWin.loadURL(`http://127.0.0.1:${UI_PORT}/`);
+  mainWin.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const target = new URL(url);
+      const vendor = VENDORS.find(v => new URL(v.url).hostname === target.hostname);
+      if (target.protocol === 'https:' && vendor && !target.username && !target.password) openLogin(vendor.id, target.href);
+    } catch { /* Invalid source links do not open a window. */ }
+    return { action: 'deny' };
+  });
   mainWin.on('closed', () => {
     mainWin = null;
   });
@@ -214,7 +240,7 @@ function attachVendorViews(): void {
 }
 
 /** Visible login window sharing the hidden view's partition (same cookies). */
-function openLogin(vendorId: string): void {
+function openLogin(vendorId: string, source?: string): void {
   const v = VENDORS.find((x) => x.id === vendorId);
   if (!v) return;
   const win = new BrowserWindow({
@@ -224,7 +250,7 @@ function openLogin(vendorId: string): void {
     backgroundColor: '#101216',
     webPreferences: { partition: v.partition },
   });
-  void win.loadURL(v.url);
+  void win.loadURL(source || v.url);
 }
 
 function buildMenu(): void {
@@ -408,13 +434,17 @@ if (!process.env.BLIBS_NO_AUTOSTART) {
 }
 
 // Exported for the headless test harness (BLIBS_NO_AUTOSTART=1).
-export function shutdown(): void {
+export async function shutdown(): Promise<void> {
+  const pending: Promise<void>[] = [];
   if (proxyChild) {
-    proxyChild.kill();
+    const child = proxyChild;
+    if (child.exitCode === null) pending.push(new Promise<void>(resolve => { child.once('exit', () => resolve()); child.kill(); }));
     proxyChild = null;
   }
   if (staticServer) {
-    staticServer.close();
+    const server = staticServer;
+    pending.push(new Promise<void>(resolve => server.close(() => resolve())));
     staticServer = null;
   }
+  await Promise.all(pending);
 }
