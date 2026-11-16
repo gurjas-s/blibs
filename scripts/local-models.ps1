@@ -22,7 +22,7 @@ $hashes = @{
   $generatePath = '6A1A2EB6D15622BF3C96857206351BA97E1AF16C30D7A74EE38970E434E9407E'
 }
 foreach ($file in $hashes.Keys) { if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $hashes[$file]) { throw "Model checksum mismatch: $file" } }
-foreach ($port in @(4322,4323)) { if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) { throw "Port $port is already in use. Stop the previous demo models first." } }
+foreach ($port in @(4322,4323)) { if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) { throw "Port $port is already in use. Stop the previous model processes first." } }
 $embedArgs = @('-m',('"'+$embedPath+'"'),'--embedding','--pooling','cls','--host','127.0.0.1','--port','4322','-t','2','-tb','2','-c','512','-np','1','--ubatch-size','512')
 $generateArgs = @('-m',('"'+$generatePath+'"'),'--host','127.0.0.1','--port','4323','-t','2','-tb','2','-c','4096','-np','1')
 $embed = Start-Process -FilePath $runtimePath -ArgumentList $embedArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $modelDir 'embedding.log') -RedirectStandardError (Join-Path $modelDir 'embedding.err.log')

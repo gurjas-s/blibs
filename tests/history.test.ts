@@ -96,6 +96,70 @@ test('search paging reaches past 200 retained messages and chooses one chunk per
   assert.equal(page.results.length, 10); assert.equal(new Set(page.results.map(r => r.id)).size, 10); assert.equal(page.hasMore, true); await service.close(); rmSync(dir, { recursive: true });
 });
 
+test('hybrid ranks combine different chunks of the same message', async () => {
+  const dir = temp();
+  const store = new HistoryStore(dir);
+  const service = new RetrievalService(store, { embeddingUrl: 'http://127.0.0.1:1', embeddingModel: 'test' });
+  try {
+    store.import([
+      { ...item, sourceId: 'first', text: 'needle '.repeat(100) + ' filler'.repeat(70) },
+      { ...item, sourceId: 'second', text: 'needle other material' },
+    ]);
+    const queryVector = Array(384).fill(0); queryVector[0] = 1;
+    for (const chunk of store.pending('test')) {
+      const values = Array(384).fill(0);
+      if (chunk.snippet.startsWith('needle needle')) values[1] = 1;
+      else if (chunk.snippet.startsWith('needle other')) { values[0] = 0.8; values[1] = 0.6; }
+      else values[0] = 1;
+      store.saveVector(chunk.id, chunk.contentHash, 'test', values);
+    }
+    service.embed = async () => [queryVector];
+    const keyword = await service.search('needle', {}, 'keyword');
+    const hybrid = await service.search('needle');
+    assert.equal(keyword.results[0].sourceId, 'first');
+    assert.equal(hybrid.results[0].sourceId, 'first');
+    assert.equal(hybrid.results.length, 2);
+    assert.ok(hybrid.results[0].score > hybrid.results[1].score);
+  } finally {
+    await service.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('pause blocks import scheduling across restarts until explicit resume', async () => {
+  const dir = temp();
+  const config = { embeddingUrl: 'http://127.0.0.1:1', embeddingModel: 'test' };
+  let store = new HistoryStore(dir);
+  let service = new RetrievalService(store, config);
+  let calls = 0;
+  const embed = async (input: string[]) => { calls++; return input.map(() => Array(384).fill(0.1)); };
+  try {
+    service.embed = embed;
+    service.schedule();
+    await service.cancel();
+    store.import([item]);
+    service.schedule();
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(calls, 0);
+    assert.equal(service.status().paused, true);
+    await service.close();
+    store = new HistoryStore(dir);
+    service = new RetrievalService(store, config);
+    service.embed = embed;
+    service.schedule();
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(calls, 0);
+    assert.equal(service.status().paused, true);
+    await service.startIndex();
+    assert.equal(calls, 1);
+    assert.equal(service.status().paused, false);
+    assert.equal(Number(service.status().indexed), 1);
+  } finally {
+    await service.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test('migration transaction failure rolls back all rows and retries after repair', () => {
   const dir = temp(); let store = new HistoryStore(dir);
   store.db.exec("CREATE TRIGGER fail_migration BEFORE INSERT ON messages WHEN new.text='explode' BEGIN SELECT RAISE(ABORT,'simulated failure'); END"); store.close();

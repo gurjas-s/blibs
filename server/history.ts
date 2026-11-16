@@ -144,6 +144,12 @@ export class HistoryStore {
     this.db.prepare('UPDATE chunks SET vector=?,model=? WHERE id=? AND contentHash=?').run(new Uint8Array(new Float32Array(values).buffer), model, id, contentHash);
   }
   indexStatus(model: string) { return this.db.prepare('SELECT count(*) AS total,sum(CASE WHEN model=? THEN 1 ELSE 0 END) AS indexed FROM chunks').get(model); }
+  isIndexPaused(): boolean {
+    return this.db.prepare("SELECT value FROM metadata WHERE key='index-paused'").get()?.value === 'true';
+  }
+  setIndexPaused(paused: boolean): void {
+    this.db.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES('index-paused',?)").run(String(paused));
+  }
   rebuild(): void { this.db.prepare('UPDATE chunks SET model=NULL,vector=NULL').run(); }
   context(p: Passage, filters: SearchFilters): HistoryMessage[] {
     const f = this.filter(filters);

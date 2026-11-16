@@ -107,9 +107,17 @@ export default function App() {
         const target = ags.find((a) => a.provider === prov)?.id;
         if (!target) continue;
         const role = it.role === 'agent' ? 'agent' : 'user';
-        const existing = (next[target] ?? []).find(m => m.historyId === it.id || (!m.historyId && m.role === role && cleanImportText(m.text) === text && (m.ts === it.ts || (m.via === 'tab' && Math.abs(m.ts - it.ts) < 60000))));
+        const list = next[target] ?? [];
+        const existing = list.find(m => m.historyId === it.id) ?? list.find(m => {
+          if (m.historyId || m.role !== role || cleanImportText(m.text) !== text) return false;
+          // Imports use first-observed times. Delivery may occur long after a send or retry.
+          return m.ts === it.ts || (m.via === 'tab' && it.ts >= m.ts);
+        });
         if (existing) {
-          if (existing.historyId !== it.id || existing.text !== text) { next[target] = next[target].map(m => m.id === existing.id ? { ...m, historyId: it.id, text } : m); merged++; }
+          if (existing.historyId !== it.id || existing.text !== text || existing.role !== role) {
+            next[target] = list.map(m => m.id === existing.id ? { ...m, historyId: it.id, text, role } : m);
+            merged++;
+          }
           continue;
         }
         next[target] = [

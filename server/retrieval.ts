@@ -52,7 +52,7 @@ export class RetrievalService {
     this.model = config.embeddingModel ?? process.env.BLIBS_EMBEDDING_MODEL ?? 'bge-small-en-v1.5-q8_0:unconfigured';
     this.generationModel = config.generationModel ?? process.env.BLIBS_GENERATION_MODEL ?? 'local';
   }
-  status() { return { ...this.store.indexStatus(this.model), running: Boolean(this.indexPromise), embeddingConfigured: Boolean(this.embeddingUrl), generationConfigured: Boolean(this.generationUrl), model: this.model, error: this.indexError, migrationWarning: this.store.migrationWarning }; }
+  status() { return { ...this.store.indexStatus(this.model), running: Boolean(this.indexPromise), paused: this.store.isIndexPaused(), embeddingConfigured: Boolean(this.embeddingUrl), generationConfigured: Boolean(this.generationUrl), model: this.model, error: this.indexError, migrationWarning: this.store.migrationWarning }; }
   async embed(input: string[], signal?: AbortSignal): Promise<number[][]> {
     if (!this.embeddingUrl) throw new Error('Local embedding model is not configured. Keyword search remains available.');
     const res = await fetch(`${this.embeddingUrl}/v1/embeddings`, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input, model: this.model }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000) });
@@ -63,8 +63,10 @@ export class RetrievalService {
     return data;
   }
   startIndex(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    this.store.setIndexPaused(false);
     if (this.indexPromise) return this.indexPromise;
-    if (!this.embeddingUrl || this.closed) return Promise.resolve();
+    if (!this.embeddingUrl) return Promise.resolve();
     this.indexController = new AbortController();
     const signal = this.indexController.signal;
     this.indexPromise = (async () => {
@@ -86,12 +88,31 @@ export class RetrievalService {
     return this.indexPromise;
   }
   schedule(): void {
-    if (this.timer || this.closed || !this.embeddingUrl) return;
+    if (this.timer || this.closed || !this.embeddingUrl || this.store.isIndexPaused()) return;
     this.timer = setTimeout(() => { this.timer = undefined; void this.startIndex(); }, 100);
     this.timer.unref();
   }
-  async cancel(): Promise<void> { if (this.timer) { clearTimeout(this.timer); this.timer = undefined; } this.indexController?.abort(); await this.indexPromise; }
-  async close(): Promise<void> { this.closed = true; if (this.timer) { clearTimeout(this.timer); this.timer = undefined; } if (this.indexPromise) await this.cancel(); this.store.close(); }
+  private async stopIndex(): Promise<void> {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    this.indexController?.abort();
+    await this.indexPromise;
+  }
+  async cancel(): Promise<void> {
+    this.store.setIndexPaused(true);
+    await this.stopIndex();
+  }
+  async close(): Promise<void> {
+    this.closed = true;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    if (this.indexPromise) await this.stopIndex();
+    this.store.close();
+  }
   async search(query: string, filters: SearchFilters = {}, mode = 'hybrid', limit = 10, offset = 0, signal?: AbortSignal) {
     const started = performance.now();
     const candidateBudget = Math.max(1, this.store.count());
@@ -113,12 +134,19 @@ export class RetrievalService {
         used = 'hybrid';
       } catch (error) { if (signal?.aborted) throw error; warning = `Semantic search unavailable: ${String(error)}. Showing keyword results.`; }
     } else if (mode === 'hybrid') warning = 'Local embedding model is not configured. Showing keyword results.';
-    const ranks = new Map<number, Passage>();
-    [lexical, semantic].forEach(list => list.forEach((p, i) => { const current = ranks.get(p.chunkId); ranks.set(p.chunkId, { ...p, score: (current?.score || 0) + 1 / (60 + i + 1) }); }));
+    const ranks = new Map<string, Passage>();
+    for (const list of [lexical, semantic]) {
+      list.forEach((passage, index) => {
+        const current = ranks.get(passage.id);
+        // Keep the keyword snippet when both searches find the same message.
+        ranks.set(passage.id, {
+          ...(current || passage),
+          score: (current?.score || 0) + 1 / (60 + index + 1),
+        });
+      });
+    }
     const sorted = [...ranks.values()].sort((a, b) => b.score - a.score || a.chunkId - b.chunkId);
-    const unique: Passage[] = []; const ids = new Set<string>();
-    for (const p of sorted) if (!ids.has(p.id)) { ids.add(p.id); unique.push(p); }
-    return { results: unique.slice(offset, offset + limit).map(p => ({ ...p, context: this.store.context(p, filters) })), hasMore: unique.length > offset + limit, mode: used, warning, latencyMs: performance.now() - started };
+    return { results: sorted.slice(offset, offset + limit).map(p => ({ ...p, context: this.store.context(p, filters) })), hasMore: sorted.length > offset + limit, mode: used, warning, latencyMs: performance.now() - started };
   }
   async ask(query: string, filters: SearchFilters = {}, signal?: AbortSignal): Promise<GroundedAnswer> {
     const found = await this.search(query, filters, 'hybrid', 6, 0, signal);

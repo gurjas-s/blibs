@@ -68,6 +68,7 @@ The agent's reply syncs back on its own.
 | `npm run build` | Full build: `tsc` (main + preload as CJS, backend as ESM) → CJS markers → Vite bundles the panel to `dist/` |
 | `npm start` | Launch the app (needs a prior `build`) |
 | `npm test` | Rebuilds, runs unit and HTTP route tests, then runs the desktop harness with temporary stores and ports |
+| `npm run test:desktop` | Tests search and citations in an isolated Electron renderer after building; needs a display, but no model downloads |
 | `npm run smoke` | Boots the real app window, prints a JSON status line, quits — needs a display |
 | `npm run lint` | `oxlint` over the repo |
 | `npm run clean` | Wipe `build/` + `dist/` (then `build` again) |
@@ -167,7 +168,7 @@ declares for reference.
 search works without model setup. Optional free local BGE embeddings add semantic
 retrieval, and a small local Qwen model can select cited evidence sentences.
 Local answering is experimental: accurate quotes can still be irrelevant or
-incomplete. Review the sources. Read [setup, migration, demo, and evaluation
+incomplete. Review the sources. Read [setup, migration, and test
 instructions](docs/conversation-search.md) before enabling models. Runtime data
 now lives in Electron's user-data history directory, with a preserved legacy
 JSON backup; retained history is not capped at the panel's 500 messages.

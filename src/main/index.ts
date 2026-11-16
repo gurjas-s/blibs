@@ -27,7 +27,6 @@ const ROOT = path.join(__dirname, '..', '..');
 const DIST = path.join(ROOT, 'dist');
 const PRELOAD = path.join(__dirname, '..', 'preload', 'agent.js');
 const PROXY_ENTRY = path.join(__dirname, '..', 'server', 'proxy.js');
-if (process.env.BLIBS_DEMO === '1') app.setPath('userData', path.join(ROOT, '.demo-profile'));
 
 interface Vendor {
   id: string;
@@ -393,12 +392,10 @@ async function boot(): Promise<void> {
   startStatic();
   wireIpc();
   createMainWindow();
-  if (process.env.BLIBS_DEMO !== '1') attachVendorViews();
+  attachVendorViews();
   buildMenu();
-  if (process.env.BLIBS_DEMO !== '1') {
-    setInterval(() => sweep('sweep-60s').catch(() => {}), 60000);
-    setInterval(() => drainOutbox('timer-30s').catch(() => {}), 30000);
-  }
+  setInterval(() => sweep('sweep-60s').catch(() => {}), 60000);
+  setInterval(() => drainOutbox('timer-30s').catch(() => {}), 30000);
 }
 
 async function smoke(): Promise<void> {

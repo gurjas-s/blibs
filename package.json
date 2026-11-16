@@ -13,7 +13,7 @@
     "test": "npm run build && node --import tsx --test tests/*.test.ts && tsx src/main/test-harness.ts",
     "verify:clean-build": "node scripts/verify-clean-build.mjs",
     "lint": "oxlint",
-    "evaluate:search": "tsx scripts/evaluate-retrieval.ts"
+    "test:desktop": "node scripts/test-search-desktop.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",

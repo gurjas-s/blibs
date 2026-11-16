@@ -25,9 +25,6 @@ server/outbox.json
 *.sqlite*
 server/imports.pre-sqlite.json
 .local-models/
-.demo-data/
-.demo-profile/
-evidence/*.png
 
 # Packaged app output
 out
