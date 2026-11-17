@@ -4,6 +4,23 @@ import { SEED_AGENTS, providerFor } from './providers';
 import type { Agent, ChatMessage } from './types';
 import { cleanImportText } from './text';
 import SearchPanel from './SearchPanel';
+import {
+  fetchImports,
+  fetchOutboxStatuses,
+  queueOutbox,
+  retryOutbox as retryOutboxItem,
+} from './client';
+import { AgentListItem } from './components/AgentListItem';
+import { Button } from './components/Button';
+import { CheckboxField } from './components/CheckboxField';
+import { EmptyState } from './components/EmptyState';
+import { LinkButton } from './components/LinkButton';
+import { MessageBubble } from './components/MessageBubble';
+import { SectionLabel } from './components/SectionLabel';
+import { SelectField } from './components/SelectField';
+import { StatusPill } from './components/StatusPill';
+import type { StatusTone } from './components/StatusPill';
+import { TextField } from './components/TextField';
 
 const LS_MSGS = 'blibs-messages-v2';
 const LS_AGENTS = 'blibs-agents-v2';
@@ -92,10 +109,7 @@ export default function App() {
   async function pullImports(silent = false) {
     if (!silent) setStatusLine('Syncing…');
     try {
-      const res = await fetch('/api/imports');
-      if (!res.ok) throw new Error(`proxy HTTP ${res.status}`);
-      const data = await res.json();
-      const items: { id: string; provider: string; role: string; text: string; ts: number }[] = data?.imports ?? [];
+      const items = await fetchImports();
       const cur = messagesRef.current;
       const ags = agentsRef.current;
       const next: typeof cur = { ...cur };
@@ -155,10 +169,7 @@ export default function App() {
 
   async function syncOutboxStatuses() {
     try {
-      const res = await fetch('/api/outbox');
-      if (!res.ok) return;
-      const data = await res.json();
-      const byId = new Map<string, string>((data?.items ?? []).map((o: { id: string; status: string }) => [o.id, o.status]));
+      const byId = await fetchOutboxStatuses();
       if (!byId.size) return;
       const cur = messagesRef.current;
       let changed = false;
@@ -202,14 +213,7 @@ export default function App() {
     };
     setMessages((m) => ({ ...m, [active.id]: [...(m[active.id] ?? []), userMsg] }));
     try {
-      const res = await fetch('/api/outbox', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: meta.id, text }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.id) throw new Error(data?.error || `proxy HTTP ${res.status}`);
-      const outId = data.id as string;
+      const outId = await queueOutbox(meta.id, text);
       setMessages((m) => ({
         ...m,
         [active.id]: (m[active.id] ?? []).map((x) => (x.id === userMsg.id ? { ...x, outId } : x)),
@@ -227,14 +231,9 @@ export default function App() {
     setSending(false);
   }
 
-  async function retryOutbox(outId: string) {
+  async function retryDelivery(outId: string) {
     try {
-      const res = await fetch('/api/outbox/retry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: outId }),
-      });
-      if (!res.ok) throw new Error(`proxy HTTP ${res.status}`);
+      await retryOutboxItem(outId);
       setMessages((m) => {
         const next = { ...m };
         for (const [agentId, list] of Object.entries(next)) {
@@ -248,11 +247,11 @@ export default function App() {
     }
   }
 
-  const pill = !lastPull
-    ? { cls: 'idle', label: 'Waiting for sync' }
+  const pill: { tone: StatusTone; label: string } = !lastPull
+    ? { tone: 'idle', label: 'Waiting for sync' }
     : lastPull.ok
-      ? { cls: 'live', label: `Synced ${clock(lastPull.at)}` }
-      : { cls: 'down', label: 'Backend unreachable' };
+      ? { tone: 'live', label: `Synced ${clock(lastPull.at)}` }
+      : { tone: 'down', label: 'Backend unreachable' };
 
   return (
     <div className="shell">
@@ -262,54 +261,63 @@ export default function App() {
           <strong>blibs</strong>
         </div>
         <div className="search">
-          {showHistory ? <span>Local conversation history</span> :
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={`Search ${active.name}…`}
-            aria-label="Search current chat"
-          />
-          }
+          {showHistory ? <span>Local conversation history</span> : (
+            <TextField
+              hideLabel
+              label="Search current chat"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={`Search ${active.name}…`}
+            />
+          )}
         </div>
-        <div className={`sync-pill ${pill.cls}`} title={statusLine}>
-          <span className="dot" />
+        <StatusPill tone={pill.tone} title={statusLine}>
           {pill.label}
-        </div>
+        </StatusPill>
       </header>
 
       <div className="layout">
         <aside className="sidebar">
-          <p className="section-label">Agents</p>
+          <SectionLabel>Agents</SectionLabel>
           {agents.map((a) => (
-            <div key={a.id} className={`agent ${a.id === activeId ? 'active' : ''}`}>
-              <button className="agent-main" onClick={() => { setActiveId(a.id); setShowHistory(false); }}>
-                <span className="avatar">{a.name.charAt(0)}</span>
-                <span className="ameta">
-                  <span className="aname">{a.name}</span>
-                  <span className="avendor">{a.vendor}</span>
-                  <span className={`async ${a.lastSyncAt ? 'live' : ''}`}>
-                    <span className="dot" />
-                    {a.lastSyncAt ? `synced ${timeAgo(a.lastSyncAt)}` : 'not synced yet'}
-                  </span>
-                </span>
-              </button>
-              <a className="open-tab" href={a.site} target="_blank" rel="noreferrer" title={`Open ${a.name} in a new tab`}>
-                ↗
-              </a>
-            </div>
+            <AgentListItem
+              key={a.id}
+              agent={a}
+              active={a.id === activeId}
+              syncLabel={a.lastSyncAt ? `synced ${timeAgo(a.lastSyncAt)}` : 'not synced yet'}
+              onSelect={(id) => {
+                setActiveId(id);
+                setShowHistory(false);
+              }}
+            />
           ))}
           <div className="side-foot">
-            <button className={`history-nav ${showHistory ? 'selected' : ''}`} onClick={() => setShowHistory(true)}>Search all conversations</button>
-            <label className="auto-row" title="Pull synced chats on a timer">
-              <input type="checkbox" checked={autoPull} onChange={(e) => setAutoPull(e.target.checked)} />
-              Auto-sync
-              <select value={pullSecs} onChange={(e) => setPullSecs(Number(e.target.value))} aria-label="Auto-sync interval">
+            <Button
+              variant="secondary"
+              size="lg"
+              className={showHistory ? 'history-nav selected' : 'history-nav'}
+              onClick={() => setShowHistory(true)}
+            >
+              Search all conversations
+            </Button>
+            <div className="auto-row" title="Pull synced chats on a timer">
+              <CheckboxField
+                label="Auto-sync"
+                checked={autoPull}
+                onChange={(e) => setAutoPull(e.target.checked)}
+              />
+              <SelectField
+                hideLabel
+                label="Auto-sync interval"
+                value={pullSecs}
+                onChange={(e) => setPullSecs(Number(e.target.value))}
+              >
                 <option value={15}>15s</option>
                 <option value={30}>30s</option>
                 <option value={60}>1m</option>
                 <option value={300}>5m</option>
-              </select>
-            </label>
+              </SelectField>
+            </div>
             <p>Sessions live inside this app — use the Agents menu to log in.</p>
           </div>
         </aside>
@@ -321,55 +329,51 @@ export default function App() {
               <h1>{active.name}</h1>
               <p>{active.description}</p>
             </div>
-            <a className="open-tab big" href={active.site} target="_blank" rel="noreferrer">
+            <LinkButton
+              variant="secondary"
+              href={active.site}
+              target="_blank"
+              rel="noreferrer"
+            >
               Open {active.name} ↗
-            </a>
+            </LinkButton>
           </div>
 
           <div className="thread">
             {thread.length === 0 && (
-              <div className="empty">
-                <p className="empty-title">{query ? 'No matches' : `No chats with ${active.name} yet`}</p>
-                {!query && (
-                  <ol>
-                    <li>Log in via the Agents menu (once per agent)</li>
-                    <li>Chats sync here on their own — replies you send go to the real session</li>
-                  </ol>
-                )}
-              </div>
+              <EmptyState
+                title={query ? 'No matches' : `No chats with ${active.name} yet`}
+                steps={query ? undefined : [
+                  'Log in via the Agents menu (once per agent)',
+                  'Chats sync here on their own — replies you send go to the real session',
+                ]}
+              />
             )}
             {thread.map((m) => (
-              <div key={m.id} className={`msg ${m.role}`} title={new Date(m.ts).toLocaleString()}>
-                <p>{m.text}</p>
-                {m.role === 'user' && m.via === 'tab' && m.outStatus && m.outStatus !== 'sent' && (
-                  <span className={`receipt ${m.outStatus}`}>
-                    {m.outStatus === 'queued' ? 'Sending…' : 'Not delivered'}
-                    {m.outStatus === 'failed' && m.outId && (
-                      <button onClick={() => retryOutbox(m.outId!)}>Retry</button>
-                    )}
-                  </span>
-                )}
-                {m.role === 'user' && m.via === 'tab' && m.outStatus === 'sent' && (
-                  <span className="receipt sent">Sent</span>
-                )}
-              </div>
+              <MessageBubble key={m.id} message={m} onRetry={retryDelivery} />
             ))}
             <div ref={bottomRef} />
           </div>
 
           <div className="composer">
-            <input
+            <TextField
+              hideLabel
+              label={`Message ${active.name}`}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') send();
               }}
               placeholder={`Message ${active.name}…`}
-              aria-label={`Message ${active.name}`}
             />
-            <button className="primary" onClick={send} disabled={sending || !input.trim()}>
+            <Button
+              variant="primary"
+              size="lg"
+              onClick={send}
+              disabled={sending || !input.trim()}
+            >
               Send
-            </button>
+            </Button>
           </div>
           <p className="status-line">{statusLine}</p>
           </>}
