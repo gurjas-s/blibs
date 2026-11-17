@@ -118,9 +118,24 @@ async function run() {
     await submit();
     await waitFor(`Array.from(document.querySelectorAll('.history-result')).some(result => result.textContent.includes(${JSON.stringify(quote)}))`);
 
-    // Ask locally lives in Settings.
+    // Sync lives in Settings. The sidebar footer keeps only the agents entry.
     await openSettings();
     await waitFor(`Boolean(document.querySelector('.settings-fields'))`);
+    assert.equal(await js(`document.querySelectorAll('.side-foot input[type="checkbox"]').length`), 0);
+    assert.equal(await js(`document.querySelectorAll('.side-foot select').length`), 0);
+    assert.equal(
+      await js(`Array.from(document.querySelectorAll('.side-foot button')).some(button => button.textContent === 'Agents')`),
+      true,
+    );
+    const syncCard = `Array.from(document.querySelectorAll('.settings-card')).find(card => card.querySelector('h2')?.textContent === 'Sync')`;
+    await waitFor(`Boolean(${syncCard})`);
+    assert.equal(await js(`${syncCard}.querySelector('input[type="checkbox"]').checked`), false);
+    await js(`${syncCard}.querySelector('input[type="checkbox"]').click()`);
+    await waitFor(`localStorage.getItem('blibs-autopull-v1') === 'true'`);
+    await js(`(() => { const select = ${syncCard}.querySelector('select'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, '30'); select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await waitFor(`localStorage.getItem('blibs-pullsecs-v1') === '30'`);
+
+    // Ask locally lives in Settings.
     await waitFor(`!${settingsButton('Ask locally')}.disabled`);
     await js(`${settingsButton('Ask locally')}.click()`);
     await waitFor(`Boolean(document.querySelector('.citation'))`);

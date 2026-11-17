@@ -39,7 +39,7 @@ Shared setup: see [README.md](README.md).
    with `curl -s http://127.0.0.1:5199/favicon.svg | head -c 60`.
    Expected: the output starts with `<svg` and contains a `viewBox`.
 
-5. Select `Agents and sign-in`.
+5. Select `Agents`.
    Expected: the cards show `Muse`, `Dots`, and `Grok`. The vendor names are
    `Meta`, `OpenAI`, and `xAI`. Each avatar shows the first letter of the
    product name and is decorative.

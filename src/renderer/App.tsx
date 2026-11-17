@@ -37,12 +37,10 @@ import {
 } from './client';
 import { AgentListItem } from './components/AgentListItem';
 import { Button } from './components/Button';
-import { CheckboxField } from './components/CheckboxField';
 import { EmptyState } from './components/EmptyState';
 import { LinkButton } from './components/LinkButton';
 import { MessageBubble } from './components/MessageBubble';
 import { SectionLabel } from './components/SectionLabel';
-import { SelectField } from './components/SelectField';
 import { StatusPill } from './components/StatusPill';
 import type { StatusTone } from './components/StatusPill';
 import { TextField } from './components/TextField';
@@ -593,26 +591,8 @@ export default function App() {
                 setSidebarOpen(false);
               }}
             >
-              Agents and sign-in
+              Agents
             </Button>
-            <div className="auto-row" title="Pull synced chats on a timer">
-              <CheckboxField
-                label="Auto-sync"
-                checked={autoPull}
-                onChange={(e) => setAutoPull(e.target.checked)}
-              />
-              <SelectField
-                hideLabel
-                label="Auto-sync interval"
-                value={pullSecs}
-                onChange={(e) => setPullSecs(Number(e.target.value))}
-              >
-                <option value={15}>15s</option>
-                <option value={30}>30s</option>
-                <option value={60}>1m</option>
-                <option value={300}>5m</option>
-              </SelectField>
-            </div>
           </div>
         </aside>
 
@@ -635,6 +615,10 @@ export default function App() {
               onDefaultsChange={setSearchDefaults}
               canAsk={Boolean(parsedQuery.text)}
               onAsk={() => startSearch(true)}
+              autoPull={autoPull}
+              onAutoPullChange={setAutoPull}
+              pullSecs={pullSecs}
+              onPullSecsChange={setPullSecs}
               onBack={closeSettings}
             />
           ) : view === 'results' && searchCommand ? (
@@ -664,7 +648,7 @@ export default function App() {
             {thread.length === 0 && (
               <EmptyState
                 title={`No messages with ${active.name} yet`}
-                steps={['Use Agents and sign-in to sync chats.']}
+                steps={['Use Agents to sync chats.']}
               />
             )}
             {thread.map((m) => (

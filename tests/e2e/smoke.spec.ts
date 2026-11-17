@@ -153,6 +153,55 @@ test(
 );
 
 test(
+  'sync controls live in Settings and apply to the running timer',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page } = app;
+
+    // The sidebar footer keeps only the agents entry.
+    assert.equal(await page.locator('.side-foot input[type="checkbox"]').count(), 0);
+    assert.equal(await page.locator('.side-foot select').count(), 0);
+    assert.equal(
+      await page.getByRole('button', { name: 'Agents', exact: true }).isVisible(),
+      true,
+    );
+    assert.equal(await page.getByText('Agents and sign-in').count(), 0);
+
+    await openSettings(page);
+    const syncCard = page.locator('.settings-card', {
+      has: page.getByRole('heading', { name: 'Sync', exact: true }),
+    });
+    assert.equal(await syncCard.isVisible(), true);
+    const toggle = syncCard.getByLabel('Auto-sync', { exact: true });
+    const interval = syncCard.getByLabel('Auto-sync interval');
+    assert.equal(await toggle.isChecked(), true);
+    assert.equal(await interval.inputValue(), '15');
+
+    // The existing storage keys keep the values.
+    await toggle.uncheck();
+    assert.equal(await page.evaluate(() => localStorage.getItem('blibs-autopull-v1')), 'false');
+    await toggle.check();
+    assert.equal(await page.evaluate(() => localStorage.getItem('blibs-autopull-v1')), 'true');
+    await interval.selectOption('30');
+    assert.equal(await page.evaluate(() => localStorage.getItem('blibs-pullsecs-v1')), '30');
+
+    // The running timer uses the new interval without a restart.
+    const nextPull = page.waitForRequest(
+      (request) => request.url().includes('/api/imports'),
+      { timeout: 10_000 },
+    );
+    await interval.selectOption('15');
+    await nextPull;
+    assert.equal(await page.evaluate(() => localStorage.getItem('blibs-pullsecs-v1')), '15');
+    assertImage(await app.screenshot('settings-sync.png'));
+
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    await page.locator('.thread').waitFor();
+  },
+);
+
+test(
   'topbar search runs one global search with a provider tag and settings',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {
@@ -438,7 +487,7 @@ test(
     const { page } = app;
 
     await completeOnboarding(page);
-    await page.getByRole('button', { name: 'Agents and sign-in' }).click();
+    await page.getByRole('button', { name: 'Agents', exact: true }).click();
     await page.getByRole('heading', { name: 'Agents', exact: true }).waitFor();
     assert.equal(await page.locator('.login-vendor').count(), 3);
 
@@ -475,7 +524,7 @@ test(
     assertImage(await app.screenshot('home-after-login-light.png'));
 
     // The in-app Back control returns home too.
-    await page.getByRole('button', { name: 'Agents and sign-in' }).click();
+    await page.getByRole('button', { name: 'Agents', exact: true }).click();
     await page.getByRole('button', { name: 'Back to chats' }).click();
     await page.locator('.login-screen').waitFor({ state: 'detached' });
   },

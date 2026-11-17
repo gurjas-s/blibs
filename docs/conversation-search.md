@@ -12,6 +12,7 @@ Each result shows the source, role, date, and nearby messages. **View message** 
 
 Select the gear in the sidebar to open Settings. Settings holds:
 
+- The **Auto-sync** toggle and the auto-sync interval.
 - The index status line, and the **Pause indexing**, **Resume indexing**, and **Rebuild vectors** controls.
 - **Ask locally**. The button uses the current topbar query. It is available when a local model is configured.
 - The thread URL or ID, **From**, and **To** filters. They apply to every search and persist across app restarts.

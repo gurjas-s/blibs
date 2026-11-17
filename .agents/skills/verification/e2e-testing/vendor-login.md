@@ -21,7 +21,7 @@ Shared setup: see [README.md](README.md).
 1. Start the mock app with the shared command. Complete the first-run card.
    Expected: the chat shell shows.
 
-2. Select `Agents and sign-in`.
+2. Select `Agents`.
    Expected: the heading is `Agents`. The cards are `Muse`, `Dots`, and `Grok`.
    Each card shows `Not signed in. Select Sign in to open the vendor window.`
    The `Back to chats` button is visible.
