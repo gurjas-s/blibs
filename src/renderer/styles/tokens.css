@@ -13,6 +13,7 @@
   --layout-sidebar-width: 264px;
   --layout-thread-measure: 76ch;
   --layout-search-width: 520px;
+  --layout-status-space: 176px;
   --layout-gutter: var(--space-7);
 
   /* Control scale — one height, radius, padding, border, and focus ring for

@@ -2,9 +2,9 @@
 
 ## Scope and non-goals
 
-This document covers the sync pill, the status line, the sidebar sync label,
-the auto-sync checkbox and interval, the import pull, import deduplication, the
-backend health route, and the outbox status refresh.
+This document covers the sync pill, the status announcement, the sidebar sync
+label, the auto-sync checkbox and interval, the import pull, import
+deduplication, the backend health route, and the outbox status refresh.
 
 It does not cover vendor scraping selectors or a live vendor session. It does
 not cover search indexing.
@@ -20,7 +20,8 @@ Shared setup: see [README.md](README.md).
 
 1. Start the mock app with the shared command. Complete the first-run card.
    Expected: the sync pill changes from `Waiting for sync` to
-   `Synced <time>` after the first pull. The status line shows `Up to date`.
+   `Synced <time>` after the first pull. The status announcement reads
+   `Up to date`.
 
 2. Import one message:
 
@@ -30,9 +31,9 @@ Shared setup: see [README.md](README.md).
      -d '{"items":[{"provider":"dots","role":"agent","text":"synced from the API","ts":2,"sourceId":"verify-sync-1"}]}'
    ```
 
-   Expected: `{"added":1}`. Wait for the 15-second interval. The status line
-   shows `1 new message synced`. The `Dots` row changes from `Not synced` to
-   `Synced just now`.
+   Expected: `{"added":1}`. Wait for the 15-second interval. The status
+   announcement reads `1 new message synced`. The `Dots` row changes from
+   `Not synced` to `Synced just now`.
 
 3. Run the same command again.
    Expected: `{"added":0}`. The message does not appear twice.
@@ -47,8 +48,8 @@ Shared setup: see [README.md](README.md).
 
 5. Stop the backend process, then wait for the next pull:
    `lsof -ti tcp:8899 | xargs kill`.
-   Expected: the sync pill shows `Backend unreachable`. The status line shows
-   `Backend unreachable — restart the app.`
+   Expected: the sync pill shows `Backend unreachable`. The status
+   announcement reads `Backend unreachable — restart the app.`
 
 6. Quit the app and start it again with the same `TMP` value.
    Expected: a new backend starts and the pill returns to a synced state after
