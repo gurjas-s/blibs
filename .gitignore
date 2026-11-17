@@ -21,6 +21,10 @@ tests/e2e/artifacts/
 .env
 .env.*.local
 
+# Evidence reports and reproduction notes. Screenshots stay tracked so merged
+# pull request images still render.
+evidence/**/*.md
+
 # blibs runtime data: your real synced chats + queued sends live here.
 # The proxy recreates these files on demand — never commit them.
 server/imports.json

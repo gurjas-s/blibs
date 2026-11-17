@@ -1,6 +1,6 @@
 ---
 name: validate
-description: Check a blibs change before review. Run lint, unit tests, the e2e smoke spec, and one manual test. Add a screenshot when the change is visible.
+description: Check a blibs change before review. Run build, lint, unit tests, the e2e smoke spec, and the verification document for the changed feature. Add a screenshot when the change is visible.
 ---
 
 # Validate a change
@@ -42,18 +42,26 @@ The check needs a display. On Linux without `DISPLAY` or `WAYLAND_DISPLAY`, the
 spec skips with a message. Use `xvfb-run -a npm run e2e` on a headless Linux
 machine.
 
-## 5. Manual test
+## 5. Feature verification
 
-Do one manual test of the changed behavior.
+Use the `verification` skill in
+`.agents/skills/verification/SKILL.md`.
 
-Write these items in the PR:
+Choose the document for the changed feature from
+`.agents/skills/verification/e2e-testing/README.md`. Follow the document.
 
-1. The steps that you ran.
+Write these items in the PR body or the worker report:
+
+1. The verification commands that you ran.
 2. The result that you saw.
+3. Each manual boundary that you did not run, and the reason.
+
+Do not commit a reproduction note or an evidence report.
 
 ## 6. Screenshot
 
-If the change changes what a user sees, add a screenshot to the PR.
+If the change changes what a user sees, add a screenshot to the PR body. Use
+mocked data. Do not commit the screenshot as an evidence report.
 
 ## 7. PR text
 

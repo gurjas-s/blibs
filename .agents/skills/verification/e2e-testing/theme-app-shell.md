@@ -1,0 +1,128 @@
+# Verify theme and app shell
+
+## Scope and non-goals
+
+This document covers the theme control, the saved theme choice, the system
+theme follow, the design tokens, the shell layout, the sidebar toggle, the
+current-chat search field, and the status pill.
+
+It does not cover the brand mark, the favicon, or the window title. Use
+[icon-branding.md](icon-branding.md). It does not cover chat content or search
+results.
+
+## Preconditions and setup
+
+- Node.js 24 and `npm ci`.
+- A successful `npm run build`.
+- A display for `npm run e2e`.
+- A temporary profile.
+- No vendor account.
+
+The e2e harness starts the app with a temporary profile and no vendor login.
+The theme test uses the real panel and the real token set.
+
+## Test steps
+
+1. Run `npm run e2e`.
+   Expected: exit code 0. The test
+   `theme control follows the system preference and persists the choice`
+   passes. The command writes `tests/e2e/artifacts/panel-dark.png` and
+   `tests/e2e/artifacts/panel-light.png`.
+
+2. Start the mock app with the shared command. Complete the first-run card.
+   Expected: the chat shell shows with the top bar, the sidebar, the thread,
+   the composer, and the status pill.
+
+3. Set the theme control to `Dark`.
+   Expected: `document.documentElement.dataset.theme` is `dark`.
+   `localStorage.getItem('blibs-theme-v1')` is `"dark"` with the JSON quotes.
+
+4. Reload the page.
+   Expected: the theme control value is `Dark`. The page paints the dark token
+   set before the first frame. There is no flash of the light theme.
+
+5. Set the theme control to `Light`.
+   Expected: `document.documentElement.dataset.theme` is `light`.
+   `localStorage.getItem('blibs-theme-v1')` is `"light"`.
+
+6. Set the theme control to `System`. Set the operating system to dark, then to
+   light.
+   Expected: the control value is `System`. The page follows the system
+   preference without a reload. `data-theme` changes from `dark` to `light`.
+
+7. Read the required tokens in both themes with this console command:
+
+   ```js
+   const s = getComputedStyle(document.documentElement);
+   ['--color-bg', '--color-surface', '--color-text', '--color-accent',
+    '--space-2', '--font-size-base', '--radius-lg', '--elevation-1']
+     .map((name) => [name, s.getPropertyValue(name).trim()]);
+   ```
+
+   Expected: each token has a value in the dark theme and in the light theme.
+   The background and text values differ between the themes.
+
+8. Resize the window to 1440 by 900 pixels. Run this in the console:
+   `document.documentElement.scrollWidth - document.documentElement.clientWidth`.
+   Expected: the value is `0` or `1`. The sidebar is visible.
+
+9. Resize the window to 1024 by 800 pixels.
+   Expected: the value is `0` or `1`. The sidebar is visible.
+
+10. Resize the window to 800 by 800 pixels.
+    Expected: the sidebar is hidden. The `Chats` button is visible.
+
+11. Select `Chats`.
+    Expected: the sidebar shows and `aria-expanded` is `true`. Select `Chats`
+    again. Expected: the sidebar hides and `aria-expanded` is `false`.
+
+12. Press `Tab` from the top of the page.
+    Expected: focus moves through the `Chats` button, the current-chat search
+    field, the theme control, the status pill, the sidebar items, and the
+    composer. Each control has a visible focus ring. The theme control changes
+    with the arrow keys.
+
+13. Check the text contrast in both themes. Check body text, muted text,
+    status text, and text on the accent color.
+    Expected: each pair meets WCAG AA or better.
+
+## Failure signals and artifacts
+
+- A required token is empty.
+- The light and dark theme use the same background or text value.
+- The saved choice is missing or has the wrong value after a reload.
+- The first paint uses the wrong theme.
+- The system preference does not update the page without a reload.
+- The layout scrolls sideways at 1024 or 1440 pixels.
+- The sidebar is hidden at 800 pixels and the `Chats` button is missing.
+- A control has no focus ring or a focus trap.
+- A text pair fails WCAG AA.
+
+Artifacts:
+
+- `tests/e2e/artifacts/panel-dark.png`
+- `tests/e2e/artifacts/panel-light.png`
+- The `npm run e2e` terminal output
+- The token values from the console
+- The layout widths and the overflow value
+
+## Cleanup
+
+1. Quit the mock app. On macOS, press `Cmd+Q`. On Linux or Windows, close the
+   window. Press `Ctrl+C` in the terminal when the process stays open.
+2. Remove the temporary directory: `rm -rf "$TMP"`.
+3. Keep the screenshots only for the pull request body.
+
+## Automated tests that cover it
+
+- `tests/e2e/smoke.spec.ts`, test
+  `theme control follows the system preference and persists the choice`. It
+  covers the `System` default, a dark system preference, a live system change,
+  the saved `Dark` choice, persistence after a reload, the required tokens, and
+  both theme screenshots. Run `npm run e2e`.
+- `tests/e2e/smoke.spec.ts`, test
+  `panel shows a selected chat and a readable message thread`. It covers the
+  1024 and 1440 pixel layouts, the 800 pixel sidebar toggle, and the absence of
+  horizontal scroll. Run `npm run e2e`.
+- `tests/e2e/harness.ts` provides `selectTheme` and `setTheme`.
+- No unit test covers the theme module.
