@@ -633,16 +633,18 @@ export default function App() {
             aria-label={`Messages with ${active.name}`}
             tabIndex={0}
           >
-            {thread.length === 0 && (
-              <EmptyState
-                title={`No messages with ${active.name} yet`}
-                steps={['Use Agents to sync chats.']}
-              />
-            )}
-            {thread.map((m) => (
-              <MessageBubble key={m.id} message={m} agentName={active.name} onRetry={retryDelivery} />
-            ))}
-            <div ref={bottomRef} />
+            <div className="thread-content">
+              {thread.length === 0 && (
+                <EmptyState
+                  title={`No messages with ${active.name} yet`}
+                  steps={['Use Agents to sync chats.']}
+                />
+              )}
+              {thread.map((m) => (
+                <MessageBubble key={m.id} message={m} agentName={active.name} onRetry={retryDelivery} />
+              ))}
+              <div ref={bottomRef} />
+            </div>
           </div>
 
           <div className="composer">
