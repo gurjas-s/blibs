@@ -79,6 +79,18 @@ CI runs on Linux and Windows for every push and pull request. To block merging
 when checks fail, a repository admin must require both **Build, lint, and test**
 checks in the default branch's protection rules. See `AGENTS.md` for contribution guidance.
 
+## Contributing
+
+Read `AGENTS.md` before you change code. The repository skills in
+`.agents/skills/` hold the repeatable steps:
+
+- `onboarding` — set up a fresh checkout and start the app.
+- `validate` — run the build, lint, unit tests, one manual test, and add a
+  screenshot when the change is visible.
+
+Write PR titles, PR descriptions, review comments, and user-facing docs in
+English. Use ASD-STE100 Simplified Technical English.
+
 ## Repo layout
 
 Standard Electron + Vite structure — one process per directory:
@@ -102,6 +114,8 @@ server/
                 import store, send outbox. Spawned by the main process.
 scripts/
   emit-cjs-markers.mjs  build step — see "Modules" below
+.agents/
+  skills/       repo skills for onboarding and validation
 ```
 
 Generated, never edited or committed: `build/` (compiled main/preload/backend),
