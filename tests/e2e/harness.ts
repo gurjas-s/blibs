@@ -153,12 +153,21 @@ export async function setTheme(page: Page, theme: 'light' | 'dark'): Promise<voi
   await page.waitForTimeout(200);
 }
 
+/** Open the Settings view from the sidebar gear. */
+export async function openSettings(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('heading', { name: 'Settings', exact: true }).waitFor({ timeout: 5_000 });
+}
+
 /** Choose a theme with the panel control and wait for the token set. */
 export async function selectTheme(
   page: Page,
   preference: 'system' | 'light' | 'dark',
 ): Promise<void> {
-  await page.getByLabel('Theme').selectOption(preference);
+  const theme = page.getByLabel('Theme');
+  const opened = !(await theme.isVisible().catch(() => false));
+  if (opened) await openSettings(page);
+  await theme.selectOption(preference);
   if (preference === 'system') {
     await page.waitForFunction(
       () => document.documentElement.dataset.theme === 'light'
@@ -169,6 +178,9 @@ export async function selectTheme(
       (expected) => document.documentElement.dataset.theme === expected,
       preference,
     );
+  }
+  if (opened) {
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
   }
   await page.waitForTimeout(200);
 }

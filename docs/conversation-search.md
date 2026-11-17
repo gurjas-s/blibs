@@ -1,8 +1,21 @@
 # Search imported conversations
 
-Use the search bar in the topbar. The scope control next to the bar selects **This chat** or **All conversations**. **This chat** filters the open chat as you type. **All conversations** searches retained history when you press Enter. A new query clears the old results, but it does not run a search. The scope control keeps the typed text.
+The topbar has one search bar. It searches all retained conversations. Type a query to run the search after a short pause. Press Enter to run it at once. Press Escape or clear the bar to return to the open chat. Selecting an agent also returns to its chat.
 
-In **All conversations** scope, press Enter to search retained messages across providers, or filter by provider, thread ID/URL, and observation date. Each result shows the source, role, date, and nearby messages. **View message** opens the stored message. **Open thread** opens the vendor thread in its persistent login session. **Search** and **Ask locally** run the same search again with the provider, thread, and date filters.
+Add one provider tag to limit the search, for example `#muse grocery`. The tag is case-insensitive. The supported tags are `#muse`, `#dots`, `#grok`, and `#custom`. The tag stays in the bar, but it is not part of the query. If the bar holds only a tag and no query text, the app runs no search. A query without a tag searches every provider.
+
+Press Cmd+F on macOS or Ctrl+F on other systems to focus the bar. From an open chat, the bar is prefilled with that chat's provider tag and the caret follows the tag.
+
+Each result shows the source, role, date, and nearby messages. **View message** opens the stored message. **Open thread** opens the vendor thread in its persistent login session.
+
+## Settings
+
+Select the gear in the sidebar to open Settings. Settings holds:
+
+- The index status line, and the **Pause indexing**, **Resume indexing**, and **Rebuild vectors** controls.
+- **Ask locally**. The button uses the current topbar query. It is available when a local model is configured.
+- The thread URL or ID, **From**, and **To** filters. They apply to every search and persist across app restarts.
+- The theme control.
 
 Keyword search works without models. Optional local embeddings add semantic search. **Ask locally** uses an optional local model to select quotations from the results. Answers are experimental: an exact quote can still be irrelevant or incomplete. Check the source messages.
 
@@ -30,7 +43,7 @@ Back up the full history directory while the app is stopped. Older app versions 
 
 Search splits text into chunks of up to 1,000 characters with 150-character overlap. Keyword and semantic ranks combine by message ID. Semantic search scans stored vectors on the CPU; its cost grows with history size. Dense Unicode text can exceed the embedding model's token limit and leave a chunk pending.
 
-**Pause indexing** stops work and saves the pause state across imports and app restarts. **Resume indexing** continues saved work. **Rebuild vectors** clears vectors and starts indexing again. Neither action removes history. Changing search inputs clears old results and resets paging.
+**Pause indexing** stops work and saves the pause state across imports and app restarts. **Resume indexing** continues saved work. **Rebuild vectors** clears vectors and starts indexing again. Neither action removes history. A new query replaces the old results and resets paging.
 
 ## Optional local models
 
@@ -65,9 +78,9 @@ Changing the embedding model label makes old vectors pending. Missing or failed 
 
 ## Verification and troubleshooting
 
-Run `npm test`, `npm run lint`, and `npm run verify:clean-build`. After building, run `npm run test:desktop` on a machine with a display. The desktop check uses temporary history, a separate profile, and separate ports. It tests search, filters, paging, delayed echoes, and exact source citations. A fixed local model response tests the citation flow; it does not measure answer quality. It writes no reports to the repository.
+Run `npm test`, `npm run lint`, and `npm run verify:clean-build`. After building, run `npm run test:desktop` on a machine with a display. The desktop check uses temporary history, a separate profile, and separate ports. It tests search, paging, a provider tag, Settings, delayed echoes, and exact source citations. A fixed local model response tests the citation flow; it does not measure answer quality. It writes no reports to the repository.
 
-For manual testing, import a conversation from a signed-in vendor session. Search a distinctive phrase, change filters, inspect a source, and reopen the app to check retention. With local models enabled, check a paraphrase, pause and resume indexing, and inspect an answer's quotations.
+For manual testing, import a conversation from a signed-in vendor session. Search a distinctive phrase, add a `#provider` tag, open Settings to change the thread or date defaults, inspect a source, and reopen the app to check retention. With local models enabled, check a paraphrase, pause and resume indexing, and inspect an answer's quotations.
 
 | Problem | Check |
 | --- | --- |

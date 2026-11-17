@@ -13,6 +13,7 @@ import {
   displayAvailable,
   launch,
   NO_DISPLAY_MESSAGE,
+  openSettings,
   resetOnboarding,
   seedChats,
   selectAgent,
@@ -152,13 +153,13 @@ test(
 );
 
 test(
-  'topbar search filters the chat and searches all conversations',
+  'topbar search runs one global search with a provider tag and settings',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {
     assert.ok(app, 'The E2E app must start.');
     const { page } = app;
 
-    // Retained history for the All conversations scope. Keyword search needs no model.
+    // Retained history for the global search. Keyword search needs no model.
     const imported = await fetch(`${app.backendUrl}/api/import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -180,6 +181,14 @@ test(
             text: 'Atlas storage backups run every night at 02:00.',
             ts: Date.now() - 60_000,
           },
+          {
+            provider: 'dots',
+            role: 'user',
+            sourceId: 'e2e-atlas-3',
+            threadId: 'https://dots.example/atlas',
+            text: 'Atlas storage is out of scope for Dots.',
+            ts: Date.now() - 30_000,
+          },
         ],
       }),
     });
@@ -187,53 +196,135 @@ test(
 
     await completeOnboarding(page);
     await selectTheme(page, 'dark');
-    await page.getByLabel('Search scope').selectOption('chat');
     await selectAgent(page, 'Muse');
 
     const input = page.locator('.search input');
-    assert.equal(await input.getAttribute('aria-label'), 'Search Muse');
+    assert.equal(await input.getAttribute('aria-label'), 'Search all conversations');
+    // The search UI has one bar and no selectors.
+    assert.equal(await page.locator('.topbar select').count(), 0);
+    assert.equal(await page.getByLabel('Search scope').count(), 0);
 
-    // This chat filters as the user types, and clear restores the thread.
-    await input.fill('grocery');
-    await page.waitForFunction(() => document.querySelectorAll('.msg').length === 1);
-    assert.match(await page.locator('.msg p').first().innerText(), /grocery/i);
-    assertImage(await app.screenshot('search-chat-scope.png'));
+    // Cmd+F or Ctrl+F from a chat prefills that chat's provider tag.
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+f' : 'Control+f');
+    await page.waitForFunction(() => {
+      const field = document.querySelector<HTMLInputElement>('.search input');
+      return field?.value === '#muse ';
+    });
+    assert.equal(await input.inputValue(), '#muse ');
+    const caretAtEnd = await page.evaluate(() => {
+      const field = document.querySelector<HTMLInputElement>('.search input');
+      return Boolean(field && field.selectionStart === field.value.length);
+    });
+    assert.equal(caretAtEnd, true, 'The caret must sit after the prefilled tag.');
 
-    await input.fill('zzzz no match');
-    await page.getByText('No matches', { exact: true }).waitFor();
-    assert.equal(await page.locator('.msg').count(), 0);
+    // A tag with no query text runs no search.
+    await page.waitForTimeout(400);
+    assert.equal(await page.locator('.history-search').count(), 0);
+    assert.equal(await page.locator('.thread').isVisible(), true);
 
-    await input.fill('');
-    await page.getByText('No matches', { exact: true }).waitFor({ state: 'detached' });
-    assert.ok((await page.locator('.msg').count()) >= 3);
-
-    // A scope change keeps the text and does not run a search.
-    const searches: string[] = [];
+    const bodies: Array<{ query?: string; filters?: { provider?: string } }> = [];
     const recordSearch = (request: Request): void => {
-      if (request.url().includes('/api/search')) searches.push(request.url());
+      if (!request.url().includes('/api/search')) return;
+      bodies.push(request.postDataJSON() as { query?: string; filters?: { provider?: string } });
     };
     page.on('request', recordSearch);
-    await input.fill('Atlas storage');
-    await page.getByLabel('Search scope').selectOption('all');
-    await page.locator('.history-search').waitFor();
-    await page.waitForTimeout(400);
-    assert.equal(await input.inputValue(), 'Atlas storage');
-    assert.equal(await input.getAttribute('aria-label'), 'Search all conversations');
-    assert.equal(await page.locator('.history-result').count(), 0);
-    assert.deepEqual(searches, [], 'A scope change must not run a search.');
 
-    // Enter submits the current scope.
+    // A #provider tag limits the search. The token stays in the input.
+    await input.fill('#muse Atlas storage');
+    await page.waitForFunction(
+      () => document.querySelectorAll('.history-result').length === 2,
+      undefined,
+      { timeout: 15_000 },
+    );
+    assert.equal(await input.inputValue(), '#muse Atlas storage');
+    assert.equal(await page.locator('.thread').count(), 0);
+    const museBody = bodies.at(-1);
+    assert.equal(museBody?.query, 'Atlas storage');
+    assert.equal(museBody?.filters?.provider, 'muse');
+    assertImage(await app.screenshot('search-provider-tag.png'));
+
+    // Removing the tag searches every chat.
+    await input.fill('Atlas storage');
+    await page.waitForFunction(
+      () => document.querySelectorAll('.history-result').length === 3,
+      undefined,
+      { timeout: 15_000 },
+    );
+    const allBody = bodies.at(-1);
+    assert.equal(allBody?.query, 'Atlas storage');
+    assert.equal(allBody?.filters?.provider, undefined);
+    assertImage(await app.screenshot('search-results.png'));
+
+    // Escape returns to the open chat and clears the bar.
+    await input.press('Escape');
+    await page.locator('.thread').waitFor();
+    assert.equal(await input.inputValue(), '');
+
+    // Enter runs the search immediately.
+    await input.fill('backups');
     await input.press('Enter');
     await page.locator('.history-result').first().waitFor({ timeout: 15_000 });
-    assert.ok(searches.length >= 1, 'Enter must run the search.');
-    assert.match(await page.locator('.history-result').first().innerText(), /Atlas storage/i);
-    assertImage(await app.screenshot('search-all-scope.png'));
+    assert.equal(await page.locator('.history-result').count(), 1);
 
-    // Selecting an agent returns to the chat scope and keeps the text.
+    // Clearing the bar returns to the open chat.
+    await input.fill('');
+    await page.locator('.thread').waitFor();
+    assert.equal(await page.locator('.history-search').count(), 0);
+
+    // Settings holds the index controls, Ask locally, the advanced filters, and the theme.
+    await input.fill('Atlas storage');
+    await page.waitForFunction(
+      () => document.querySelectorAll('.history-result').length === 3,
+      undefined,
+      { timeout: 15_000 },
+    );
+    await openSettings(page);
+    await page.getByText(/passages indexed/).waitFor({ timeout: 15_000 });
+    assert.equal(await page.getByRole('button', { name: /^Pause indexing$|^Resume indexing$/ }).isVisible(), true);
+    assert.equal(await page.getByRole('button', { name: 'Rebuild vectors' }).isVisible(), true);
+    assert.equal(await page.getByRole('button', { name: 'Ask locally' }).isVisible(), true);
+    assert.equal(
+      await page.getByRole('button', { name: 'Ask locally' }).isDisabled(),
+      true,
+      'Ask locally needs a local model.',
+    );
+    assert.equal(await page.getByLabel('Thread URL or ID', { exact: true }).isVisible(), true);
+    assert.equal(await page.getByLabel('From', { exact: true }).isVisible(), true);
+    assert.equal(await page.getByLabel('To', { exact: true }).isVisible(), true);
+    assert.equal(await page.getByLabel('Theme').isVisible(), true);
+    await page.getByLabel('Thread URL or ID', { exact: true }).fill('https://muse.example/atlas');
+    await page.waitForFunction(
+      () => (localStorage.getItem('blibs-search-defaults-v1') ?? '').includes('muse.example/atlas'),
+    );
+    const saved = await page.evaluate(() => localStorage.getItem('blibs-search-defaults-v1'));
+    assert.match(saved ?? '', /muse\.example\/atlas/);
+    assertImage(await app.screenshot('settings.png'));
+
+    // The advanced filters are search defaults.
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    await page.waitForFunction(
+      () => document.querySelectorAll('.history-result').length === 2,
+      undefined,
+      { timeout: 15_000 },
+    );
+    await openSettings(page);
+    assert.equal(
+      await page.getByLabel('Thread URL or ID', { exact: true }).inputValue(),
+      'https://muse.example/atlas',
+    );
+    await page.getByLabel('Thread URL or ID', { exact: true }).fill('');
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    await page.waitForFunction(
+      () => document.querySelectorAll('.history-result').length === 3,
+      undefined,
+      { timeout: 15_000 },
+    );
+
+    // Selecting an agent returns to the open chat and clears the bar.
     await page.locator('.agent-main', { hasText: 'Muse' }).first().click();
-    await page.locator('.thread-head h1', { hasText: 'Muse' }).waitFor();
-    assert.equal(await page.getByLabel('Search scope').inputValue(), 'chat');
-    assert.equal(await input.inputValue(), 'Atlas storage');
+    await page.locator('.thread').waitFor();
+    assert.equal(await page.locator('.history-search').count(), 0);
+    assert.equal(await input.inputValue(), '');
     page.off('request', recordSearch);
   },
 );
@@ -249,7 +340,9 @@ test(
     await page.evaluate(() => localStorage.removeItem('blibs-theme-v1'));
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('.shell').waitFor({ state: 'visible' });
-    assert.equal(await page.locator('select[aria-label="Theme"]').inputValue(), 'system');
+    await openSettings(page);
+    assert.equal(await page.getByLabel('Theme').inputValue(), 'system');
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
     assert.equal(
       await page.locator('html').getAttribute('data-theme'),
       'dark',
@@ -273,7 +366,9 @@ test(
 
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('.shell').waitFor({ state: 'visible' });
-    assert.equal(await page.locator('select[aria-label="Theme"]').inputValue(), 'dark');
+    await openSettings(page);
+    assert.equal(await page.getByLabel('Theme').inputValue(), 'dark');
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
     assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
 
     const dark = await themeSnapshot(page);
