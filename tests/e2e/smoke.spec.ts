@@ -9,12 +9,15 @@ import assert from 'node:assert/strict';
 import { existsSync, statSync } from 'node:fs';
 import type { Page } from 'playwright-core';
 import {
+  completeOnboarding,
   displayAvailable,
   launch,
   NO_DISPLAY_MESSAGE,
+  resetOnboarding,
   seedChats,
   selectAgent,
   selectTheme,
+  setTheme,
   type E2EApp,
 } from './harness.ts';
 
@@ -65,6 +68,7 @@ async function horizontalOverflow(page: Page): Promise<number> {
 before(async () => {
   if (!displayAvailable()) return;
   app = await launch();
+  await completeOnboarding(app.page);
   await seedChats(app.page);
 });
 
@@ -196,5 +200,101 @@ test(
     assert.notEqual(light.text, dark.text);
     assert.notEqual(light.bodyBackground, dark.bodyBackground);
     assertImage(await app.screenshot('panel-light.png'));
+  },
+);
+
+test(
+  'first run shows onboarding steps and does not reappear',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page } = app;
+
+    await resetOnboarding(page);
+    await setTheme(page, 'dark');
+
+    assert.match(
+      await page.locator('#onboarding-title').innerText(),
+      /One window for your personal agents/,
+    );
+    assert.equal(await page.getByRole('button', { name: 'Back', exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole('button', { name: 'Skip', exact: true }).isVisible(), true);
+    assertImage(await app.screenshot('onboarding-dark.png'));
+    await setTheme(page, 'light');
+    assertImage(await app.screenshot('onboarding-light.png'));
+    await setTheme(page, 'dark');
+
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    assert.equal(await page.locator('#onboarding-title').innerText(), 'Connect a vendor');
+    assert.equal(await page.getByRole('combobox', { name: 'Vendor' }).isVisible(), true);
+
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    assert.equal(
+      await page.locator('#onboarding-title').innerText(),
+      'One window for your personal agents',
+    );
+
+    await page.getByRole('button', { name: 'Skip', exact: true }).click();
+    await page.locator('.shell').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('.onboarding-screen').count(), 0);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('.shell').waitFor({ state: 'visible' });
+    assert.equal(
+      await page.locator('.onboarding-screen').count(),
+      0,
+      'The first-run flow must not reappear after completion.',
+    );
+  },
+);
+
+test(
+  'vendor sign-in entry point shows mocked steps and returns home',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page } = app;
+
+    await completeOnboarding(page);
+    await page.getByRole('button', { name: 'Agents and sign-in' }).click();
+    await page.getByRole('heading', { name: 'Agents', exact: true }).waitFor();
+    assert.equal(await page.locator('.login-vendor').count(), 3);
+
+    // A login attempt reports inline progress and the mobile-code next step.
+    await page.getByRole('button', { name: 'Sign in to Muse' }).click();
+    await page.getByText(/mobile verification code in the Muse window/).waitFor({ timeout: 10_000 });
+    assert.equal(
+      await page.getByRole('button', { name: 'Check Muse sign-in again' }).isVisible(),
+      true,
+    );
+    await selectTheme(page, 'dark');
+    assertImage(await app.screenshot('login-dark.png'));
+    await selectTheme(page, 'light');
+    assertImage(await app.screenshot('login-light.png'));
+    await selectTheme(page, 'dark');
+
+    // Cancel is always available and reports the result inline.
+    await page.getByRole('button', { name: 'Cancel Muse sign-in' }).click();
+    await page.getByText(/Sign-in cancelled for Muse/).waitFor();
+
+    // A second attempt can pass the verification step and sign in.
+    await page.getByRole('button', { name: 'Sign in to Muse' }).click();
+    await page.getByText(/mobile verification code in the Muse window/).waitFor({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Check Muse sign-in again' }).click();
+    await page.getByText(/Signed in to Muse/).waitFor({ timeout: 10_000 });
+
+    // Escape always returns to the home screen.
+    await page.keyboard.press('Escape');
+    await page.locator('.login-screen').waitFor({ state: 'detached' });
+    assert.equal(await page.locator('.thread-head h1').isVisible(), true);
+    await selectTheme(page, 'dark');
+    assertImage(await app.screenshot('home-after-login-dark.png'));
+    await selectTheme(page, 'light');
+    assertImage(await app.screenshot('home-after-login-light.png'));
+
+    // The in-app Back control returns home too.
+    await page.getByRole('button', { name: 'Agents and sign-in' }).click();
+    await page.getByRole('button', { name: 'Back to chats' }).click();
+    await page.locator('.login-screen').waitFor({ state: 'detached' });
   },
 );

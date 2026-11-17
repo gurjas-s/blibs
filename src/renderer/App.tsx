@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
-import { SEED_AGENTS, providerFor } from './providers';
-import type { Agent, ChatMessage } from './types';
+import { PROVIDERS, SEED_AGENTS, providerFor } from './providers';
+import type { Agent, ChatMessage, LoginStatus } from './types';
 import { cleanImportText } from './text';
 import {
   applyTheme,
@@ -11,6 +11,16 @@ import {
   type ThemePreference,
 } from './theme';
 import SearchPanel from './SearchPanel';
+import Onboarding, { type OnboardingResult } from './Onboarding';
+import LoginScreen from './LoginScreen';
+import {
+  cancelVendorLogin,
+  checkVendorLogin,
+  desktopLoginAvailable,
+  fetchLoginStatus,
+  openVendorLogin,
+  subscribeLoginStatus,
+} from './desktop';
 import {
   fetchImports,
   fetchOutboxStatuses,
@@ -33,6 +43,16 @@ const LS_MSGS = 'blibs-messages-v2';
 const LS_AGENTS = 'blibs-agents-v2';
 const LS_AUTOPULL = 'blibs-autopull-v1';
 const LS_PULLSECS = 'blibs-pullsecs-v1';
+const LS_ONBOARDING = 'blibs-onboarding-v1';
+const ONBOARDING_DONE = 'done';
+
+function onboardingComplete(): boolean {
+  try {
+    return localStorage.getItem(LS_ONBOARDING) === ONBOARDING_DONE;
+  } catch {
+    return false;
+  }
+}
 
 function uid() {
   return Math.random().toString(36).slice(2, 10);
@@ -69,6 +89,9 @@ export default function App() {
   const [activeId, setActiveId] = useState(agents[0]?.id ?? 'muse');
   const [query, setQuery] = useState('');
   const [showHistory, setShowHistory] = useState(false);
+  const [showLogin, setShowLogin] = useState(false);
+  const [onboarded, setOnboarded] = useState(onboardingComplete);
+  const [loginStatuses, setLoginStatuses] = useState<Record<string, LoginStatus>>({});
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [statusLine, setStatusLine] = useState('Waiting for sync');
@@ -111,6 +134,34 @@ export default function App() {
     query.addEventListener('change', onChange);
     return () => query.removeEventListener('change', onChange);
   }, [theme]);
+
+  useEffect(() => subscribeLoginStatus((status) => {
+    setLoginStatuses((current) => ({ ...current, [status.vendorId]: status }));
+  }), []);
+
+  useEffect(() => {
+    if (!desktopLoginAvailable()) return;
+    for (const vendor of PROVIDERS) {
+      fetchLoginStatus(vendor.id)
+        .then((status) => {
+          if (status) {
+            setLoginStatuses((current) => ({ ...current, [status.vendorId]: status }));
+          }
+        })
+        .catch(() => {
+          // The login screen reports an unavailable bridge when used.
+        });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showLogin) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setShowLogin(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showLogin]);
 
   const thread = useMemo(() => {
     const list = [...(messages[active.id] ?? [])].sort((a, b) => a.ts - b.ts);
@@ -265,11 +316,63 @@ export default function App() {
     }
   }
 
+  function finishOnboarding(result: OnboardingResult): void {
+    try {
+      localStorage.setItem(LS_ONBOARDING, ONBOARDING_DONE);
+    } catch {
+      // The choice still applies for this window.
+    }
+    setOnboarded(true);
+    if (result.openLogin) {
+      setShowHistory(false);
+      setShowLogin(true);
+      if (result.vendorId) startLogin(result.vendorId);
+    }
+  }
+
+  function reportLoginError(vendorId: string, error: unknown): void {
+    setLoginStatuses((current) => ({
+      ...current,
+      [vendorId]: {
+        vendorId,
+        phase: 'error',
+        message: String((error as Error)?.message || error),
+        mock: false,
+      },
+    }));
+  }
+
+  function startLogin(vendorId: string): void {
+    openVendorLogin(vendorId)
+      .then((status) => {
+        setLoginStatuses((current) => ({ ...current, [status.vendorId]: status }));
+      })
+      .catch((error: unknown) => reportLoginError(vendorId, error));
+  }
+
+  function cancelLogin(vendorId: string): void {
+    cancelVendorLogin(vendorId)
+      .then((status) => {
+        setLoginStatuses((current) => ({ ...current, [status.vendorId]: status }));
+      })
+      .catch((error: unknown) => reportLoginError(vendorId, error));
+  }
+
+  function checkLogin(vendorId: string): void {
+    checkVendorLogin(vendorId)
+      .then((status) => {
+        setLoginStatuses((current) => ({ ...current, [status.vendorId]: status }));
+      })
+      .catch((error: unknown) => reportLoginError(vendorId, error));
+  }
+
   const pill: { tone: StatusTone; label: string } = !lastPull
     ? { tone: 'idle', label: 'Waiting for sync' }
     : lastPull.ok
       ? { tone: 'live', label: `Synced ${clock(lastPull.at)}` }
       : { tone: 'down', label: 'Backend unreachable' };
+
+  if (!onboarded) return <Onboarding onFinish={finishOnboarding} />;
 
   return (
     <div className="shell">
@@ -329,6 +432,7 @@ export default function App() {
               onSelect={(id) => {
                 setActiveId(id);
                 setShowHistory(false);
+                setShowLogin(false);
                 setSidebarOpen(false);
               }}
             />
@@ -337,9 +441,22 @@ export default function App() {
             <Button
               variant="secondary"
               size="lg"
+              className={showLogin ? 'history-nav selected' : 'history-nav'}
+              onClick={() => {
+                setShowLogin(true);
+                setShowHistory(false);
+                setSidebarOpen(false);
+              }}
+            >
+              Agents and sign-in
+            </Button>
+            <Button
+              variant="secondary"
+              size="lg"
               className={showHistory ? 'history-nav selected' : 'history-nav'}
               onClick={() => {
                 setShowHistory(true);
+                setShowLogin(false);
                 setSidebarOpen(false);
               }}
             >
@@ -367,7 +484,17 @@ export default function App() {
         </aside>
 
         <main className="main">
-          {showHistory ? <SearchPanel /> : <>
+          {showLogin ? (
+            <LoginScreen
+              vendors={PROVIDERS}
+              statuses={loginStatuses}
+              desktopAvailable={desktopLoginAvailable()}
+              onBack={() => setShowLogin(false)}
+              onSignIn={startLogin}
+              onCancel={cancelLogin}
+              onCheck={checkLogin}
+            />
+          ) : showHistory ? <SearchPanel /> : <>
           <div className="thread-head">
             <div>
               <h1>{active.name}</h1>
@@ -392,7 +519,7 @@ export default function App() {
             {thread.length === 0 && (
               <EmptyState
                 title={query ? 'No matches' : `No messages with ${active.name} yet`}
-                steps={query ? undefined : ['Log in from the Agents menu to sync chats.']}
+                steps={query ? undefined : ['Use Agents and sign-in to sync chats.']}
               />
             )}
             {thread.map((m) => (

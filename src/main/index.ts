@@ -9,24 +9,34 @@
 // - Serves the built panel (dist/) over HTTP, forwarding /api/* to the proxy.
 // - Keeps one hidden BrowserView per vendor (persisted partitions, so login
 //   survives restarts) that scrapes chats and delivers outbox sends.
-// - Menu > Agents opens a login window per vendor (shared partition, so the
-//   hidden view picks up the session automatically).
+// - The panel's agents screen and Menu > Agents open a sign-in window per
+//   vendor (shared partition, so the hidden view picks up the session).
 //
 // Run: npm install && npm run build && npm start
 import { app, BrowserWindow, BrowserView, Menu, ipcMain } from 'electron';
-import type { IpcMainEvent } from 'electron';
+import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  cancelVendorLogin,
+  checkVendorLogin,
+  closeLoginWindows,
+  getLoginStatus,
+  openVendorLogin,
+  setLoginStatusSink,
+} from './login';
 
 export const PROXY_PORT = Number(process.env.PROXY_PORT || 8787);
 export const UI_PORT = Number(process.env.BLIBS_UI_PORT || 5173 + 1);
 const ROOT = path.join(__dirname, '..', '..');
 const DIST = path.join(ROOT, 'dist');
 const PRELOAD = path.join(__dirname, '..', 'preload', 'agent.js');
+const PANEL_PRELOAD = path.join(__dirname, '..', 'preload', 'panel.js');
 const PROXY_ENTRY = path.join(__dirname, '..', 'server', 'proxy.js');
+const PANEL_ORIGIN = `http://127.0.0.1:${UI_PORT}`;
 
 interface Vendor {
   id: string;
@@ -209,6 +219,7 @@ export function createMainWindow(): BrowserWindow {
     height: 860,
     title: 'blibs',
     backgroundColor: '#101216',
+    webPreferences: { preload: PANEL_PRELOAD },
   });
   void mainWin.loadURL(`http://127.0.0.1:${UI_PORT}/`);
   mainWin.webContents.setWindowOpenHandler(({ url }) => {
@@ -239,18 +250,54 @@ function attachVendorViews(): void {
   }
 }
 
-/** Visible login window sharing the hidden view's partition (same cookies). */
+/** Visible sign-in window sharing the hidden view's partition (same cookies). */
 function openLogin(vendorId: string, source?: string): void {
   const v = VENDORS.find((x) => x.id === vendorId);
   if (!v) return;
-  const win = new BrowserWindow({
-    width: 1100,
-    height: 800,
-    title: `${v.name} — log in`,
-    backgroundColor: '#101216',
-    webPreferences: { partition: v.partition },
+  openVendorLogin(v, source);
+}
+
+/** True only for the panel renderer that this process served. */
+function isTrustedPanel(event: IpcMainInvokeEvent): boolean {
+  const url = event.senderFrame?.url;
+  if (!url) return false;
+  try {
+    return new URL(url).origin === PANEL_ORIGIN;
+  } catch {
+    return false;
+  }
+}
+
+function vendorFor(vendorId: unknown): Vendor | undefined {
+  if (typeof vendorId !== 'string') return undefined;
+  return VENDORS.find((vendor) => vendor.id === vendorId);
+}
+
+function registerLoginIpc(): void {
+  ipcMain.handle('blibs:login:open', (event, vendorId: unknown) => {
+    if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
+    const vendor = vendorFor(vendorId);
+    if (!vendor) throw new Error('Unknown vendor.');
+    return openVendorLogin(vendor);
   });
-  void win.loadURL(source || v.url);
+  ipcMain.handle('blibs:login:cancel', (event, vendorId: unknown) => {
+    if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
+    const vendor = vendorFor(vendorId);
+    if (!vendor) throw new Error('Unknown vendor.');
+    return cancelVendorLogin(vendor);
+  });
+  ipcMain.handle('blibs:login:check', async (event, vendorId: unknown) => {
+    if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
+    const vendor = vendorFor(vendorId);
+    if (!vendor) throw new Error('Unknown vendor.');
+    return checkVendorLogin(vendor);
+  });
+  ipcMain.handle('blibs:login:status', (event, vendorId: unknown) => {
+    if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
+    const vendor = vendorFor(vendorId);
+    if (!vendor) throw new Error('Unknown vendor.');
+    return getLoginStatus(vendor.id);
+  });
 }
 
 function buildMenu(): void {
@@ -259,7 +306,7 @@ function buildMenu(): void {
       label: 'Agents',
       submenu: [
         ...VENDORS.map((v) => ({
-          label: `Log in to ${v.name}…`,
+          label: `Sign in to ${v.name}…`,
           click: () => openLogin(v.id),
         })),
         { type: 'separator' as const },
@@ -362,6 +409,7 @@ async function ackOutbox(id: string, ok: boolean, error?: string): Promise<void>
 }
 
 function wireIpc(): void {
+  registerLoginIpc();
   // Preload pushes (page load, DOM mutations, heartbeat).
   ipcMain.on('blibs:scrape', (_e: IpcMainEvent, payload: CollectResult) => {
     void relayScrape(payload).then(() => drainOutbox('scrape'));
@@ -392,6 +440,11 @@ async function boot(): Promise<void> {
   startStatic();
   wireIpc();
   createMainWindow();
+  setLoginStatusSink((status) => {
+    if (mainWin && !mainWin.isDestroyed()) {
+      mainWin.webContents.send('blibs:login:status', status);
+    }
+  });
   attachVendorViews();
   buildMenu();
   setInterval(() => sweep('sweep-60s').catch(() => {}), 60000);
@@ -435,6 +488,7 @@ if (!process.env.BLIBS_NO_AUTOSTART) {
 
 // Exported for the headless test harness (BLIBS_NO_AUTOSTART=1).
 export async function shutdown(): Promise<void> {
+  closeLoginWindows();
   const pending: Promise<void>[] = [];
   if (proxyChild) {
     const child = proxyChild;

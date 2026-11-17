@@ -5,9 +5,13 @@ and queues replies for those sessions. Read `README.md` before making changes.
 
 ## Architecture
 
-- `src/main/`: Electron windows, vendor views, IPC, local servers, and sync timers.
+- `src/main/`: Electron windows, vendor views, IPC, local servers, and sync
+  timers. `login.ts` owns vendor sign-in windows and their step events.
 - `src/preload/`: DOM collection and message delivery inside vendor sessions.
+  `panel.ts` is the narrow sign-in bridge for the panel.
 - `src/renderer/`: React panel. This code has browser APIs, but no Node access.
+  `Onboarding.tsx` owns the first-run steps. `LoginScreen.tsx` is the agents
+  screen and the in-app sign-in entry point.
 - `server/`: Local HTTP backend, import store, and send outbox.
 - `tests/`: Unit tests, HTTP route tests, and the CDP end-to-end harness and
   specs in `tests/e2e/`.
@@ -22,6 +26,12 @@ The renderer is decoupled from the backend. Data access goes through one typed
 client module: `src/renderer/client.ts`. A component does not call `fetch`, read
 `localStorage`, or import a backend module. Use typed props and typed callbacks
 instead.
+
+Desktop actions go through `src/renderer/desktop.ts`. That module calls the
+narrow `window.blibsDesktop` bridge from `src/preload/panel.ts`. Do not add
+Electron imports or broad IPC to the renderer. A sign-in step is an event from
+the main process. The panel shows it inline, and every login screen keeps Back,
+Cancel, and Escape available.
 
 Reuse the components in `src/renderer/components/` before you add a control.
 Extend a component with a typed prop when the new state is a real variant. Do
@@ -48,9 +58,10 @@ Make every control accessible:
 
 Tests and screenshots must use mocked data. Do not use a live vendor login, a
 real chat, a cookie, or a credential. Use `tests/e2e/harness.ts` to start the
-app with a temporary profile. Add the light and dark screenshots when the change
-is visible. Read the `design` skill in `.agents/skills/design/` before you add
-UI.
+app with a temporary profile. The harness sets `BLIBS_MOCK_LOGIN=1`, so a
+sign-in attempt uses fixed steps and needs no account or verification code. Add
+the onboarding, sign-in, and post-sign-in screenshots when the change is
+visible. Read the `design` skill in `.agents/skills/design/` before you add UI.
 
 ## Commands
 

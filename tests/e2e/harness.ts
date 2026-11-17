@@ -125,7 +125,9 @@ export async function waitForPanel(
   while (Date.now() < deadline) {
     const page = context.pages().find((candidate) => candidate.url().startsWith(panelUrl));
     if (page) {
-      await page.waitForSelector('.shell', { timeout: Math.max(1_000, deadline - Date.now()) });
+      await page.waitForSelector('.shell, .onboarding-screen', {
+        timeout: Math.max(1_000, deadline - Date.now()),
+      });
       return page;
     }
     await delay(100);
@@ -173,6 +175,25 @@ export async function selectTheme(
 
 /** Storage key that the panel uses for its message map. */
 export const MESSAGES_STORAGE_KEY = 'blibs-messages-v2';
+
+/** Storage key that marks the first-run flow as complete. */
+export const ONBOARDING_STORAGE_KEY = 'blibs-onboarding-v1';
+
+/** Remove the saved onboarding result and load the first-run screen. */
+export async function resetOnboarding(page: Page): Promise<void> {
+  await page.evaluate((key) => localStorage.removeItem(key), ONBOARDING_STORAGE_KEY);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator('.onboarding-screen').waitFor({ state: 'visible', timeout: 15_000 });
+}
+
+/** Skip the first-run flow when it is visible, then wait for the chat shell. */
+export async function completeOnboarding(page: Page): Promise<void> {
+  const screen = page.locator('.onboarding-screen');
+  if (await screen.isVisible().catch(() => false)) {
+    await page.getByRole('button', { name: 'Skip', exact: true }).click();
+  }
+  await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
+}
 
 export interface MockChatMessage {
   id: string;
@@ -319,6 +340,8 @@ export async function launch(options: LaunchOptions = {}): Promise<E2EApp> {
     BLIBS_NODE_PATH: process.execPath,
     BLIBS_UI_PORT: String(panelPort),
     PROXY_PORT: String(backendPort),
+    // Deterministic sign-in steps without a vendor page or a real account.
+    BLIBS_MOCK_LOGIN: '1',
   };
   delete env.BLIBS_NO_AUTOSTART;
   delete env.ELECTRON_RUN_AS_NODE;

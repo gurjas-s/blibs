@@ -34,3 +34,36 @@ export interface ProviderMeta {
   site: string;
   blurb: string;
 }
+
+export type LoginPhase =
+  | 'opening'
+  | 'loading'
+  | 'needs-sign-in'
+  | 'needs-verification'
+  | 'needs-captcha'
+  | 'signed-in'
+  | 'error'
+  | 'closed';
+
+/** One sign-in step reported by the main process. */
+export interface LoginStatus {
+  vendorId: string;
+  phase: LoginPhase;
+  message: string;
+  mock: boolean;
+}
+
+export interface DesktopLoginApi {
+  open: (vendorId: string) => Promise<LoginStatus>;
+  cancel: (vendorId: string) => Promise<LoginStatus>;
+  check: (vendorId: string) => Promise<LoginStatus>;
+  status: (vendorId: string) => Promise<LoginStatus | null>;
+  onStatus: (listener: (status: LoginStatus) => void) => () => void;
+}
+
+declare global {
+  interface Window {
+    /** Narrow bridge from the panel preload. Browser-only builds have no bridge. */
+    blibsDesktop?: { login: DesktopLoginApi };
+  }
+}
