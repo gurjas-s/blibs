@@ -13,7 +13,7 @@
 //   vendor (shared partition, so the hidden view picks up the session).
 //
 // Run: npm install && npm run build && npm start
-import { app, BrowserWindow, BrowserView, Menu, ipcMain } from 'electron';
+import { app, BrowserWindow, BrowserView, Menu, ipcMain, nativeImage } from 'electron';
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
@@ -37,6 +37,50 @@ const PRELOAD = path.join(__dirname, '..', 'preload', 'agent.js');
 const PANEL_PRELOAD = path.join(__dirname, '..', 'preload', 'panel.js');
 const PROXY_ENTRY = path.join(__dirname, '..', 'server', 'proxy.js');
 const PANEL_ORIGIN = `http://127.0.0.1:${UI_PORT}`;
+
+// ---------- branding ----------
+
+/** Name that the application menu and the About panel show. */
+export const APP_NAME = 'blibs';
+
+// A packager must copy `assets/` into the app resources. The dev paths point
+// at the checkout, so `npm start` uses the same committed icon files.
+const ASSET_DIR = app.isPackaged ? path.join(process.resourcesPath, 'assets') : path.join(ROOT, 'assets');
+/** PNG for the window icon on Linux and Windows, and for the About panel. */
+export const APP_ICON_PNG = path.join(ASSET_DIR, 'icons', '512.png');
+/** PNG for the macOS Dock, at the largest committed size. */
+export const APP_ICON_DOCK = path.join(ASSET_DIR, 'icons', '1024.png');
+/** macOS bundle icon. A packager sets this as `CFBundleIconFile`. */
+export const APP_ICON_ICNS = path.join(ASSET_DIR, 'blibs.icns');
+
+/**
+ * Set the app name and the About panel before the first window opens. The
+ * name must be set before `ready`, or the menu bar keeps the Electron name.
+ */
+export function applyBranding(): void {
+  app.setName(APP_NAME);
+  if (process.platform === 'win32') app.setAppUserModelId('com.blibs.app');
+  app.setAboutPanelOptions({
+    applicationName: APP_NAME,
+    applicationVersion: app.getVersion(),
+    version: `Electron ${process.versions.electron}`,
+    copyright: `© ${new Date().getFullYear()} blibs contributors`,
+    iconPath: APP_ICON_PNG,
+  });
+}
+
+/** Use the committed icon in the macOS Dock. Other platforms read the window icon. */
+function applyDockIcon(): void {
+  if (process.platform !== 'darwin' || !app.dock) return;
+  const icon = nativeImage.createFromPath(APP_ICON_DOCK);
+  if (icon.isEmpty()) {
+    console.error(`[blibs] app icon missing at ${APP_ICON_DOCK}`);
+    return;
+  }
+  app.dock.setIcon(icon);
+}
+
+applyBranding();
 
 interface Vendor {
   id: string;
@@ -217,7 +261,8 @@ export function createMainWindow(): BrowserWindow {
   mainWin = new BrowserWindow({
     width: 1280,
     height: 860,
-    title: 'blibs',
+    title: APP_NAME,
+    icon: process.platform === 'darwin' ? undefined : APP_ICON_PNG,
     backgroundColor: '#101216',
     webPreferences: { preload: PANEL_PRELOAD },
   });
@@ -300,34 +345,58 @@ function registerLoginIpc(): void {
   });
 }
 
-function buildMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'Agents',
+export function buildMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [];
+  if (process.platform === 'darwin') {
+    // The first menu is the application menu. Its label is the name that the
+    // menu bar shows, so set it in one place with the About item.
+    template.push({
+      label: APP_NAME,
       submenu: [
-        ...VENDORS.map((v) => ({
-          label: `Sign in to ${v.name}…`,
-          click: () => openLogin(v.id),
-        })),
-        { type: 'separator' as const },
-        {
-          label: 'Reload vendor views',
-          click: () => {
-            for (const view of _views.values()) view.webContents.reload();
-          },
-        },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload' },
-        { role: 'toggleDevTools' },
+        { role: 'about', label: `About ${APP_NAME}` },
         { type: 'separator' },
-        { role: 'quit' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide', label: `Hide ${APP_NAME}` },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit', label: `Quit ${APP_NAME}` },
       ],
-    },
-  ];
+    });
+  }
+  template.push({
+    label: 'Agents',
+    submenu: [
+      ...VENDORS.map((v) => ({
+        label: `Sign in to ${v.name}…`,
+        click: () => openLogin(v.id),
+      })),
+      { type: 'separator' as const },
+      {
+        label: 'Reload vendor views',
+        click: () => {
+          for (const view of _views.values()) view.webContents.reload();
+        },
+      },
+    ],
+  });
+  template.push({
+    label: 'View',
+    submenu: [
+      { role: 'reload' },
+      { role: 'toggleDevTools' },
+      ...(process.platform === 'darwin'
+        ? []
+        : [{ type: 'separator' as const }, { role: 'quit' as const }]),
+    ],
+  });
+  if (process.platform !== 'darwin') {
+    template.push({
+      label: 'Help',
+      submenu: [{ label: `About ${APP_NAME}`, click: () => app.showAboutPanel() }],
+    });
+  }
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
@@ -439,6 +508,7 @@ async function boot(): Promise<void> {
   await new Promise((r) => setTimeout(r, 800));
   startStatic();
   wireIpc();
+  applyDockIcon();
   createMainWindow();
   setLoginStatusSink((status) => {
     if (mainWin && !mainWin.isDestroyed()) {

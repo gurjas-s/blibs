@@ -78,12 +78,41 @@ The agent's reply syncs back on its own.
 | `npm run test:desktop` | Tests search and citations in an isolated Electron renderer after building; needs a display, but no model downloads |
 | `npm run smoke` | Boots the real app window, prints a JSON status line, quits — needs a display |
 | `npm run lint` | ESLint flat config over `src/`, `server/`, `scripts/`, and `tests/` (fails on warnings) |
+| `npm run icons` | Regenerate the app PNG sizes, the macOS `.icns`, and the panel favicon from `assets/icon.svg`; needs macOS |
 | `npm run clean` | Wipe `build/` + `dist/` |
 | `npm run verify:clean-build` | Delete generated output, rebuild with the existing incremental cache, and check that all required output was regenerated |
 
 CI runs on Linux and Windows for every push and pull request. To block merging
 when checks fail, a repository admin must require both **Build, lint, and test**
 checks in the default branch's protection rules. See `AGENTS.md` for contribution guidance.
+
+## App icon and packaging
+
+`assets/icon.svg` is the icon source. It is flat and uses one accent color. The
+committed files below are generated from it:
+
+- `assets/icons/16.png` to `assets/icons/1024.png`
+- `assets/blibs.icns` for macOS
+- `public/favicon.svg` for the panel tab
+
+Run `npm run icons` on macOS after you change the source. The command uses
+`sips` and `iconutil`, so it needs no extra package. Linux and Windows use the
+committed files and do not run the command.
+
+At runtime `src/main/index.ts` sets the app name to `blibs`, builds the
+application menu and the About item with that name, sets the Dock icon from
+`assets/icons/1024.png`, and sets the window icon from `assets/icons/512.png`
+where the platform shows one.
+
+The repository has no packager, so the app runs from the checkout. To build an
+installer, add a packager and then:
+
+- Set the product name and the executable name to `blibs`.
+- Copy `assets/` into the app resources. The main process reads
+  `process.resourcesPath/assets` when `app.isPackaged` is true.
+- Set `assets/blibs.icns` as `CFBundleIconFile` on macOS.
+- Set the app id to `com.blibs.app`, to match `app.setAppUserModelId` on
+  Windows.
 
 ## End-to-end tests
 
@@ -175,6 +204,11 @@ tests/
                 `npm run e2e`
 scripts/
   emit-cjs-markers.mjs  build step — see "Modules" below
+assets/
+  icon.svg       icon source (flat, one accent color)
+  icons/         generated PNG sizes, 16 px to 1024 px
+  blibs.icns     generated macOS bundle icon
+  build-icons.mjs  generates the PNG sizes and the .icns (`npm run icons`)
 .agents/
   skills/       repo skills for design, onboarding, and validation
 ```

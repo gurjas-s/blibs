@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="blibs">
+  <title>blibs</title>
+  <!-- Flat mark: one accent tile, one white speech bubble, dark slate dots. -->
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="#4f46e5"/>
+  <path fill="#ffffff" d="M352 240H672A128 128 0 0 1 800 368V600A128 128 0 0 1 672 728H520L412 856L368 728H352A128 128 0 0 1 224 600V368A128 128 0 0 1 352 240Z"/>
+  <circle cx="376" cy="484" r="46" fill="#101216"/>
+  <circle cx="512" cy="484" r="46" fill="#101216"/>
+  <circle cx="648" cy="484" r="46" fill="#101216"/>
+</svg>

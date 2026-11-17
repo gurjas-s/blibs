@@ -16,6 +16,9 @@ and queues replies for those sessions. Read `README.md` before making changes.
 - `tests/`: Unit tests, HTTP route tests, and the CDP end-to-end harness and
   specs in `tests/e2e/`.
 - `scripts/`: Build helpers and checks.
+- `assets/`: The icon source, the generated PNG sizes and macOS `.icns`, and
+  the generator. Run `npm run icons` on macOS after you change
+  `assets/icon.svg`, then commit the output.
 
 The package uses ES modules. The main process and preloads compile to CommonJS;
 the build writes their `package.json` markers. The backend remains an ES module.
@@ -98,6 +101,7 @@ Keep `--force` in the TypeScript build command.
 - Do not edit or commit `build/`, `dist/`, `node_modules/`, real chat data, or credentials.
 - Keep vendor session access in the main process and preload. Validate IPC senders and do not expose arbitrary IPC or navigation to the renderer.
 - Keep session credentials in Electron's persistent partitions. Ask the user to sign in when a vendor requires credentials or a CAPTCHA.
+- Keep the `blibs` name in the menu bar, the About panel, and the window title. Keep the `blibs` icon in the Dock and the window. Read the icon from `assets/`; do not add a second icon source.
 
 ## Writing
 
