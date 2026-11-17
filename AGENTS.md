@@ -135,9 +135,17 @@ npm test
   failure, the cause, and the plan in the PR.
 - Run `npm run e2e` when a change affects the panel, the app startup path, or
   the backend health route. The command needs a display.
-- Do one manual test of the changed behavior. Write the steps and the result in
-  the PR.
-- If the change changes what a user sees, add a screenshot to the PR.
+- Use the `verification` skill for the end-to-end check. Choose the feature
+  document from `.agents/skills/verification/e2e-testing/`. Write the result of
+  the run in the PR body or the worker report.
+- If the change changes what a user sees, add a screenshot to the PR body.
+
+## Evidence
+
+Do not commit evidence reports, reproduction notes, or verification logs. Keep
+a screenshot for the PR body in the PR. Put repeatable steps in the
+verification documents under `.agents/skills/verification/`. Put the worker
+report in the task thread.
 
 CI runs `npm run build`, `npm run lint`, `npm test`, and
 `npm run verify:clean-build` on Linux and Windows. A local check does not
@@ -149,8 +157,8 @@ A reviewer must confirm each item before approval:
 
 - [ ] The PR title, PR description, review comments, commit messages, code comments, and user-facing docs are in English and follow ASD-STE100 Simplified Technical English.
 - [ ] `npm run lint` and `npm test` pass.
-- [ ] The PR describes one manual test and the result of that test.
-- [ ] A visible change has a screenshot in the PR.
+- [ ] The PR describes the verification run and the result.
+- [ ] A visible change has a screenshot in the PR body.
 - [ ] The change does not add credentials, cookies, or session data.
 
 Do not approve a PR that has non-English text in its comments or PR text.
