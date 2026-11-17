@@ -188,7 +188,6 @@ export default function App() {
       syncOutboxStatuses();
     }, Math.max(5, pullSecs) * 1000);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoPull, pullSecs]);
 
   /** Send into the real vendor session via the outbox. */

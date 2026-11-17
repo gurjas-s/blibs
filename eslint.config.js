@@ -1,0 +1,176 @@
+// ESLint flat config for blibs.
+//
+// Electron has no maintained ESLint preset that fits this app.
+// eslint-plugin-electron is outdated. It targets package metadata, not source
+// security. The rules below apply the Electron requirements in AGENTS.md.
+// Renderer code cannot use Electron or Node. Preload code uses only the DOM
+// and Electron IPC. The main process keeps the sandbox and isolation defaults.
+// Review IPC senders in code review. ESLint cannot prove that a handler checked
+// `event.senderFrame` before it trusts a message.
+import { builtinModules } from 'node:module';
+import js from '@eslint/js';
+import globals from 'globals';
+import reactHooks from 'eslint-plugin-react-hooks';
+import reactRefresh from 'eslint-plugin-react-refresh';
+import tseslint from 'typescript-eslint';
+
+// Get bare built-in module names and their subpaths. `fs/promises` is an
+// example. The `node:*` pattern covers the prefix form.
+const nodeBuiltins = builtinModules.filter((name) => !name.startsWith('_') && !name.startsWith('node:'));
+const nodeBuiltinPatterns = [...new Set(nodeBuiltins.flatMap((name) => [name, `${name}/*`]))];
+
+const securityRules = {
+  // These selectors find insecure values, not property names. A
+  // `webPreferences` object can still set `contextIsolation: true` explicitly.
+  'no-restricted-syntax': [
+    'error',
+    {
+      selector: "Property[key.name='nodeIntegration'][value.value=true]",
+      message: 'Keep nodeIntegration disabled; expose a narrow preload bridge instead.',
+    },
+    {
+      selector: "Property[key.name='contextIsolation'][value.value=false]",
+      message: 'Keep contextIsolation enabled for every renderer.',
+    },
+    {
+      selector: "Property[key.name='webSecurity'][value.value=false]",
+      message: 'Keep webSecurity enabled; fix the origin instead of disabling it.',
+    },
+    {
+      selector: "Property[key.name='allowRunningInsecureContent'][value.value=true]",
+      message: 'Do not allow insecure content in a renderer.',
+    },
+    {
+      selector: "Property[key.name='enableRemoteModule'][value.value=true]",
+      message: 'The remote module is removed; keep vendor access in main and preload.',
+    },
+    {
+      selector: "Property[key.name='sandbox'][value.value=false]",
+      message: 'Keep the renderer sandbox enabled.',
+    },
+    {
+      selector: "Property[key.name='action'][value.value='allow']",
+      message: 'Deny new windows; open validated vendor login URLs explicitly.',
+    },
+    {
+      selector: "CallExpression[callee.object.property.name='webContents'][callee.property.name='executeJavaScript']",
+      message: 'Do not run arbitrary strings in a renderer; use a preload IPC channel.',
+    },
+  ],
+};
+
+export default tseslint.config(
+  {
+    name: 'blibs/ignores',
+    ignores: [
+      'build/**',
+      'dist/**',
+      'dist-electron/**',
+      'out/**',
+      'node_modules/**',
+      '.local-models/**',
+      'coverage/**',
+    ],
+  },
+  js.configs.recommended,
+  // Limit TypeScript rules to TypeScript. The shared configs include rules such
+  // as no-require-imports. That rule gives false errors in the CommonJS harness.
+  ...tseslint.configs.recommended.map((config) => ({
+    ...config,
+    files: ['**/*.ts', '**/*.tsx'],
+  })),
+  {
+    name: 'blibs/base',
+    linterOptions: { reportUnusedDisableDirectives: 'error' },
+    rules: {
+      // Catch blocks with only comments record errors that the code ignores on
+      // purpose. One example is a lost ack that the next sweep retries.
+      'no-empty': ['error', { allowEmptyCatch: true }],
+    },
+  },
+  {
+    name: 'blibs/node',
+    files: [
+      'src/main/**/*.{js,cjs,mjs,ts,tsx}',
+      'server/**/*.{js,cjs,mjs,ts}',
+      'tests/**/*.{js,cjs,mjs,ts}',
+      'scripts/**/*.{js,cjs,mjs}',
+      'eslint.config.js',
+      'vite.config.ts',
+    ],
+    languageOptions: { globals: globals.node },
+  },
+  {
+    name: 'blibs/renderer',
+    files: ['src/renderer/**/*.{js,jsx,ts,tsx}'],
+    languageOptions: {
+      globals: globals.browser,
+      parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+    plugins: {
+      'react-hooks': reactHooks,
+      'react-refresh': reactRefresh,
+    },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
+      'react-refresh/only-export-components': ['error', { allowConstantExport: true }],
+      // The panel runs only in the browser. Vendor sessions and the filesystem
+      // stay in the main process, the preload, and the local backend.
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'electron',
+              message: 'Renderer code cannot use Electron; add a narrow main/preload bridge instead.',
+            },
+          ],
+          patterns: [
+            {
+              group: ['node:*', ...nodeBuiltinPatterns],
+              message: 'Renderer code runs in the browser; keep Node built-ins in main, preload, or server.',
+            },
+          ],
+        },
+      ],
+      'no-restricted-globals': [
+        'error',
+        { name: 'process', message: 'The renderer has no Node process object.' },
+        { name: 'Buffer', message: 'The renderer has no Node Buffer; use browser APIs.' },
+        { name: 'global', message: 'Use globalThis in browser code.' },
+        { name: '__dirname', message: 'The renderer has no Node path globals.' },
+        { name: '__filename', message: 'The renderer has no Node path globals.' },
+        { name: 'require', message: 'The renderer is bundled as ESM; use imports.' },
+        { name: 'module', message: 'The renderer is bundled as ESM; use imports.' },
+        { name: 'exports', message: 'The renderer is bundled as ESM; use export declarations.' },
+      ],
+    },
+  },
+  {
+    name: 'blibs/preload',
+    files: ['src/preload/**/*.{js,ts}'],
+    languageOptions: { globals: { ...globals.browser, ...globals.node } },
+    rules: {
+      // The preload runs with DOM and Electron IPC access. Node work belongs in
+      // the main process. This boundary prevents vendor pages from reaching the
+      // filesystem through the preload.
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['node:*', ...nodeBuiltinPatterns],
+              message: 'Keep preload to DOM and Electron IPC; move Node work to main.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    name: 'blibs/electron-security',
+    files: ['src/main/**/*.{js,ts}'],
+    rules: securityRules,
+  },
+);

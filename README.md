@@ -71,7 +71,7 @@ The agent's reply syncs back on its own.
 | `npm test` | Rebuilds, runs unit and HTTP route tests, then runs the desktop harness with temporary stores and ports |
 | `npm run test:desktop` | Tests search and citations in an isolated Electron renderer after building; needs a display, but no model downloads |
 | `npm run smoke` | Boots the real app window, prints a JSON status line, quits — needs a display |
-| `npm run lint` | `oxlint` over the repo |
+| `npm run lint` | ESLint flat config over `src/`, `server/`, `scripts/`, and `tests/` (fails on warnings) |
 | `npm run clean` | Wipe `build/` + `dist/` |
 | `npm run verify:clean-build` | Delete generated output, rebuild with the existing incremental cache, and check that all required output was regenerated |
 
