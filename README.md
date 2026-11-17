@@ -37,9 +37,14 @@ rather than letting `npm start` fail later with `Electron failed to install
 correctly`. After changing `package-lock.json`, use `npm install` locally and
 commit the updated lockfile; everyone else and CI use `npm ci`.
 
-Then **Agents → Log in to Muse / Dots / Grok** (once each). The login window
-shares cookies with the hidden sync view, so after login you can close it —
-syncing continues in the background.
+The first start opens a short setup flow: what blibs does, connect a vendor,
+sign in, and start. Use **Agents and sign-in** in the sidebar to sign in to
+Muse, Dots, or Grok (once each). The **Agents** menu is a second path. The
+sign-in window shares cookies with the hidden sync view, so after sign-in you
+can close it — syncing continues in the background. If the vendor asks for a
+mobile code or a CAPTCHA, the agents screen shows that step. Select **Check
+again** after you complete it. **Back to chats**, **Cancel**, and **Escape**
+always return to the panel.
 
 > **If npm blocks Electron's install script:** approve it, then reinstall:
 >
@@ -99,15 +104,23 @@ The smoke spec verifies these items:
 - The message thread shows roles, timestamps, and wrapped long text.
 - The theme control follows the system preference and saves the choice.
 - The layout has no horizontal scroll at 1024 and 1440 pixels.
+- The first-run flow shows its steps, supports Back and Skip, and stays
+  complete after a reload.
+- The agents screen is the in-app sign-in entry point.
+- A mocked sign-in shows progress, a mobile verification step, and Cancel.
+- Escape and Back return to the home screen after a mocked sign-in.
 
 The spec writes light and dark screenshots to
 `tests/e2e/artifacts/panel-dark.png` and
-`tests/e2e/artifacts/panel-light.png`. The repository ignores this directory.
-The screenshots use mock chats, not a vendor login.
+`tests/e2e/artifacts/panel-light.png`. It also writes onboarding, sign-in, and
+post-sign-in home screenshots. The repository ignores this directory. The
+screenshots use mock chats and mocked sign-in steps, not a vendor login.
 
 The reusable module is `tests/e2e/harness.ts`. It exports `launch`,
-`waitForPanel`, `screenshot`, `selectAgent`, `selectTheme`, `setTheme`, and
-`seedChats`. Add a new spec in `tests/e2e/` to test another feature.
+`waitForPanel`, `screenshot`, `selectAgent`, `selectTheme`, `setTheme`,
+`seedChats`, `resetOnboarding`, and `completeOnboarding`. The harness starts the
+app with `BLIBS_MOCK_LOGIN=1`, so a sign-in attempt uses fixed mock steps. Add a
+new spec in `tests/e2e/` to test another feature.
 
 The check needs a display. macOS and Windows use the desktop session. On Linux
 without `DISPLAY` or `WAYLAND_DISPLAY`, the spec skips with a clear message. Use
@@ -136,13 +149,18 @@ src/
   main/         main process (Node + Electron APIs, no DOM)
     index.ts        app lifecycle, backend + panel servers, vendor views,
                     menu, outbox loop, 60s sweep / 30s drain timers
+    login.ts        vendor sign-in windows and inline step events
     test-harness.ts headless tests (npm test)
   preload/      bridge scripts (DOM + limited Electron IPC, no Node UI code)
     agent.ts        scrape + send; injected into every vendor session
+    panel.ts        narrow sign-in bridge for the panel
   renderer/     React UI (DOM only — bundled by Vite into dist/)
-    App.tsx         app state, thread, composer, auto-pull
+    App.tsx         app state, thread, composer, auto-pull, view switch
     main.tsx        React entry (loaded by index.html)
     client.ts       the only typed data client for backend routes
+    desktop.ts      typed access to the panel preload bridge
+    Onboarding.tsx  first-run steps
+    LoginScreen.tsx agents screen and inline sign-in steps
     components/     reusable UI components with typed props
     styles/         design tokens (light + dark) and base styles
     SearchPanel.tsx conversation search and local answers
@@ -218,7 +236,7 @@ declares for reference.
 | Weird behavior right after `npm start` | Make sure `ELECTRON_RUN_AS_NODE` is **not** exported in your shell (`unset` it and remove it from `~/.zshrc` — it makes Electron act as plain Node) |
 | Blibs: `Backend unreachable` pill | Backend didn't boot with the app — restart; check the terminal for `[blibs] proxy exited` |
 | `EADDRINUSE` on `:5174`/`:8787` in `npm test` | A previous app instance is still running — quit it first |
-| Send stuck on `Sending…` | Session not logged in or page still loading — use Agents → Log in, then Retry |
+| Send stuck on `Sending…` | Session not signed in or page still loading — use Agents and sign-in, then Retry |
 | Login lost after restart | Partitions persist per OS user; check you didn't clear app data |
 
 ## Limits (honest POC notes)
