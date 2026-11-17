@@ -38,6 +38,8 @@ inside the step that needs it.
 - Number every step.
 - Put an exact command or UI action in the step.
 - Put the expected result in the step.
+- Do not repeat general setup. Write `Shared setup: see README.md.` and link
+  to the guide. Add only the preconditions that are specific to the feature.
 - Use `BLIBS_MOCK_LOGIN=1` and a temporary profile. Do not use a live vendor
   login, a real chat, a cookie, or a credential.
 - If a step needs a live vendor session, write `Manual boundary:` and explain
@@ -83,6 +85,8 @@ for a live session.
 - [ ] The six sections are present and in order.
 - [ ] Every step is numbered and has an exact command or UI action.
 - [ ] Every step has an expected result.
+- [ ] General setup is not repeated. The document links to the shared README
+      and lists only feature-specific preconditions.
 - [ ] The steps need no live vendor login.
 - [ ] A live-session step has a `Manual boundary:` note.
 - [ ] The feature map in `README.md` points to the document.
