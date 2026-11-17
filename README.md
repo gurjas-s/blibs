@@ -69,6 +69,7 @@ The agent's reply syncs back on its own.
 | `npm run build` | Full build: `tsc` (main + preload as CJS, backend as ESM) → CJS markers → Vite bundles the panel to `dist/` |
 | `npm start` | Launch the app (needs a prior `build`) |
 | `npm test` | Rebuilds, runs unit and HTTP route tests, then runs the desktop harness with temporary stores and ports |
+| `npm run e2e` | Builds, starts the real Electron app with a remote debugging port, and runs the smoke spec over CDP; needs a display |
 | `npm run test:desktop` | Tests search and citations in an isolated Electron renderer after building; needs a display, but no model downloads |
 | `npm run smoke` | Boots the real app window, prints a JSON status line, quits — needs a display |
 | `npm run lint` | ESLint flat config over `src/`, `server/`, `scripts/`, and `tests/` (fails on warnings) |
@@ -78,6 +79,35 @@ The agent's reply syncs back on its own.
 CI runs on Linux and Windows for every push and pull request. To block merging
 when checks fail, a repository admin must require both **Build, lint, and test**
 checks in the default branch's protection rules. See `AGENTS.md` for contribution guidance.
+
+## End-to-end tests
+
+`npm run e2e` builds the app and runs a smoke spec in the real Electron app. The
+harness starts Electron with `--remote-debugging-port` on a free port. It
+connects `playwright-core` over the Chrome DevTools Protocol (CDP). It uses the
+Chromium engine inside Electron, so it does not download a browser.
+
+The harness starts the app with a temporary profile and history directory. It
+uses free ports for the panel and the backend. It needs no vendor login.
+
+The smoke spec verifies these items:
+
+- The panel window loads.
+- The backend answers `/api/health` through the panel proxy and directly.
+- The panel reports a successful import pull.
+- The agent sidebar changes the active agent.
+
+The spec writes a screenshot to `tests/e2e/artifacts/panel.png`. The repository
+ignores this directory.
+
+The reusable module is `tests/e2e/harness.ts`. It exports `launch`,
+`waitForPanel`, `screenshot`, and `selectAgent`. Add a new spec in
+`tests/e2e/` to test another feature.
+
+The check needs a display. macOS and Windows use the desktop session. On Linux
+without `DISPLAY` or `WAYLAND_DISPLAY`, the spec skips with a clear message. Use
+`xvfb-run -a npm run e2e` on a headless Linux machine. `npm test` does not run
+the e2e check.
 
 ## Contributing
 
@@ -112,6 +142,9 @@ src/
 server/
   proxy.ts      local backend (plain Node HTTP, zero deps): chat fan-out,
                 import store, send outbox. Spawned by the main process.
+tests/
+  e2e/          real-app CDP harness (`harness.ts`) and smoke spec; run with
+                `npm run e2e`
 scripts/
   emit-cjs-markers.mjs  build step — see "Modules" below
 .agents/

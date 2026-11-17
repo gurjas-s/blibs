@@ -9,7 +9,8 @@ and queues replies for those sessions. Read `README.md` before making changes.
 - `src/preload/`: DOM collection and message delivery inside vendor sessions.
 - `src/renderer/`: React panel. This code has browser APIs, but no Node access.
 - `server/`: Local HTTP backend, import store, and send outbox.
-- `tests/`: Unit tests and HTTP route tests using `node:test`.
+- `tests/`: Unit tests, HTTP route tests, and the CDP end-to-end harness and
+  specs in `tests/e2e/`.
 - `scripts/`: Build helpers and checks.
 
 The package uses ES modules. The main process and preloads compile to CommonJS;
@@ -24,13 +25,19 @@ npm ci
 npm run build
 npm run lint
 npm test
+npm run e2e
 npm run verify:clean-build
 ```
 
 `npm run lint` runs the ESLint flat config in `eslint.config.js` and fails on
 warnings. `npm test` builds the app, runs unit and HTTP tests, and runs the
 desktop harness without a display. Tests must use temporary stores and their own
-ports. `verify:clean-build` deletes generated output while keeping TypeScript's
+ports. `npm run e2e` builds the app, starts the real Electron app with a remote
+debugging port, and runs a smoke spec through `playwright-core` over CDP. It
+writes a screenshot to `tests/e2e/artifacts/`, which Git ignores. The e2e check
+needs a display; on Linux without `DISPLAY` or `WAYLAND_DISPLAY` it skips with a
+message, and you can run it with `xvfb-run -a npm run e2e`.
+`verify:clean-build` deletes generated output while keeping TypeScript's
 incremental cache, rebuilds, and checks that all required output exists.
 Keep `--force` in the TypeScript build command.
 
@@ -75,6 +82,8 @@ npm test
 - `npm test` must pass. A failing test is acceptable only when the unit that
   the change modifies is the cause of the failure. In that case, write the
   failure, the cause, and the plan in the PR.
+- Run `npm run e2e` when a change affects the panel, the app startup path, or
+  the backend health route. The command needs a display.
 - Do one manual test of the changed behavior. Write the steps and the result in
   the PR.
 - If the change changes what a user sees, add a screenshot to the PR.

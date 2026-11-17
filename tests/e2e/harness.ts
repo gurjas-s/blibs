@@ -1,0 +1,239 @@
+// End-to-end harness for the real Electron app.
+//
+// The harness starts Electron with a remote debugging port, connects
+// playwright-core over the Chrome DevTools Protocol (CDP), waits for the panel,
+// and exposes screenshot and interaction helpers. It does not download a
+// browser: playwright-core uses the Chromium engine inside Electron.
+//
+// Run it with `npm run e2e`. The command builds the app first.
+import { spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import net from 'node:net';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
+
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+const require = createRequire(import.meta.url);
+const electronPath = require('electron') as unknown as string;
+
+/** Directory for screenshots. The repository ignores this directory. */
+export const ARTIFACT_DIR = path.join(repoRoot, 'tests', 'e2e', 'artifacts');
+
+/** Message for a machine that has no display server. */
+export const NO_DISPLAY_MESSAGE =
+  'No display found. Run this check on a desktop, or use xvfb-run on Linux.';
+
+export interface LaunchOptions {
+  /** Maximum time to wait for the panel, in milliseconds. */
+  timeoutMs?: number;
+}
+
+export interface E2EApp {
+  /** Playwright connection to the Electron browser. */
+  browser: Browser;
+  /** Default browser context of the Electron app. */
+  context: BrowserContext;
+  /** Panel page that the main window loaded. */
+  page: Page;
+  /** `http://127.0.0.1:<panel port>` */
+  panelUrl: string;
+  /** `http://127.0.0.1:<backend port>` */
+  backendUrl: string;
+  /** `http://127.0.0.1:<CDP port>` */
+  cdpUrl: string;
+  /** Take a PNG screenshot into the ignored artifact directory. */
+  screenshot(name: string): Promise<string>;
+  /** Stop Electron and remove the temporary profile and history. */
+  close(): Promise<void>;
+}
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Return true when the operating system has a display server. */
+export function displayAvailable(): boolean {
+  if (process.platform !== 'linux') return true;
+  return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+}
+
+async function freePorts(count: number): Promise<number[]> {
+  const servers: net.Server[] = [];
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const server = net.createServer();
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      servers.push(server);
+    }
+    return servers.map((server) => {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Could not reserve a TCP port.');
+      return address.port;
+    });
+  } finally {
+    await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+  }
+}
+
+function collectOutput(child: ChildProcess): string[] {
+  const lines: string[] = [];
+  const record = (chunk: Buffer): void => {
+    for (const line of chunk.toString().split('\n')) {
+      if (line.trim()) lines.push(line);
+    }
+    if (lines.length > 40) lines.splice(0, lines.length - 40);
+  };
+  child.stdout?.on('data', record);
+  child.stderr?.on('data', record);
+  return lines;
+}
+
+async function waitForCdp(
+  cdpUrl: string,
+  child: ChildProcess,
+  output: string[],
+  timeoutMs: number,
+  getSpawnError: () => Error | undefined,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const spawnError = getSpawnError();
+    if (spawnError) throw new Error(`Could not start Electron: ${spawnError.message}`);
+    if (child.exitCode !== null) {
+      throw new Error(`Electron exited with code ${child.exitCode} before CDP started.\n${output.join('\n')}`);
+    }
+    try {
+      const res = await fetch(`${cdpUrl}/json/version`);
+      if (res.ok) return;
+    } catch {
+      // The debugging endpoint is not open yet.
+    }
+    await delay(100);
+  }
+  throw new Error(`CDP did not start at ${cdpUrl} within ${timeoutMs} ms.\n${output.join('\n')}`);
+}
+
+/** Wait for the Electron main window and its panel content. */
+export async function waitForPanel(
+  context: BrowserContext,
+  panelUrl: string,
+  timeoutMs = 30_000,
+): Promise<Page> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const page = context.pages().find((candidate) => candidate.url().startsWith(panelUrl));
+    if (page) {
+      await page.waitForSelector('.shell', { timeout: Math.max(1_000, deadline - Date.now()) });
+      return page;
+    }
+    await delay(100);
+  }
+  const urls = context.pages().map((page) => page.url()).join(', ') || 'none';
+  throw new Error(`The blibs panel did not load at ${panelUrl}. Open pages: ${urls}`);
+}
+
+/** Save a PNG screenshot and return its absolute path. */
+export async function screenshot(page: Page, name: string): Promise<string> {
+  mkdirSync(ARTIFACT_DIR, { recursive: true });
+  const file = path.join(ARTIFACT_DIR, name.endsWith('.png') ? name : `${name}.png`);
+  await page.screenshot({ path: file });
+  return file;
+}
+
+/** Click an agent in the sidebar and wait until its thread header shows it. */
+export async function selectAgent(page: Page, name: string): Promise<void> {
+  await page.locator('.agent-main', { hasText: name }).first().click();
+  await page.locator('.thread-head h1', { hasText: name }).waitFor({ timeout: 5_000 });
+}
+
+async function stopChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return;
+  child.kill('SIGTERM');
+  const exited = await Promise.race([
+    once(child, 'exit').then(() => true),
+    delay(5_000).then(() => false),
+  ]);
+  if (exited || child.exitCode !== null) return;
+  child.kill('SIGKILL');
+  await once(child, 'exit').catch(() => undefined);
+}
+
+/**
+ * Build is a separate step. Launch Electron on free ports with a temporary
+ * profile, connect Playwright over CDP, and wait for the panel.
+ */
+export async function launch(options: LaunchOptions = {}): Promise<E2EApp> {
+  if (!displayAvailable()) throw new Error(NO_DISPLAY_MESSAGE);
+
+  const timeoutMs = options.timeoutMs ?? 45_000;
+  const [cdpPort, panelPort, backendPort] = await freePorts(3);
+  const cdpUrl = `http://127.0.0.1:${cdpPort}`;
+  const panelUrl = `http://127.0.0.1:${panelPort}`;
+  const backendUrl = `http://127.0.0.1:${backendPort}`;
+
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-'));
+  const profileDir = path.join(tempDir, 'profile');
+  const dataDir = path.join(tempDir, 'history');
+  mkdirSync(profileDir, { recursive: true });
+  mkdirSync(dataDir, { recursive: true });
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    BLIBS_DATA_DIR: dataDir,
+    BLIBS_LEGACY_DIR: tempDir,
+    BLIBS_NODE_PATH: process.execPath,
+    BLIBS_UI_PORT: String(panelPort),
+    PROXY_PORT: String(backendPort),
+  };
+  delete env.BLIBS_NO_AUTOSTART;
+  delete env.ELECTRON_RUN_AS_NODE;
+
+  const child = spawn(
+    electronPath,
+    [repoRoot, `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profileDir}`],
+    { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+  );
+  const output = collectOutput(child);
+  let spawnError: Error | undefined;
+  child.once('error', (error) => {
+    spawnError = error;
+  });
+
+  let browser: Browser | undefined;
+  let closed = false;
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    if (browser) await browser.close().catch(() => undefined);
+    await stopChild(child);
+    try {
+      rmSync(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch {
+      // Electron can hold cache files briefly on Windows.
+    }
+  };
+
+  try {
+    await waitForCdp(cdpUrl, child, output, timeoutMs, () => spawnError);
+    browser = await chromium.connectOverCDP(cdpUrl);
+    const context = browser.contexts()[0];
+    if (!context) throw new Error('Playwright connected to Electron, but found no browser context.');
+    const page = await waitForPanel(context, panelUrl, timeoutMs);
+    return {
+      browser,
+      context,
+      page,
+      panelUrl,
+      backendUrl,
+      cdpUrl,
+      screenshot: (name: string) => screenshot(page, name),
+      close,
+    };
+  } catch (error) {
+    await close();
+    const detail = output.length ? `\nElectron output:\n${output.join('\n')}` : '';
+    throw new Error(`${(error as Error).message}${detail}`, { cause: error });
+  }
+}
