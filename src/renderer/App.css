@@ -103,25 +103,6 @@
   border-top: 1px solid var(--color-border);
 }
 
-.auto-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-}
-
-.auto-row .ui-field--bare {
-  width: auto;
-}
-
-.auto-row .ui-select {
-  width: auto;
-  padding: var(--space-0-5) var(--space-1);
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-sm);
-}
-
 .side-head {
   display: flex;
   align-items: flex-start;
@@ -343,7 +324,7 @@
   gap: var(--space-2);
 }
 
-/* ---------- Agents and sign-in ---------- */
+/* ---------- Agents ---------- */
 .login-screen {
   display: flex;
   flex-direction: column;
@@ -528,6 +509,21 @@
   display: grid;
   grid-template-columns: 2fr 1fr 1fr;
   gap: var(--space-2-5);
+}
+
+.settings-sync {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2-5);
+}
+
+.settings-sync .ui-field--bare {
+  width: auto;
+}
+
+.settings-sync .ui-select {
+  width: auto;
 }
 
 .settings-status {

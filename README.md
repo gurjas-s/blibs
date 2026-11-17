@@ -38,7 +38,7 @@ correctly`. After changing `package-lock.json`, use `npm install` locally and
 commit the updated lockfile; everyone else and CI use `npm ci`.
 
 The first start opens a short setup flow: what blibs does, connect a vendor,
-sign in, and start. Use **Agents and sign-in** in the sidebar to sign in to
+sign in, and start. Use **Agents** in the sidebar to sign in to
 Muse, Dots, or Grok (once each). The **Agents** menu is a second path. The
 sign-in window shares cookies with the hidden sync view, so after sign-in you
 can close it — syncing continues in the background. If the vendor asks for a
@@ -59,8 +59,8 @@ always return to the panel.
 > `npm ci` again if it does not.
 
 Chats flow in automatically: the app pushes seconds after chat content changes
-(plus a 1-minute backup sweep), and the panel auto-pulls every 15s
-(checkbox + interval in the sidebar).
+(plus a 1-minute backup sweep), and the panel auto-pulls every 15s by default.
+The Auto-sync toggle and interval are in Settings.
 
 **Send from blibs:** type in the composer, hit Send. The message is queued on the
 backend, the app types it into the matching session and sends it, and the badge
@@ -130,6 +130,8 @@ The smoke spec verifies these items:
 - The backend answers `/api/health` through the panel proxy and directly.
 - The panel reports a successful import pull.
 - The sidebar shows a selected chat and the narrow layout collapses.
+- Settings holds the Auto-sync toggle and interval, and the sidebar footer
+  keeps only the Agents entry.
 - The topbar search runs one global search, a provider tag limits it, and
   Settings holds the index controls and the theme.
 - The message thread shows roles, timestamps, and wrapped long text.
@@ -195,7 +197,7 @@ src/
     components/     reusable UI components with typed props
     styles/         design tokens (light + dark) and base styles
     SearchPanel.tsx results for the global search
-    SettingsPanel.tsx index, answers, search defaults, and theme
+    SettingsPanel.tsx sync, search defaults, index, answers, and theme
     search.ts       search parsing and persistent defaults
     providers.ts    the three vendors — the seam for future native APIs
     types.ts        Agent / ChatMessage
@@ -274,7 +276,7 @@ declares for reference.
 | Weird behavior right after `npm start` | Make sure `ELECTRON_RUN_AS_NODE` is **not** exported in your shell (`unset` it and remove it from `~/.zshrc` — it makes Electron act as plain Node) |
 | Blibs: `Backend unreachable` pill | Backend didn't boot with the app — restart; check the terminal for `[blibs] proxy exited` |
 | `EADDRINUSE` on `:5174`/`:8787` in `npm test` | A previous app instance is still running — quit it first |
-| Send stuck on `Sending…` | Session not signed in or page still loading — use Agents and sign-in, then Retry |
+| Send stuck on `Sending…` | Session not signed in or page still loading — use Agents, then Retry |
 | Login lost after restart | Partitions persist per OS user; check you didn't clear app data |
 
 ## Limits (honest POC notes)

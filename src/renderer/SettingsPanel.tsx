@@ -5,6 +5,7 @@ import type { SearchDefaults } from './search';
 import type { ThemePreference } from './theme';
 import { Button } from './components/Button';
 import { Card } from './components/Card';
+import { CheckboxField } from './components/CheckboxField';
 import { SelectField } from './components/SelectField';
 import { TextField } from './components/TextField';
 
@@ -13,18 +14,28 @@ export interface SettingsPanelProps {
   onThemeChange: (theme: ThemePreference) => void;
   defaults: SearchDefaults;
   onDefaultsChange: (defaults: SearchDefaults) => void;
+  /** True when auto-sync pulls new messages on a timer. */
+  autoPull: boolean;
+  onAutoPullChange: (enabled: boolean) => void;
+  /** Auto-sync interval in seconds. */
+  pullSecs: number;
+  onPullSecsChange: (seconds: number) => void;
   /** True when the topbar has query text to send to the local answer path. */
   canAsk: boolean;
   onAsk: () => void;
   onBack: () => void;
 }
 
-/** Settings view for search defaults, the local index, answers, and theme. */
+/** Settings view for sync, search defaults, the local index, answers, and theme. */
 export default function SettingsPanel({
   theme,
   onThemeChange,
   defaults,
   onDefaultsChange,
+  autoPull,
+  onAutoPullChange,
+  pullSecs,
+  onPullSecsChange,
   canAsk,
   onAsk,
   onBack,
@@ -55,6 +66,28 @@ export default function SettingsPanel({
     </div>
 
     <div className="settings-body">
+      <Card className="settings-card">
+        <h2>Sync</h2>
+        <div className="settings-sync">
+          <CheckboxField
+            label="Auto-sync"
+            checked={autoPull}
+            onChange={(event) => onAutoPullChange(event.target.checked)}
+          />
+          <SelectField
+            hideLabel
+            label="Auto-sync interval"
+            value={pullSecs}
+            onChange={(event) => onPullSecsChange(Number(event.target.value))}
+          >
+            <option value={15}>15s</option>
+            <option value={30}>30s</option>
+            <option value={60}>1m</option>
+            <option value={300}>5m</option>
+          </SelectField>
+        </div>
+      </Card>
+
       <Card className="settings-card">
         <h2>Search defaults</h2>
         <div className="settings-fields">

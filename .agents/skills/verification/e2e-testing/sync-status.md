@@ -37,12 +37,13 @@ Shared setup: see [README.md](README.md).
 3. Run the same command again.
    Expected: `{"added":0}`. The message does not appear twice.
 
-4. Uncheck `Auto-sync`.
+4. Open Settings and uncheck `Auto-sync` in the `Sync` section.
    Expected: `localStorage.getItem('blibs-autopull-v1')` is `false`. Select
    `30s` in `Auto-sync interval`. Expected:
    `localStorage.getItem('blibs-pullsecs-v1')` is `30`. Reload the panel.
    Expected: both values persist, and one pull still runs on load. Check
-   `Auto-sync` and select `15s`.
+   `Auto-sync` and select `15s`. Expected: the sidebar footer shows only the
+   `Agents` entry and no sync controls.
 
 5. Stop the backend process, then wait for the next pull:
    `lsof -ti tcp:8899 | xargs kill`.
@@ -86,7 +87,9 @@ the temp data under `$TMP/history`.
   sweep into the import store. Run `npm test`.
 - `tests/e2e/smoke.spec.ts`, test
   `panel shows a selected chat and a readable message thread`, waits for the
-  `Synced` pill and checks `/api/health` through the panel and directly. Run
+  `Synced` pill and checks `/api/health` through the panel and directly. Test
+  `sync controls live in Settings and apply to the running timer` checks the
+  Settings controls, both storage keys, and the removed sidebar controls. Run
   `npm run e2e`.
 - `src/main/index.ts` owns the 60-second sweep and the 30-second outbox drain.
   No unit test covers the timer values.

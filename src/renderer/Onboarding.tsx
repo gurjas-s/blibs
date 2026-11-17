@@ -109,7 +109,8 @@ export default function Onboarding({ onFinish }: OnboardingProps) {
               <h1 id="onboarding-title">Start</h1>
               <p>
                 Your chats sync after sign-in. Open the composer to send a reply.
-                Use Auto-sync to set how often the panel collects new messages.
+                Use Sync in Settings to set how often the panel collects new
+                messages.
               </p>
               <p className="onboarding-note">
                 Signs in to {vendor.vendor} {vendor.product} from the agents screen.
