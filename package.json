@@ -19,7 +19,8 @@
     "test": "npm run build && node --import tsx --test tests/*.test.ts && tsx src/main/test-harness.ts",
     "verify:clean-build": "node scripts/verify-clean-build.mjs",
     "lint": "eslint . --max-warnings=0",
-    "test:desktop": "node scripts/test-search-desktop.mjs"
+    "test:desktop": "node scripts/test-search-desktop.mjs",
+    "icons": "node assets/build-icons.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",
