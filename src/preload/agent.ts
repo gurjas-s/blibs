@@ -83,7 +83,7 @@ function collect(): CollectPayload {
   let nodes: Element[] = [];
   let used = '(none matched)';
   for (const sel of SELECTORS) {
-    let n: Element[] = [];
+    let n: Element[];
     try {
       n = [...document.querySelectorAll(sel)];
     } catch {

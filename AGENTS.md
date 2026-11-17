@@ -27,9 +27,10 @@ npm test
 npm run verify:clean-build
 ```
 
-`npm test` builds the app, runs unit and HTTP tests, and runs the desktop harness
-without a display. Tests must use temporary stores and their own ports.
-`verify:clean-build` deletes generated output while keeping TypeScript's
+`npm run lint` runs the ESLint flat config in `eslint.config.js` and fails on
+warnings. `npm test` builds the app, runs unit and HTTP tests, and runs the
+desktop harness without a display. Tests must use temporary stores and their own
+ports. `verify:clean-build` deletes generated output while keeping TypeScript's
 incremental cache, rebuilds, and checks that all required output exists.
 Keep `--force` in the TypeScript build command.
 

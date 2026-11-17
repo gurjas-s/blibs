@@ -331,7 +331,7 @@ export async function sweep(reason: string): Promise<{ added: number }> {
 
 /** Blibs -> views: type queued messages into the matching vendor view. */
 export async function drainOutbox(reason: string): Promise<{ drained: number; error?: string }> {
-  let pending: OutboxItem[] = [];
+  let pending: OutboxItem[];
   try {
     const data = await proxyGet<{ items?: OutboxItem[] }>('/api/outbox/pending');
     pending = data.items || [];
