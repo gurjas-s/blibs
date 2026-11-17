@@ -308,10 +308,10 @@ export async function seedChats(page: Page, chats: MockChats = mockChats()): Pro
   await page.locator('.msg').first().waitFor({ state: 'visible', timeout: 15_000 });
 }
 
-/** Click an agent in the sidebar and wait until its thread header shows it. */
+/** Click an agent in the sidebar and wait until its thread shows it. */
 export async function selectAgent(page: Page, name: string): Promise<void> {
   await page.locator('.agent-main', { hasText: name }).first().click();
-  await page.locator('.thread-head h1', { hasText: name }).waitFor({ timeout: 5_000 });
+  await page.locator(`.thread[aria-label="Messages with ${name}"]`).waitFor({ timeout: 5_000 });
 }
 
 async function stopChild(child: ChildProcess): Promise<void> {

@@ -24,8 +24,9 @@ signals, cleanup, and the automated tests that cover the feature.
 4. Run the numbered steps. Use the mock login and a temporary store.
 5. Write the result in the pull request body or the worker report.
 
-Do not commit an evidence report or a reproduction note. Keep a screenshot for
-the pull request body in the pull request.
+Do not commit an evidence report, a reproduction note, a verification log, or a
+screenshot. Attach a screenshot for the pull request body with
+`gh pr edit <number> --attach <path>`.
 
 ## Add a document
 

@@ -64,7 +64,10 @@ real chat, a cookie, or a credential. Use `tests/e2e/harness.ts` to start the
 app with a temporary profile. The harness sets `BLIBS_MOCK_LOGIN=1`, so a
 sign-in attempt uses fixed steps and needs no account or verification code. Add
 the onboarding, sign-in, and post-sign-in screenshots when the change is
-visible. Read the `design` skill in `.agents/skills/design/` before you add UI.
+visible. Attach a screenshot for a visible change to the PR body with
+`gh pr edit <number> --attach <path>`. Never commit a screenshot, an evidence
+file, or a note. Read the `design` skill in `.agents/skills/design/` before you
+add UI.
 
 ## Commands
 
@@ -138,14 +141,16 @@ npm test
 - Use the `verification` skill for the end-to-end check. Choose the feature
   document from `.agents/skills/verification/e2e-testing/`. Write the result of
   the run in the PR body or the worker report.
-- If the change changes what a user sees, add a screenshot to the PR body.
+- If the change changes what a user sees, attach a screenshot to the PR body
+  with `gh pr edit <number> --attach <path>`. Do not commit the screenshot.
 
 ## Evidence
 
-Do not commit evidence reports, reproduction notes, or verification logs. Keep
-a screenshot for the PR body in the PR. Put repeatable steps in the
-verification documents under `.agents/skills/verification/`. Put the worker
-report in the task thread.
+Do not commit evidence reports, reproduction notes, verification logs, or
+screenshots. Attach a screenshot for the PR body with
+`gh pr edit <number> --attach <path>`. Put repeatable steps in the verification
+documents under `.agents/skills/verification/`. Put the worker report in the
+task thread.
 
 CI runs `npm run build`, `npm run lint`, `npm test`, and
 `npm run verify:clean-build` on Linux and Windows. A local check does not
@@ -158,7 +163,7 @@ A reviewer must confirm each item before approval:
 - [ ] The PR title, PR description, review comments, commit messages, code comments, and user-facing docs are in English and follow ASD-STE100 Simplified Technical English.
 - [ ] `npm run lint` and `npm test` pass.
 - [ ] The PR describes the verification run and the result.
-- [ ] A visible change has a screenshot in the PR body.
+- [ ] A visible change has a screenshot attached to the PR body with `gh pr edit <number> --attach <path>`.
 - [ ] The change does not add credentials, cookies, or session data.
 
 Do not approve a PR that has non-English text in its comments or PR text.

@@ -106,10 +106,9 @@ test(
     // The sidebar works with the keyboard, not only the pointer.
     await page.locator('.agent-main', { hasText: 'Muse' }).first().focus();
     await page.keyboard.press('Enter');
-    await page.locator('.thread-head h1', { hasText: 'Muse' }).waitFor({ timeout: 5_000 });
+    await page.locator('.thread[aria-label="Messages with Muse"]').waitFor({ timeout: 5_000 });
 
     await selectAgent(page, 'Grok');
-    assert.equal((await page.locator('.thread-head h1').innerText()).trim(), 'Grok');
     assert.equal(await page.locator('.thread').getAttribute('aria-label'), 'Messages with Grok');
 
     const selected = page.locator('.agent-main', { hasText: 'Grok' }).first();
@@ -517,7 +516,7 @@ test(
     // Escape always returns to the home screen.
     await page.keyboard.press('Escape');
     await page.locator('.login-screen').waitFor({ state: 'detached' });
-    assert.equal(await page.locator('.thread-head h1').isVisible(), true);
+    assert.equal(await page.locator('.thread').isVisible(), true);
     await selectTheme(page, 'dark');
     assertImage(await app.screenshot('home-after-login-dark.png'));
     await selectTheme(page, 'light');

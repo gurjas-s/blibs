@@ -46,9 +46,8 @@ Shared setup: see [README.md](README.md).
    three messages.
 
 3. Select `Grok`.
-   Expected: the thread heading is `Grok`, the thread has
-   `aria-label="Messages with Grok"`, and the role labels are `Grok`, `You`,
-   `Grok`. Each message shows a time.
+   Expected: the thread has `aria-label="Messages with Grok"`, and the role
+   labels are `Grok`, `You`, `Grok`. Each message shows a time.
 
 4. Read the long message.
    Expected: the URL wraps inside the bubble. The thread does not scroll
@@ -60,15 +59,16 @@ Shared setup: see [README.md](README.md).
 
 6. With an empty composer, `Send` is disabled. Type `verification ping`.
    Expected: `Send` is enabled. Select `Send`.
-   Expected: the message shows at once with `Sending…`. The status line shows
-   `Sent to Grok` when the queue call returns. A later pull can replace it.
+   Expected: the message shows at once with `Sending…`. The status
+   announcement reads `Sent to Grok` when the queue call returns. A later pull
+   can replace it.
 
 7. Wait 30 seconds for the hidden view drain.
    Expected: the receipt changes to `Not delivered` with `Retry`.
 
 8. Select `Retry`.
-   Expected: the receipt changes to `Sending…` and the status line shows
-   `Re-queued`.
+   Expected: the receipt changes to `Sending…` and the status announcement
+   reads `Re-queued`.
 
 9. Type a message and press `Enter`.
    Expected: the composer sends it. Press `Tab` through the page.

@@ -70,9 +70,11 @@ Run every document when a release changes more than one feature.
 ## Record the result
 
 - Put the run result in the pull request body or the worker report.
-- Put a screenshot for the pull request body in the pull request. The
-  repository ignores `tests/e2e/artifacts/`.
-- Do not commit a reproduction note, an evidence report, or a verification log.
+- Attach a screenshot for the pull request body to the PR with
+  `gh pr edit <number> --attach <path>`. The repository ignores
+  `tests/e2e/artifacts/`.
+- Never commit a screenshot, an evidence report, a reproduction note, or a
+  verification log.
 - Do not commit a screenshot of a logged-in vendor session, a cookie, or a
   credential.
 

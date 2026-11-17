@@ -38,7 +38,6 @@ import {
 import { AgentListItem } from './components/AgentListItem';
 import { Button } from './components/Button';
 import { EmptyState } from './components/EmptyState';
-import { LinkButton } from './components/LinkButton';
 import { MessageBubble } from './components/MessageBubble';
 import { SectionLabel } from './components/SectionLabel';
 import { StatusPill } from './components/StatusPill';
@@ -288,7 +287,7 @@ export default function App() {
       }
       if (changed) setMessages(next);
     } catch {
-      /* proxy down — status line already says so */
+      /* proxy down — the status announcement already says so */
     }
   }
 
@@ -506,47 +505,51 @@ export default function App() {
   return (
     <div className="shell">
       <header className="topbar">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="sidebar-toggle"
-          aria-expanded={sidebarOpen}
-          aria-controls="agent-sidebar"
-          onClick={() => setSidebarOpen((open) => !open)}
-        >
-          Chats
-        </Button>
-        <div className="brand">
-          <span className="mark" aria-hidden="true">b</span>
-          <strong>blibs</strong>
+        <div className="topbar-start">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="sidebar-toggle"
+            aria-expanded={sidebarOpen}
+            aria-controls="agent-sidebar"
+            onClick={() => setSidebarOpen((open) => !open)}
+          >
+            Chats
+          </Button>
+          <div className="brand">
+            <span className="mark" aria-hidden="true">b</span>
+            <strong>blibs</strong>
+          </div>
         </div>
-        <div className="search" role="search">
-          <TextField
-            hideLabel
-            inputRef={searchInput}
-            label="Search all conversations"
-            title="Type #muse, #dots, #grok, or #custom to filter by provider."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                submitSearch();
-              } else if (e.key === 'Escape') {
-                e.preventDefault();
-                exitSearch();
-              }
-            }}
-            placeholder="Search all conversations…"
-            maxLength={1000}
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </div>
-        <div className="topbar-actions">
-          <StatusPill tone={pill.tone} title={statusLine}>
-            {pill.label}
-          </StatusPill>
+        <div className="topbar-main">
+          <div className="search" role="search">
+            <TextField
+              hideLabel
+              inputRef={searchInput}
+              label="Search all conversations"
+              title="Type #muse, #dots, #grok, or #custom to filter by provider."
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  submitSearch();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  exitSearch();
+                }
+              }}
+              placeholder="Search all conversations…"
+              maxLength={1000}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+          <div className="topbar-actions">
+            <StatusPill tone={pill.tone} title={statusLine}>
+              {pill.label}
+            </StatusPill>
+          </div>
         </div>
       </header>
 
@@ -624,21 +627,6 @@ export default function App() {
           ) : view === 'results' && searchCommand ? (
             <SearchPanel command={searchCommand} />
           ) : <>
-          <div className="thread-head">
-            <div>
-              <h1>{active.name}</h1>
-              <p>{active.description}</p>
-            </div>
-            <LinkButton
-              variant="secondary"
-              href={active.site}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Open {active.name} ↗
-            </LinkButton>
-          </div>
-
           <div
             className="thread"
             role="log"
@@ -677,7 +665,7 @@ export default function App() {
               Send
             </Button>
           </div>
-          <p className="status-line" role="status">{statusLine}</p>
+          <p className="sr-only" role="status">{statusLine}</p>
           </>}
         </main>
       </div>
