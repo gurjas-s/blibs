@@ -266,7 +266,11 @@
 
 .agent.active {
   background: var(--color-surface-raised);
-  border-color: var(--color-border);
+  border-color: var(--color-accent);
+}
+
+.agent.active .aname {
+  color: var(--color-accent-soft);
 }
 
 .agent-main {
@@ -329,35 +333,69 @@
 
 /* ---------- Message bubble ---------- */
 .msg {
-  max-width: 78%;
-}
-
-.msg p {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-width: min(78%, 64ch);
 }
 
 .msg.agent {
   align-self: flex-start;
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-xs) var(--radius-lg) var(--radius-lg) var(--radius-lg);
-  padding: var(--space-2-5) var(--space-3-5);
+  align-items: flex-start;
 }
 
 .msg.user {
   align-self: flex-end;
+  align-items: flex-end;
+}
+
+.msg-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 0 var(--space-1);
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-xs);
+}
+
+.msg-role {
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-semibold);
+}
+
+.msg-meta time {
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-bubble {
+  max-width: 100%;
+  border-radius: var(--radius-lg);
+  padding: var(--space-2-5) var(--space-3-5);
+}
+
+.msg.agent .msg-bubble {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-start-start-radius: var(--radius-xs);
+}
+
+.msg.user .msg-bubble {
   background: var(--color-surface-accent);
   border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-lg) var(--radius-xs) var(--radius-lg) var(--radius-lg);
-  padding: var(--space-2-5) var(--space-3-5);
+  border-start-end-radius: var(--radius-xs);
+}
+
+.msg p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .receipt {
   display: block;
   margin-top: var(--space-1);
-  color: var(--color-text-subtle);
+  color: var(--color-text-muted);
   font-size: var(--font-size-xs);
 }
 

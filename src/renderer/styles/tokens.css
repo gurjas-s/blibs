@@ -8,6 +8,12 @@
  * `data-theme="dark"` on the root element. Both values must stay in sync.
  */
 
+:root {
+  /* Layout — the same at every theme. */
+  --layout-sidebar-width: 264px;
+  --layout-thread-measure: 76ch;
+}
+
 :root,
 :root[data-theme='dark'] {
   color-scheme: dark;
