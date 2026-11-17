@@ -16,6 +16,42 @@ and queues replies for those sessions. Read `README.md` before making changes.
 The package uses ES modules. The main process and preloads compile to CommonJS;
 the build writes their `package.json` markers. The backend remains an ES module.
 
+## Frontend
+
+The renderer is decoupled from the backend. Data access goes through one typed
+client module: `src/renderer/client.ts`. A component does not call `fetch`, read
+`localStorage`, or import a backend module. Use typed props and typed callbacks
+instead.
+
+Reuse the components in `src/renderer/components/` before you add a control.
+Extend a component with a typed prop when the new state is a real variant. Do
+not add a second button, input, card, or status pill.
+
+Styles come from the design tokens in `src/renderer/styles/tokens.css`. Define
+each color, space, font size, radius, and elevation one time. Add both a light
+value and a dark value. Do not write a raw color or an ad-hoc space value in a
+component.
+
+Keep the UI plain and quiet:
+
+- Keep the flat slate theme with one accent color.
+- Do not use a gradient.
+- Do not add an unnecessary chip, badge, or pill.
+- Do not add a caption that explains the screen.
+
+Make every control accessible:
+
+- Give each control a name with a label or `aria-label`.
+- Keep a visible keyboard focus state.
+- Keep full keyboard access.
+- Keep text contrast at WCAG AA or better in both themes.
+
+Tests and screenshots must use mocked data. Do not use a live vendor login, a
+real chat, a cookie, or a credential. Use `tests/e2e/harness.ts` to start the
+app with a temporary profile. Add the light and dark screenshots when the change
+is visible. Read the `design` skill in `.agents/skills/design/` before you add
+UI.
+
 ## Commands
 
 Use Node.js 24 and the committed lockfile.

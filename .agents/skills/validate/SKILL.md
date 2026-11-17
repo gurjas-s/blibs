@@ -35,8 +35,8 @@ Run `npm run e2e` when the change affects the panel, the app startup path, or
 the backend health route.
 
 The command builds the app, starts Electron with a remote debugging port, and
-runs the smoke spec through `playwright-core` over CDP. It writes a screenshot
-to `tests/e2e/artifacts/panel.png`.
+runs the smoke spec through `playwright-core` over CDP. It writes
+`tests/e2e/artifacts/panel-dark.png` and `tests/e2e/artifacts/panel-light.png`.
 
 The check needs a display. On Linux without `DISPLAY` or `WAYLAND_DISPLAY`, the
 spec skips with a message. Use `xvfb-run -a npm run e2e` on a headless Linux

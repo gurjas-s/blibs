@@ -97,11 +97,12 @@ The smoke spec verifies these items:
 - The panel reports a successful import pull.
 - The agent sidebar changes the active agent.
 
-The spec writes a screenshot to `tests/e2e/artifacts/panel.png`. The repository
-ignores this directory.
+The spec writes light and dark screenshots to
+`tests/e2e/artifacts/panel-dark.png` and
+`tests/e2e/artifacts/panel-light.png`. The repository ignores this directory.
 
 The reusable module is `tests/e2e/harness.ts`. It exports `launch`,
-`waitForPanel`, `screenshot`, and `selectAgent`. Add a new spec in
+`waitForPanel`, `screenshot`, `selectAgent`, and `setTheme`. Add a new spec in
 `tests/e2e/` to test another feature.
 
 The check needs a display. macOS and Windows use the desktop session. On Linux
@@ -115,6 +116,7 @@ Read `AGENTS.md` before you change code. The repository skills in
 `.agents/skills/` hold the repeatable steps:
 
 - `onboarding` — set up a fresh checkout and start the app.
+- `design` — add UI with the component layer and design tokens.
 - `validate` — run the build, lint, unit tests, one manual test, and add a
   screenshot when the change is visible.
 
@@ -134,11 +136,15 @@ src/
   preload/      bridge scripts (DOM + limited Electron IPC, no Node UI code)
     agent.ts        scrape + send; injected into every vendor session
   renderer/     React UI (DOM only — bundled by Vite into dist/)
-    App.tsx         agent list, threads, composer, auto-pull
+    App.tsx         app state, thread, composer, auto-pull
     main.tsx        React entry (loaded by index.html)
+    client.ts       the only typed data client for backend routes
+    components/     reusable UI components with typed props
+    styles/         design tokens (light + dark) and base styles
+    SearchPanel.tsx conversation search and local answers
     providers.ts    the three vendors — the seam for future native APIs
     types.ts        Agent / ChatMessage
-    *.css, assets/ theme + static assets
+    *.css, assets/  layout, theme entry, static assets
 server/
   proxy.ts      local backend (plain Node HTTP, zero deps): chat fan-out,
                 import store, send outbox. Spawned by the main process.
@@ -148,7 +154,7 @@ tests/
 scripts/
   emit-cjs-markers.mjs  build step — see "Modules" below
 .agents/
-  skills/       repo skills for onboarding and validation
+  skills/       repo skills for design, onboarding, and validation
 ```
 
 Generated, never edited or committed: `build/` (compiled main/preload/backend),

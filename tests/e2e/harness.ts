@@ -142,6 +142,15 @@ export async function screenshot(page: Page, name: string): Promise<string> {
   return file;
 }
 
+/** Apply the light or dark token set on the panel root element. */
+export async function setTheme(page: Page, theme: 'light' | 'dark'): Promise<void> {
+  await page.evaluate((value) => {
+    document.documentElement.dataset.theme = value;
+  }, theme);
+  // Let color transitions settle before a screenshot.
+  await page.waitForTimeout(200);
+}
+
 /** Click an agent in the sidebar and wait until its thread header shows it. */
 export async function selectAgent(page: Page, name: string): Promise<void> {
   await page.locator('.agent-main', { hasText: name }).first().click();
