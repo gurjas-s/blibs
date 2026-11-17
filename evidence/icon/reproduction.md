@@ -43,10 +43,10 @@ EXIT:0
 4. Look at the Dock. The app icon is the blibs icon, not the Electron icon.
 5. Look at the window title. It reads `blibs`.
 
-Result: the menu and About items use `blibs`, and the Dock and window show the
-committed icon. The unit harness asserts the app name, the `About blibs` menu
-item, and the three committed icon files. It cannot assert the native About
-panel or the Dock, because both are operating-system windows.
+Result: the unit harness asserts the app name, the `About blibs` menu item, and
+the three committed icon files. The native About panel and the Dock are
+operating-system windows, so the harness cannot assert them. The visual check
+of those two items waits for an unlocked display.
 
 ## Screenshot note
 
