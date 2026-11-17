@@ -21,36 +21,37 @@ blibs panel (Electron + React, served from inside the app on :5174)
 
 ## First run (new developer)
 
-Prerequisites: Node.js 24 (`node -v`). No browser setup needed — sessions live in the app.
+Prerequisites: Node.js 24.x (`node -v` must print `v24.…`). Electron 34's
+installer does not work on newer Node.js releases, so switch to Node 24 before
+installing (`fnm use 24` or `nvm use 24`). No browser setup needed — sessions
+live in the app.
 
 ```bash
-npm install        # install everything (one package — see note below if Electron misbehaves)
+npm ci             # install the exact dependency versions in package-lock.json
 npm run build      # typecheck + compile + bundle the panel
 npm start          # launch the desktop app
 ```
+
+`npm ci` fails with an actionable message if Electron's binary is missing,
+rather than letting `npm start` fail later with `Electron failed to install
+correctly`. After changing `package-lock.json`, use `npm install` locally and
+commit the updated lockfile; everyone else and CI use `npm ci`.
 
 Then **Agents → Log in to Muse / Dots / Grok** (once each). The login window
 shares cookies with the hidden sync view, so after login you can close it —
 syncing continues in the background.
 
-> **If `npm start` fails with `Electron failed to install correctly`:** npm ≥ 11
-> gates install scripts, so Electron's binary download never ran. Fix:
+> **If npm blocks Electron's install script:** approve it, then reinstall:
 >
 > ```bash
 > npm install-scripts approve electron
-> rm -rf node_modules/electron
-> npm install
+> npm ci
 > ```
 >
-> If `node_modules/electron/dist/` is afterwards still just
-> `LICENSES.chromium.html` (the old `extract-zip` stalls on newer Node), unzip the
-> already-downloaded binary by hand:
->
-> ```bash
-> unzip -q -o ~/Library/Caches/electron/*/electron-v34.5.8-darwin-arm64.zip \
->   -d node_modules/electron/dist/
-> printf 'Electron.app/Contents/MacOS/Electron' > node_modules/electron/path.txt
-> ```
+> Some Node.js and npm versions can leave `node_modules/electron/dist/`
+> with only `LICENSES.chromium.html`. Check that `node -v` prints `v24.…` and
+> that `node_modules/electron/path.txt` exists; delete `node_modules` and run
+> `npm ci` again if it does not.
 
 Chats flow in automatically: the app pushes seconds after chat content changes
 (plus a 1-minute backup sweep), and the panel auto-pulls every 15s
@@ -71,7 +72,7 @@ The agent's reply syncs back on its own.
 | `npm run test:desktop` | Tests search and citations in an isolated Electron renderer after building; needs a display, but no model downloads |
 | `npm run smoke` | Boots the real app window, prints a JSON status line, quits — needs a display |
 | `npm run lint` | `oxlint` over the repo |
-| `npm run clean` | Wipe `build/` + `dist/` (then `build` again) |
+| `npm run clean` | Wipe `build/` + `dist/` |
 | `npm run verify:clean-build` | Delete generated output, rebuild with the existing incremental cache, and check that all required output was regenerated |
 
 CI runs on Linux and Windows for every push and pull request. To block merging
@@ -104,10 +105,11 @@ scripts/
 ```
 
 Generated, never edited or committed: `build/` (compiled main/preload/backend),
-`dist/` (bundled panel), `node_modules/`. Runtime data (`server/imports.json`,
-`server/outbox.json`) is gitignored and recreated on demand. Panel state lives in
-`localStorage` (`blibs-messages-v2`, `blibs-agents-v2`, …) — swap for a DB + OAuth
-in production.
+`dist/` (bundled panel), `node_modules/`. Retained chats and the send outbox live
+in `<Electron userData>/history`; `BLIBS_DATA_DIR` overrides that directory. See
+[conversation search storage](docs/conversation-search.md) for migration details.
+Panel state lives in `localStorage` (`blibs-messages-v2`, `blibs-agents-v2`, …) —
+swap for a DB + OAuth in production.
 
 ## Modules (read this before touching the build)
 
@@ -155,7 +157,7 @@ declares for reference.
 |---|---|
 | `Cannot find module '…/build/main/index.js'` on `npm start` | You skipped the build — run `npm run build` first (`build/` is generated) |
 | `exports is not defined in ES module scope` | CJS markers missing — re-run `npm run build` |
-| `Electron failed to install correctly` | Approve + reinstall Electron (see First run) |
+| `Electron failed to install correctly` | Use Node.js 24.x, approve Electron's install script if npm asks, then run `npm ci` (see First run) |
 | Weird behavior right after `npm start` | Make sure `ELECTRON_RUN_AS_NODE` is **not** exported in your shell (`unset` it and remove it from `~/.zshrc` — it makes Electron act as plain Node) |
 | Blibs: `Backend unreachable` pill | Backend didn't boot with the app — restart; check the terminal for `[blibs] proxy exited` |
 | `EADDRINUSE` on `:5174`/`:8787` in `npm test` | A previous app instance is still running — quit it first |

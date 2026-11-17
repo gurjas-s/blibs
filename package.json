@@ -5,9 +5,14 @@
   "description": "blibs desktop app: one panel for your personal agents, with persistent vendor sessions built in",
   "type": "module",
   "main": "build/main/index.js",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "build": "tsc -b --force && node scripts/emit-cjs-markers.mjs && vite build",
     "clean": "node scripts/clean.mjs",
+    "postinstall": "node scripts/check-electron.mjs",
+    "prestart": "node scripts/check-electron.mjs",
     "start": "electron .",
     "smoke": "electron . --blibs-smoke",
     "test": "npm run build && node --import tsx --test tests/*.test.ts && tsx src/main/test-harness.ts",
