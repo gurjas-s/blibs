@@ -1,5 +1,5 @@
 import { useId } from 'react';
-import type { InputHTMLAttributes } from 'react';
+import type { InputHTMLAttributes, Ref } from 'react';
 import { cx } from './cx';
 
 export interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
@@ -7,6 +7,8 @@ export interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   label: string;
   /** Hide the visible label and use `label` as the accessible name only. */
   hideLabel?: boolean;
+  /** Access to the native input, for focus and caret control. */
+  inputRef?: Ref<HTMLInputElement>;
 }
 
 /** Single-line text input with a visible or screen-reader-only label. */
@@ -15,6 +17,7 @@ export function TextField({
   hideLabel = false,
   id,
   className,
+  inputRef,
   ...props
 }: TextFieldProps) {
   const generatedId = useId();
@@ -24,6 +27,7 @@ export function TextField({
       {hideLabel ? null : <span className="ui-field__label">{label}</span>}
       <input
         id={inputId}
+        ref={inputRef}
         aria-label={hideLabel ? label : undefined}
         className={cx('ui-textfield', className)}
         {...props}

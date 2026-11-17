@@ -11,6 +11,14 @@ import {
   type ThemePreference,
 } from './theme';
 import SearchPanel from './SearchPanel';
+import SettingsPanel from './SettingsPanel';
+import {
+  EMPTY_SEARCH_DEFAULTS,
+  filtersFromDefaults,
+  parseSearchQuery,
+  type SearchCommand,
+  type SearchDefaults,
+} from './search';
 import Onboarding, { type OnboardingResult } from './Onboarding';
 import LoginScreen from './LoginScreen';
 import {
@@ -44,7 +52,14 @@ const LS_AGENTS = 'blibs-agents-v2';
 const LS_AUTOPULL = 'blibs-autopull-v1';
 const LS_PULLSECS = 'blibs-pullsecs-v1';
 const LS_ONBOARDING = 'blibs-onboarding-v1';
+const LS_SEARCH = 'blibs-search-defaults-v1';
 const ONBOARDING_DONE = 'done';
+
+/** Search debounce in milliseconds. */
+const SEARCH_DEBOUNCE_MS = 250;
+
+/** The main pane that the shell shows. */
+type View = 'chat' | 'results' | 'settings' | 'login';
 
 function onboardingComplete(): boolean {
   try {
@@ -68,6 +83,17 @@ function load<T>(key: string, fallback: T): T {
   }
 }
 
+function loadSearchDefaults(): SearchDefaults {
+  const raw = load<Record<string, unknown>>(LS_SEARCH, {});
+  const text = (value: unknown): string => (typeof value === 'string' ? value : '');
+  return {
+    ...EMPTY_SEARCH_DEFAULTS,
+    threadId: text(raw.threadId),
+    from: text(raw.from),
+    to: text(raw.to),
+  };
+}
+
 function timeAgo(ts: number | null): string {
   if (!ts) return 'not synced yet';
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -88,8 +114,10 @@ export default function App() {
   const [messages, setMessages] = useState<Record<string, ChatMessage[]>>(() => load(LS_MSGS, {}));
   const [activeId, setActiveId] = useState(agents[0]?.id ?? 'muse');
   const [query, setQuery] = useState('');
-  const [showHistory, setShowHistory] = useState(false);
-  const [showLogin, setShowLogin] = useState(false);
+  const [view, setView] = useState<View>('chat');
+  const [searchDefaults, setSearchDefaults] = useState<SearchDefaults>(loadSearchDefaults);
+  const [searchCommand, setSearchCommand] = useState<SearchCommand | null>(null);
+  const [settingsReturn, setSettingsReturn] = useState<View>('chat');
   const [onboarded, setOnboarded] = useState(onboardingComplete);
   const [loginStatuses, setLoginStatuses] = useState<Record<string, LoginStatus>>({});
   const [input, setInput] = useState('');
@@ -101,9 +129,14 @@ export default function App() {
   const [theme, setTheme] = useState<ThemePreference>(readThemePreference);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const searchId = useRef(0);
+  const debounceTimer = useRef<number | null>(null);
+  const pendingCaret = useRef(false);
 
   const active = agents.find((a) => a.id === activeId) ?? agents[0];
   const meta = providerFor(active);
+  const parsedQuery = parseSearchQuery(query);
 
   const messagesRef = useRef(messages);
   const agentsRef = useRef(agents);
@@ -125,6 +158,9 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(LS_PULLSECS, JSON.stringify(pullSecs));
   }, [pullSecs]);
+  useEffect(() => {
+    localStorage.setItem(LS_SEARCH, JSON.stringify(searchDefaults));
+  }, [searchDefaults]);
   useLayoutEffect(() => {
     applyTheme(theme);
     localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(theme));
@@ -155,23 +191,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!showLogin) return;
+    if (view !== 'login') return;
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setShowLogin(false);
+      if (event.key === 'Escape') setView('chat');
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [showLogin]);
+  }, [view]);
 
   const thread = useMemo(() => {
-    const list = [...(messages[active.id] ?? [])].sort((a, b) => a.ts - b.ts);
-    const q = query.trim().toLowerCase();
-    return q ? list.filter((m) => m.text.toLowerCase().includes(q)) : list;
-  }, [messages, active.id, query]);
+    return [...(messages[active.id] ?? [])].sort((a, b) => a.ts - b.ts);
+  }, [messages, active.id]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: query ? 'auto' : 'smooth', block: 'end' });
-  }, [thread.length, activeId, query]);
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [thread.length, activeId]);
 
   /** Merge desktop imports, cleaning scrape artifacts and collapsing
    *  echoes of messages already sent from here (the "double message" bug). */
@@ -316,6 +350,104 @@ export default function App() {
     }
   }
 
+  function cancelPendingSearch(): void {
+    if (debounceTimer.current === null) return;
+    window.clearTimeout(debounceTimer.current);
+    debounceTimer.current = null;
+  }
+
+  /** Run the topbar query. A tag with no text runs no search. */
+  function startSearch(ask: boolean): void {
+    cancelPendingSearch();
+    const parsed = parseSearchQuery(query);
+    if (!parsed.text) return;
+    searchId.current += 1;
+    setSearchCommand({
+      id: searchId.current,
+      text: parsed.text,
+      filters: filtersFromDefaults(searchDefaults, parsed.provider),
+      ask,
+    });
+    setView('results');
+  }
+
+  function submitSearch(): void {
+    startSearch(false);
+  }
+
+  function exitSearch(): void {
+    cancelPendingSearch();
+    setQuery('');
+    setView('chat');
+  }
+
+  function openSettings(): void {
+    cancelPendingSearch();
+    if (view !== 'settings') setSettingsReturn(view);
+    setView('settings');
+    setSidebarOpen(false);
+  }
+
+  function closeSettings(): void {
+    if (settingsReturn === 'results') {
+      if (parsedQuery.text) {
+        startSearch(false);
+        return;
+      }
+      setView('chat');
+      return;
+    }
+    setView(settingsReturn === 'settings' ? 'chat' : settingsReturn);
+  }
+
+  const startSearchRef = useRef(startSearch);
+  useEffect(() => { startSearchRef.current = startSearch; });
+
+  // Type ahead: one search after the debounce. Tags alone run no search.
+  useEffect(() => {
+    if (!query.trim()) {
+      setView('chat');
+      return;
+    }
+    if (!parseSearchQuery(query).text) return;
+    const timer = window.setTimeout(() => {
+      debounceTimer.current = null;
+      startSearchRef.current(false);
+    }, SEARCH_DEBOUNCE_MS);
+    debounceTimer.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (debounceTimer.current === timer) debounceTimer.current = null;
+    };
+  }, [query]);
+
+  // Cmd+F on macOS and Ctrl+F elsewhere focus the bar. In a chat, prefill its tag.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key.toLowerCase() !== 'f' || !(event.metaKey || event.ctrlKey) || event.altKey) return;
+      const field = searchInput.current;
+      if (!field) return;
+      event.preventDefault();
+      field.focus();
+      if (view === 'chat' && !query.trim()) {
+        pendingCaret.current = true;
+        setQuery(`#${active.provider} `);
+      } else {
+        field.select();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [view, query, active.provider]);
+
+  useLayoutEffect(() => {
+    if (!pendingCaret.current) return;
+    pendingCaret.current = false;
+    const field = searchInput.current;
+    field?.focus();
+    field?.setSelectionRange(field.value.length, field.value.length);
+  }, [query]);
+
   function finishOnboarding(result: OnboardingResult): void {
     try {
       localStorage.setItem(LS_ONBOARDING, ONBOARDING_DONE);
@@ -324,8 +456,7 @@ export default function App() {
     }
     setOnboarded(true);
     if (result.openLogin) {
-      setShowHistory(false);
-      setShowLogin(true);
+      setView('login');
       if (result.vendorId) startLogin(result.vendorId);
     }
   }
@@ -391,29 +522,30 @@ export default function App() {
           <span className="mark" aria-hidden="true">b</span>
           <strong>blibs</strong>
         </div>
-        <div className="search">
-          {showHistory ? <span>Local conversation history</span> : (
-            <TextField
-              hideLabel
-              label="Search current chat"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={`Search ${active.name}…`}
-            />
-          )}
+        <div className="search" role="search">
+          <TextField
+            hideLabel
+            inputRef={searchInput}
+            label="Search all conversations"
+            title="Type #muse, #dots, #grok, or #custom to filter by provider."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submitSearch();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                exitSearch();
+              }
+            }}
+            placeholder="Search all conversations…"
+            maxLength={1000}
+            autoComplete="off"
+            spellCheck={false}
+          />
         </div>
         <div className="topbar-actions">
-          <SelectField
-            hideLabel
-            label="Theme"
-            className="theme-select"
-            value={theme}
-            onChange={(e) => setTheme(e.target.value as ThemePreference)}
-          >
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </SelectField>
           <StatusPill tone={pill.tone} title={statusLine}>
             {pill.label}
           </StatusPill>
@@ -422,7 +554,19 @@ export default function App() {
 
       <div className={sidebarOpen ? 'layout sidebar-open' : 'layout'}>
         <aside className="sidebar" id="agent-sidebar" aria-label="Chats">
-          <SectionLabel>Chats</SectionLabel>
+          <div className="side-head">
+            <SectionLabel>Chats</SectionLabel>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="side-gear"
+              aria-label="Settings"
+              title="Settings"
+              onClick={openSettings}
+            >
+              <span aria-hidden="true">⚙</span>
+            </Button>
+          </div>
           {agents.map((a) => (
             <AgentListItem
               key={a.id}
@@ -430,9 +574,10 @@ export default function App() {
               active={a.id === activeId}
               syncLabel={a.lastSyncAt ? `Synced ${timeAgo(a.lastSyncAt)}` : 'Not synced'}
               onSelect={(id) => {
+                cancelPendingSearch();
                 setActiveId(id);
-                setShowHistory(false);
-                setShowLogin(false);
+                setQuery('');
+                setView('chat');
                 setSidebarOpen(false);
               }}
             />
@@ -441,26 +586,14 @@ export default function App() {
             <Button
               variant="secondary"
               size="lg"
-              className={showLogin ? 'history-nav selected' : 'history-nav'}
+              className="side-nav"
               onClick={() => {
-                setShowLogin(true);
-                setShowHistory(false);
+                cancelPendingSearch();
+                setView('login');
                 setSidebarOpen(false);
               }}
             >
               Agents and sign-in
-            </Button>
-            <Button
-              variant="secondary"
-              size="lg"
-              className={showHistory ? 'history-nav selected' : 'history-nav'}
-              onClick={() => {
-                setShowHistory(true);
-                setShowLogin(false);
-                setSidebarOpen(false);
-              }}
-            >
-              Search all conversations
             </Button>
             <div className="auto-row" title="Pull synced chats on a timer">
               <CheckboxField
@@ -484,17 +617,29 @@ export default function App() {
         </aside>
 
         <main className="main">
-          {showLogin ? (
+          {view === 'login' ? (
             <LoginScreen
               vendors={PROVIDERS}
               statuses={loginStatuses}
               desktopAvailable={desktopLoginAvailable()}
-              onBack={() => setShowLogin(false)}
+              onBack={() => setView('chat')}
               onSignIn={startLogin}
               onCancel={cancelLogin}
               onCheck={checkLogin}
             />
-          ) : showHistory ? <SearchPanel /> : <>
+          ) : view === 'settings' ? (
+            <SettingsPanel
+              theme={theme}
+              onThemeChange={setTheme}
+              defaults={searchDefaults}
+              onDefaultsChange={setSearchDefaults}
+              canAsk={Boolean(parsedQuery.text)}
+              onAsk={() => startSearch(true)}
+              onBack={closeSettings}
+            />
+          ) : view === 'results' && searchCommand ? (
+            <SearchPanel command={searchCommand} />
+          ) : <>
           <div className="thread-head">
             <div>
               <h1>{active.name}</h1>
@@ -518,8 +663,8 @@ export default function App() {
           >
             {thread.length === 0 && (
               <EmptyState
-                title={query ? 'No matches' : `No messages with ${active.name} yet`}
-                steps={query ? undefined : ['Use Agents and sign-in to sync chats.']}
+                title={`No messages with ${active.name} yet`}
+                steps={['Use Agents and sign-in to sync chats.']}
               />
             )}
             {thread.map((m) => (

@@ -130,6 +130,8 @@ The smoke spec verifies these items:
 - The backend answers `/api/health` through the panel proxy and directly.
 - The panel reports a successful import pull.
 - The sidebar shows a selected chat and the narrow layout collapses.
+- The topbar search runs one global search, a provider tag limits it, and
+  Settings holds the index controls and the theme.
 - The message thread shows roles, timestamps, and wrapped long text.
 - The theme control follows the system preference and saves the choice.
 - The layout has no horizontal scroll at 1024 and 1440 pixels.
@@ -192,7 +194,9 @@ src/
     LoginScreen.tsx agents screen and inline sign-in steps
     components/     reusable UI components with typed props
     styles/         design tokens (light + dark) and base styles
-    SearchPanel.tsx conversation search and local answers
+    SearchPanel.tsx results for the global search
+    SettingsPanel.tsx index, answers, search defaults, and theme
+    search.ts       search parsing and persistent defaults
     providers.ts    the three vendors — the seam for future native APIs
     types.ts        Agent / ChatMessage
     *.css, assets/  layout, theme entry, static assets
@@ -275,7 +279,11 @@ declares for reference.
 
 ## Limits (honest POC notes)
 
-**Conversation search:** Use **Search all conversations** in the sidebar. Keyword
+**Conversation search:** Use the search bar in the topbar. It searches all
+retained conversations after a short pause, and Enter runs the search at once.
+Add a tag such as `#muse` to limit the search to one provider. Cmd+F on macOS or
+Ctrl+F elsewhere focuses the bar. The sidebar gear opens Settings for the index
+controls, **Ask locally**, the thread and date filters, and the theme. Keyword
 search works without model setup. Optional free local BGE embeddings add semantic
 retrieval, and a small local Qwen model can select cited evidence sentences.
 Local answering is experimental: accurate quotes can still be irrelevant or
