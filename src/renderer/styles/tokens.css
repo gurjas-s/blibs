@@ -12,6 +12,7 @@
   /* Layout — the same at every theme. */
   --layout-sidebar-width: 264px;
   --layout-thread-measure: 76ch;
+  --layout-chat-measure: 960px;
   --layout-search-width: 520px;
   --layout-status-space: 176px;
   --layout-gutter: var(--space-7);

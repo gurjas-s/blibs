@@ -71,7 +71,11 @@ Shared setup: see [README.md](README.md).
 
 8. Return to a chat. Expected: the message thread starts below the topbar. The
    chat view has no provider title, no caption, and no open link. The composer
-   is the last visible control, and no visible status line sits below it.
+   is the last visible control, and no visible status line sits below it. For a
+   short chat, the last bubble sits just above the composer with a small gap.
+   For a long chat, the thread scrolls and the composer stays at the bottom.
+   The message column and the composer use the same width: the chat pane width
+   minus the normal gutter, with a maximum of 960 pixels.
 
 9. Resize the window to 800 by 800 pixels.
    Expected: the sidebar is hidden and the `Chats` button is visible. The
@@ -98,6 +102,9 @@ Shared setup: see [README.md](README.md).
   search bar overlaps the sync state.
 - The chat view shows a provider title, a caption, an open link, or a visible
   status line below the composer.
+- A short chat leaves a large gap above the composer, or a long chat moves the
+  composer or clips the thread.
+- The message column and the composer do not share one width.
 - The page has a second vertical scrollbar, or a view breaks its content width
   or gutter.
 - The sidebar is hidden at 800 pixels and the `Chats` button is missing.
