@@ -67,7 +67,7 @@ export default function SearchPanel() {
   }
   const results = response.results || response.sources || [];
   return <section className="history-search" aria-label="Conversation search">
-    <div className="thread-head"><div><h1>Search conversations</h1><p>Find decisions across your agents. Experimental local answers select supporting sentences; check their sources.</p></div></div>
+    <div className="thread-head"><div><h1>Search conversations</h1></div></div>
     <form onSubmit={e => { e.preventDefault(); void run(false); }} className="history-form">
       <TextField label="Search or ask" value={query} onChange={e => { setQuery(e.target.value); resetResults(); }} placeholder="What did we decide about storage for Atlas?" maxLength={1000} />
       <div className="history-filters">

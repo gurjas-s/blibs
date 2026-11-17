@@ -1,8 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { SEED_AGENTS, providerFor } from './providers';
 import type { Agent, ChatMessage } from './types';
 import { cleanImportText } from './text';
+import {
+  applyTheme,
+  readThemePreference,
+  SYSTEM_THEME_QUERY,
+  THEME_STORAGE_KEY,
+  type ThemePreference,
+} from './theme';
 import SearchPanel from './SearchPanel';
 import {
   fetchImports,
@@ -64,10 +71,12 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
-  const [statusLine, setStatusLine] = useState('Waiting for sync — log in via the Agents menu.');
+  const [statusLine, setStatusLine] = useState('Waiting for sync');
   const [lastPull, setLastPull] = useState<{ at: number; ok: boolean } | null>(null);
   const [autoPull, setAutoPull] = useState<boolean>(() => load(LS_AUTOPULL, true));
   const [pullSecs, setPullSecs] = useState<number>(() => load(LS_PULLSECS, 15));
+  const [theme, setTheme] = useState<ThemePreference>(readThemePreference);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const active = agents.find((a) => a.id === activeId) ?? agents[0];
@@ -93,6 +102,15 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(LS_PULLSECS, JSON.stringify(pullSecs));
   }, [pullSecs]);
+  useLayoutEffect(() => {
+    applyTheme(theme);
+    localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(theme));
+    if (theme !== 'system') return;
+    const query = window.matchMedia(SYSTEM_THEME_QUERY);
+    const onChange = () => applyTheme('system');
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, [theme]);
 
   const thread = useMemo(() => {
     const list = [...(messages[active.id] ?? [])].sort((a, b) => a.ts - b.ts);
@@ -159,7 +177,7 @@ export default function App() {
       setStatusLine(
         merged
           ? `${merged} new message${merged === 1 ? '' : 's'} synced`
-          : 'Up to date — new chats appear here automatically',
+          : 'Up to date',
       );
     } catch {
       setLastPull({ at: Date.now(), ok: false });
@@ -218,7 +236,7 @@ export default function App() {
         ...m,
         [active.id]: (m[active.id] ?? []).map((x) => (x.id === userMsg.id ? { ...x, outId } : x)),
       }));
-      setStatusLine(`Sent to your logged-in ${meta.product} session — its reply syncs back automatically.`);
+      setStatusLine(`Sent to ${meta.product}`);
     } catch (e) {
       setMessages((m) => ({
         ...m,
@@ -241,7 +259,7 @@ export default function App() {
         }
         return next;
       });
-      setStatusLine('Re-queued — the app picks it up within a minute.');
+      setStatusLine('Re-queued');
     } catch {
       setStatusLine('Retry failed — is the backend running?');
     }
@@ -256,8 +274,18 @@ export default function App() {
   return (
     <div className="shell">
       <header className="topbar">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="sidebar-toggle"
+          aria-expanded={sidebarOpen}
+          aria-controls="agent-sidebar"
+          onClick={() => setSidebarOpen((open) => !open)}
+        >
+          Chats
+        </Button>
         <div className="brand">
-          <span className="mark">b</span>
+          <span className="mark" aria-hidden="true">b</span>
           <strong>blibs</strong>
         </div>
         <div className="search">
@@ -271,23 +299,37 @@ export default function App() {
             />
           )}
         </div>
-        <StatusPill tone={pill.tone} title={statusLine}>
-          {pill.label}
-        </StatusPill>
+        <div className="topbar-actions">
+          <SelectField
+            hideLabel
+            label="Theme"
+            className="theme-select"
+            value={theme}
+            onChange={(e) => setTheme(e.target.value as ThemePreference)}
+          >
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </SelectField>
+          <StatusPill tone={pill.tone} title={statusLine}>
+            {pill.label}
+          </StatusPill>
+        </div>
       </header>
 
-      <div className="layout">
-        <aside className="sidebar">
-          <SectionLabel>Agents</SectionLabel>
+      <div className={sidebarOpen ? 'layout sidebar-open' : 'layout'}>
+        <aside className="sidebar" id="agent-sidebar" aria-label="Chats">
+          <SectionLabel>Chats</SectionLabel>
           {agents.map((a) => (
             <AgentListItem
               key={a.id}
               agent={a}
               active={a.id === activeId}
-              syncLabel={a.lastSyncAt ? `synced ${timeAgo(a.lastSyncAt)}` : 'not synced yet'}
+              syncLabel={a.lastSyncAt ? `Synced ${timeAgo(a.lastSyncAt)}` : 'Not synced'}
               onSelect={(id) => {
                 setActiveId(id);
                 setShowHistory(false);
+                setSidebarOpen(false);
               }}
             />
           ))}
@@ -296,7 +338,10 @@ export default function App() {
               variant="secondary"
               size="lg"
               className={showHistory ? 'history-nav selected' : 'history-nav'}
-              onClick={() => setShowHistory(true)}
+              onClick={() => {
+                setShowHistory(true);
+                setSidebarOpen(false);
+              }}
             >
               Search all conversations
             </Button>
@@ -318,7 +363,6 @@ export default function App() {
                 <option value={300}>5m</option>
               </SelectField>
             </div>
-            <p>Sessions live inside this app — use the Agents menu to log in.</p>
           </div>
         </aside>
 
@@ -339,18 +383,20 @@ export default function App() {
             </LinkButton>
           </div>
 
-          <div className="thread">
+          <div
+            className="thread"
+            role="log"
+            aria-label={`Messages with ${active.name}`}
+            tabIndex={0}
+          >
             {thread.length === 0 && (
               <EmptyState
-                title={query ? 'No matches' : `No chats with ${active.name} yet`}
-                steps={query ? undefined : [
-                  'Log in via the Agents menu (once per agent)',
-                  'Chats sync here on their own — replies you send go to the real session',
-                ]}
+                title={query ? 'No matches' : `No messages with ${active.name} yet`}
+                steps={query ? undefined : ['Log in from the Agents menu to sync chats.']}
               />
             )}
             {thread.map((m) => (
-              <MessageBubble key={m.id} message={m} onRetry={retryDelivery} />
+              <MessageBubble key={m.id} message={m} agentName={active.name} onRetry={retryDelivery} />
             ))}
             <div ref={bottomRef} />
           </div>
@@ -375,7 +421,7 @@ export default function App() {
               Send
             </Button>
           </div>
-          <p className="status-line">{statusLine}</p>
+          <p className="status-line" role="status">{statusLine}</p>
           </>}
         </main>
       </div>

@@ -151,6 +151,130 @@ export async function setTheme(page: Page, theme: 'light' | 'dark'): Promise<voi
   await page.waitForTimeout(200);
 }
 
+/** Choose a theme with the panel control and wait for the token set. */
+export async function selectTheme(
+  page: Page,
+  preference: 'system' | 'light' | 'dark',
+): Promise<void> {
+  await page.getByLabel('Theme').selectOption(preference);
+  if (preference === 'system') {
+    await page.waitForFunction(
+      () => document.documentElement.dataset.theme === 'light'
+        || document.documentElement.dataset.theme === 'dark',
+    );
+  } else {
+    await page.waitForFunction(
+      (expected) => document.documentElement.dataset.theme === expected,
+      preference,
+    );
+  }
+  await page.waitForTimeout(200);
+}
+
+/** Storage key that the panel uses for its message map. */
+export const MESSAGES_STORAGE_KEY = 'blibs-messages-v2';
+
+export interface MockChatMessage {
+  id: string;
+  agentId: string;
+  role: 'user' | 'agent';
+  text: string;
+  ts: number;
+  source: 'mock';
+}
+
+export type MockChats = Record<string, MockChatMessage[]>;
+
+/** Deterministic sample chats for screenshots and UI checks. */
+export function mockChats(now = Date.now()): MockChats {
+  const minute = 60_000;
+  return {
+    muse: [
+      {
+        id: 'mock-muse-1',
+        agentId: 'muse',
+        role: 'agent',
+        text: 'Your grocery order arrives between 6 and 7 p.m. I moved the drop-off to the side door.',
+        ts: now - 52 * minute,
+        source: 'mock',
+      },
+      {
+        id: 'mock-muse-2',
+        agentId: 'muse',
+        role: 'user',
+        text: 'Add oat milk if the store has it.',
+        ts: now - 48 * minute,
+        source: 'mock',
+      },
+      {
+        id: 'mock-muse-3',
+        agentId: 'muse',
+        role: 'agent',
+        text: 'Added oat milk. The total is $42.18 and the order stays on the same delivery window.',
+        ts: now - 47 * minute,
+        source: 'mock',
+      },
+    ],
+    dots: [
+      {
+        id: 'mock-dots-1',
+        agentId: 'dots',
+        role: 'user',
+        text: 'Summarize the invoice thread from this morning.',
+        ts: now - 33 * minute,
+        source: 'mock',
+      },
+      {
+        id: 'mock-dots-2',
+        agentId: 'dots',
+        role: 'agent',
+        text: 'Three invoices are due Friday. Two match their purchase orders. The third one needs a corrected billing address.',
+        ts: now - 31 * minute,
+        source: 'mock',
+      },
+    ],
+    grok: [
+      {
+        id: 'mock-grok-1',
+        agentId: 'grok',
+        role: 'agent',
+        text: 'The deploy finished at 09:12. Health checks are green on both regions.',
+        ts: now - 18 * minute,
+        source: 'mock',
+      },
+      {
+        id: 'mock-grok-2',
+        agentId: 'grok',
+        role: 'user',
+        text: 'Keep the old cluster up until Monday.',
+        ts: now - 16 * minute,
+        source: 'mock',
+      },
+      {
+        id: 'mock-grok-3',
+        agentId: 'grok',
+        role: 'agent',
+        text: `Scheduled. I will hold the old cluster and remove it on Monday at 10:00. Reference: https://example.com/runs/atlas-migration/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa — the runbook has the rollback steps.`,
+        ts: now - 15 * minute,
+        source: 'mock',
+      },
+    ],
+  };
+}
+
+/** Write mock chats into the panel store and reload the window. */
+export async function seedChats(page: Page, chats: MockChats = mockChats()): Promise<void> {
+  await page.evaluate(
+    ({ key, value }) => {
+      localStorage.setItem(key, JSON.stringify(value));
+    },
+    { key: MESSAGES_STORAGE_KEY, value: chats },
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
+  await page.locator('.msg').first().waitFor({ state: 'visible', timeout: 15_000 });
+}
+
 /** Click an agent in the sidebar and wait until its thread header shows it. */
 export async function selectAgent(page: Page, name: string): Promise<void> {
   await page.locator('.agent-main', { hasText: name }).first().click();

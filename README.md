@@ -95,15 +95,19 @@ The smoke spec verifies these items:
 - The panel window loads.
 - The backend answers `/api/health` through the panel proxy and directly.
 - The panel reports a successful import pull.
-- The agent sidebar changes the active agent.
+- The sidebar shows a selected chat and the narrow layout collapses.
+- The message thread shows roles, timestamps, and wrapped long text.
+- The theme control follows the system preference and saves the choice.
+- The layout has no horizontal scroll at 1024 and 1440 pixels.
 
 The spec writes light and dark screenshots to
 `tests/e2e/artifacts/panel-dark.png` and
 `tests/e2e/artifacts/panel-light.png`. The repository ignores this directory.
+The screenshots use mock chats, not a vendor login.
 
 The reusable module is `tests/e2e/harness.ts`. It exports `launch`,
-`waitForPanel`, `screenshot`, `selectAgent`, and `setTheme`. Add a new spec in
-`tests/e2e/` to test another feature.
+`waitForPanel`, `screenshot`, `selectAgent`, `selectTheme`, `setTheme`, and
+`seedChats`. Add a new spec in `tests/e2e/` to test another feature.
 
 The check needs a display. macOS and Windows use the desktop session. On Linux
 without `DISPLAY` or `WAYLAND_DISPLAY`, the spec skips with a clear message. Use
@@ -161,8 +165,8 @@ Generated, never edited or committed: `build/` (compiled main/preload/backend),
 `dist/` (bundled panel), `node_modules/`. Retained chats and the send outbox live
 in `<Electron userData>/history`; `BLIBS_DATA_DIR` overrides that directory. See
 [conversation search storage](docs/conversation-search.md) for migration details.
-Panel state lives in `localStorage` (`blibs-messages-v2`, `blibs-agents-v2`, …) —
-swap for a DB + OAuth in production.
+Panel state lives in `localStorage` (`blibs-messages-v2`, `blibs-agents-v2`,
+`blibs-theme-v1`, …) — swap for a DB + OAuth in production.
 
 ## Modules (read this before touching the build)
 
