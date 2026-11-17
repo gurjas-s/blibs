@@ -101,6 +101,8 @@ The smoke spec verifies these items:
 - The backend answers `/api/health` through the panel proxy and directly.
 - The panel reports a successful import pull.
 - The sidebar shows a selected chat and the narrow layout collapses.
+- The topbar search filters the open chat. Its All conversations scope searches
+  retained history.
 - The message thread shows roles, timestamps, and wrapped long text.
 - The theme control follows the system preference and saves the choice.
 - The layout has no horizontal scroll at 1024 and 1440 pixels.
@@ -241,9 +243,11 @@ declares for reference.
 
 ## Limits (honest POC notes)
 
-**Conversation search:** Use **Search all conversations** in the sidebar. Keyword
-search works without model setup. Optional free local BGE embeddings add semantic
-retrieval, and a small local Qwen model can select cited evidence sentences.
+**Conversation search:** Use the search bar in the topbar. Select **This chat** to
+filter the open chat as you type. Select **All conversations** and press Enter to
+search retained history. Keyword search works without model setup. Optional free
+local BGE embeddings add semantic retrieval, and a small local Qwen model can
+select cited evidence sentences.
 Local answering is experimental: accurate quotes can still be irrelevant or
 incomplete. Review the sources. Read [setup, migration, and test
 instructions](docs/conversation-search.md) before enabling models. Runtime data

@@ -75,7 +75,7 @@ async function run() {
     const js = code => win.webContents.executeJavaScript(code);
     const waitFor = code => until(() => js(code));
     await win.loadURL(`http://127.0.0.1:${process.env.BLIBS_UI_PORT}/`);
-    await js(`localStorage.setItem('blibs-messages-v2', JSON.stringify({dots:[{id:'outgoing',agentId:'dots',role:'user',text:'${echo}',ts:${now - 120000},source:'desktop',via:'tab',outStatus:'sent'}]})); localStorage.setItem('blibs-autopull-v1','false')`);
+    await js(`localStorage.setItem('blibs-messages-v2', JSON.stringify({dots:[{id:'outgoing',agentId:'dots',role:'user',text:'${echo}',ts:${now - 120000},source:'desktop',via:'tab',outStatus:'sent'}]})); localStorage.setItem('blibs-autopull-v1','false'); localStorage.setItem('blibs-onboarding-v1','done')`);
     const reloaded = once(win.webContents, 'did-finish-load');
     win.reload();
     await reloaded;
@@ -85,13 +85,14 @@ async function run() {
     const history = await fetch(`${base}/api/history`).then(res => res.json());
     assert.equal(messages.find(message => message.id === 'outgoing').historyId, history.items.find(message => message.sourceId === 'echo').id);
 
-    await js(`document.querySelector('.history-nav').click()`);
-    await waitFor(`Boolean(document.querySelector('.history-form input'))`);
+    await js(`(() => { const select=document.querySelector('select[aria-label="Search scope"]'); select.value='all'; select.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+    await waitFor(`Boolean(document.querySelector('.history-filters'))`);
+    const inputSelector = `document.querySelector('.search input')`;
     async function setQuery(value) {
-      await js(`(() => { const input=document.querySelector('.history-form input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)}); input.dispatchEvent(new Event('input',{bubbles:true})); })()`);
-      await waitFor(`document.querySelector('.history-form input').value === ${JSON.stringify(value)}`);
+      await js(`(() => { const input=${inputSelector}; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)}); input.dispatchEvent(new Event('input',{bubbles:true})); })()`);
+      await waitFor(`${inputSelector}.value === ${JSON.stringify(value)}`);
     }
-    const submit = () => js(`document.querySelector('.history-form').requestSubmit()`);
+    const submit = () => js(`${inputSelector}.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`);
     const next = `Array.from(document.querySelectorAll('.history-results button')).find(button => button.textContent === 'Next')`;
     await setQuery('alpha');
     await submit();

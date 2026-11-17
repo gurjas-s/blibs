@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   askConversations,
   fetchHistoryItem,
@@ -16,8 +16,22 @@ import { Button } from './components/Button';
 import { SelectField } from './components/SelectField';
 import { TextField } from './components/TextField';
 
-export default function SearchPanel() {
-  const [query, setQuery] = useState('');
+/** One topbar submit. The panel runs the search once for each new id. */
+export interface SearchRunRequest {
+  id: number;
+  text: string;
+}
+
+export interface SearchPanelProps {
+  /** Text from the shared topbar search input. */
+  query: string;
+  /** Latest topbar submit, or null when there is none to run. */
+  request: SearchRunRequest | null;
+  /** Report a handled request so a later mount does not run it again. */
+  onRequestHandled: (id: number) => void;
+}
+
+export default function SearchPanel({ query, request, onRequestHandled }: SearchPanelProps) {
   const [provider, setProvider] = useState('');
   const [threadId, setThreadId] = useState('');
   const [from, setFrom] = useState(''), [to, setTo] = useState('');
@@ -27,7 +41,9 @@ export default function SearchPanel() {
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<HistoryMessage | null>(null);
   const controller = useRef<AbortController | null>(null);
-  function resetResults() {
+  const previousQuery = useRef(query);
+  const handledRequest = useRef(0);
+  const resetResults = useCallback(() => {
     controller.current?.abort();
     controller.current = null;
     setResponse({});
@@ -35,13 +51,19 @@ export default function SearchPanel() {
     setSelected(null);
     setBusy(false);
     setError('');
-  }
+  }, []);
   useEffect(() => {
     const load = () => { void fetchIndexStatus().then(setStatus).catch(() => {}); };
     load(); const timer = setInterval(load, 2500);
     return () => { clearInterval(timer); controller.current?.abort(); };
   }, []);
-  async function run(ask: boolean, nextOffset = 0) {
+  // A new topbar query removes the old results but does not run a search.
+  useEffect(() => {
+    if (previousQuery.current === query) return;
+    previousQuery.current = query;
+    resetResults();
+  }, [query, resetResults]);
+  async function run(ask: boolean, nextOffset = 0, text = query) {
     controller.current?.abort(); const current = new AbortController(); controller.current = current;
     setBusy(true); setError(''); setSelected(null);
     try {
@@ -51,7 +73,7 @@ export default function SearchPanel() {
         from: from ? new Date(`${from}T00:00:00`).getTime() : undefined,
         to: to ? new Date(`${to}T23:59:59.999`).getTime() : undefined,
       };
-      const body = { query, offset: nextOffset, filters };
+      const body = { query: text, offset: nextOffset, filters };
       const data = await (ask
         ? askConversations(body, current.signal)
         : searchConversations(body, current.signal));
@@ -59,6 +81,15 @@ export default function SearchPanel() {
     } catch (err) { if (!current.signal.aborted) setError(String(err)); }
     finally { if (controller.current === current) setBusy(false); }
   }
+  const runRef = useRef(run);
+  useEffect(() => { runRef.current = run; });
+  // Enter in the topbar runs this scope. A full request id runs one time.
+  useEffect(() => {
+    if (!request || request.id <= handledRequest.current) return;
+    handledRequest.current = request.id;
+    void runRef.current(false, 0, request.text);
+    onRequestHandled(request.id);
+  }, [request, onRequestHandled]);
   async function index(action: 'resume' | 'cancel' | 'rebuild') {
     try { setStatus(await updateIndex(action)); } catch (err) { setError(String(err)); }
   }
@@ -69,7 +100,6 @@ export default function SearchPanel() {
   return <section className="history-search" aria-label="Conversation search">
     <div className="thread-head"><div><h1>Search conversations</h1></div></div>
     <form onSubmit={e => { e.preventDefault(); void run(false); }} className="history-form">
-      <TextField label="Search or ask" value={query} onChange={e => { setQuery(e.target.value); resetResults(); }} placeholder="What did we decide about storage for Atlas?" maxLength={1000} />
       <div className="history-filters">
         <SelectField label="Provider" value={provider} onChange={e => { setProvider(e.target.value); resetResults(); }}><option value="">All providers</option><option value="dots">Dots</option><option value="muse">Muse</option><option value="grok">Grok</option><option value="custom">Custom</option></SelectField>
         <TextField label="Thread URL or ID" value={threadId} onChange={e => { setThreadId(e.target.value); resetResults(); }} placeholder="Any thread" />

@@ -152,6 +152,93 @@ test(
 );
 
 test(
+  'topbar search filters the chat and searches all conversations',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page } = app;
+
+    // Retained history for the All conversations scope. Keyword search needs no model.
+    const imported = await fetch(`${app.backendUrl}/api/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: [
+          {
+            provider: 'muse',
+            role: 'user',
+            sourceId: 'e2e-atlas-1',
+            threadId: 'https://muse.example/atlas',
+            text: 'The Atlas storage decision is Postgres.',
+            ts: Date.now() - 120_000,
+          },
+          {
+            provider: 'muse',
+            role: 'agent',
+            sourceId: 'e2e-atlas-2',
+            threadId: 'https://muse.example/atlas',
+            text: 'Atlas storage backups run every night at 02:00.',
+            ts: Date.now() - 60_000,
+          },
+        ],
+      }),
+    });
+    assert.equal(imported.status, 200);
+
+    await completeOnboarding(page);
+    await selectTheme(page, 'dark');
+    await page.getByLabel('Search scope').selectOption('chat');
+    await selectAgent(page, 'Muse');
+
+    const input = page.locator('.search input');
+    assert.equal(await input.getAttribute('aria-label'), 'Search Muse');
+
+    // This chat filters as the user types, and clear restores the thread.
+    await input.fill('grocery');
+    await page.waitForFunction(() => document.querySelectorAll('.msg').length === 1);
+    assert.match(await page.locator('.msg p').first().innerText(), /grocery/i);
+    assertImage(await app.screenshot('search-chat-scope.png'));
+
+    await input.fill('zzzz no match');
+    await page.getByText('No matches', { exact: true }).waitFor();
+    assert.equal(await page.locator('.msg').count(), 0);
+
+    await input.fill('');
+    await page.getByText('No matches', { exact: true }).waitFor({ state: 'detached' });
+    assert.ok((await page.locator('.msg').count()) >= 3);
+
+    // A scope change keeps the text and does not run a search.
+    const searches: string[] = [];
+    const recordSearch = (request: Request): void => {
+      if (request.url().includes('/api/search')) searches.push(request.url());
+    };
+    page.on('request', recordSearch);
+    await input.fill('Atlas storage');
+    await page.getByLabel('Search scope').selectOption('all');
+    await page.locator('.history-search').waitFor();
+    await page.waitForTimeout(400);
+    assert.equal(await input.inputValue(), 'Atlas storage');
+    assert.equal(await input.getAttribute('aria-label'), 'Search all conversations');
+    assert.equal(await page.locator('.history-result').count(), 0);
+    assert.deepEqual(searches, [], 'A scope change must not run a search.');
+
+    // Enter submits the current scope.
+    await input.press('Enter');
+    await page.locator('.history-result').first().waitFor({ timeout: 15_000 });
+    assert.ok(searches.length >= 1, 'Enter must run the search.');
+    assert.match(await page.locator('.history-result').first().innerText(), /Atlas storage/i);
+    assertImage(await app.screenshot('search-all-scope.png'));
+
+    // Selecting an agent returns to the chat scope and keeps the text.
+    await page.locator('.agent-main', { hasText: 'Muse' }).first().click();
+    await page.locator('.thread-head h1', { hasText: 'Muse' }).waitFor();
+    assert.equal(await page.getByLabel('Search scope').inputValue(), 'chat');
+    assert.equal(await input.inputValue(), 'Atlas storage');
+    page.off('request', recordSearch);
+  },
+);
+
+test(
   'theme control follows the system preference and persists the choice',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {

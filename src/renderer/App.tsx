@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { PROVIDERS, SEED_AGENTS, providerFor } from './providers';
 import type { Agent, ChatMessage, LoginStatus } from './types';
@@ -10,7 +10,7 @@ import {
   THEME_STORAGE_KEY,
   type ThemePreference,
 } from './theme';
-import SearchPanel from './SearchPanel';
+import SearchPanel, { type SearchRunRequest } from './SearchPanel';
 import Onboarding, { type OnboardingResult } from './Onboarding';
 import LoginScreen from './LoginScreen';
 import {
@@ -45,6 +45,9 @@ const LS_AUTOPULL = 'blibs-autopull-v1';
 const LS_PULLSECS = 'blibs-pullsecs-v1';
 const LS_ONBOARDING = 'blibs-onboarding-v1';
 const ONBOARDING_DONE = 'done';
+
+/** Where the topbar search applies. */
+type SearchScope = 'chat' | 'all';
 
 function onboardingComplete(): boolean {
   try {
@@ -88,7 +91,8 @@ export default function App() {
   const [messages, setMessages] = useState<Record<string, ChatMessage[]>>(() => load(LS_MSGS, {}));
   const [activeId, setActiveId] = useState(agents[0]?.id ?? 'muse');
   const [query, setQuery] = useState('');
-  const [showHistory, setShowHistory] = useState(false);
+  const [scope, setScope] = useState<SearchScope>('chat');
+  const [searchRequest, setSearchRequest] = useState<SearchRunRequest | null>(null);
   const [showLogin, setShowLogin] = useState(false);
   const [onboarded, setOnboarded] = useState(onboardingComplete);
   const [loginStatuses, setLoginStatuses] = useState<Record<string, LoginStatus>>({});
@@ -101,6 +105,7 @@ export default function App() {
   const [theme, setTheme] = useState<ThemePreference>(readThemePreference);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const searchId = useRef(0);
 
   const active = agents.find((a) => a.id === activeId) ?? agents[0];
   const meta = providerFor(active);
@@ -316,6 +321,29 @@ export default function App() {
     }
   }
 
+  /** Choose a search scope without running a search or clearing the text. */
+  function changeScope(next: SearchScope): void {
+    setScope(next);
+    setShowLogin(false);
+    setSidebarOpen(false);
+    if (next === 'chat') setSearchRequest(null);
+  }
+
+  /** Submit the topbar query. The chat scope filters as the user types. */
+  function submitSearch(): void {
+    if (scope !== 'all') return;
+    const text = query.trim();
+    if (!text) return;
+    setShowLogin(false);
+    searchId.current += 1;
+    setSearchRequest({ id: searchId.current, text });
+  }
+
+  /** Forget a search request after the panel runs it, so a scope change is quiet. */
+  const handleSearchRequest = useCallback((id: number) => {
+    setSearchRequest((current) => (current?.id === id ? null : current));
+  }, []);
+
   function finishOnboarding(result: OnboardingResult): void {
     try {
       localStorage.setItem(LS_ONBOARDING, ONBOARDING_DONE);
@@ -324,7 +352,7 @@ export default function App() {
     }
     setOnboarded(true);
     if (result.openLogin) {
-      setShowHistory(false);
+      changeScope('chat');
       setShowLogin(true);
       if (result.vendorId) startLogin(result.vendorId);
     }
@@ -391,16 +419,31 @@ export default function App() {
           <span className="mark" aria-hidden="true">b</span>
           <strong>blibs</strong>
         </div>
-        <div className="search">
-          {showHistory ? <span>Local conversation history</span> : (
-            <TextField
-              hideLabel
-              label="Search current chat"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={`Search ${active.name}…`}
-            />
-          )}
+        <div className="search" role="search">
+          <TextField
+            hideLabel
+            label={scope === 'all' ? 'Search all conversations' : `Search ${active.name}`}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return;
+              e.preventDefault();
+              submitSearch();
+            }}
+            placeholder={scope === 'all' ? 'Search all conversations…' : `Search ${active.name}…`}
+            maxLength={1000}
+            autoComplete="off"
+          />
+          <SelectField
+            hideLabel
+            label="Search scope"
+            className="scope-select"
+            value={scope}
+            onChange={(e) => changeScope(e.target.value as SearchScope)}
+          >
+            <option value="chat">This chat</option>
+            <option value="all">All conversations</option>
+          </SelectField>
         </div>
         <div className="topbar-actions">
           <SelectField
@@ -431,9 +474,7 @@ export default function App() {
               syncLabel={a.lastSyncAt ? `Synced ${timeAgo(a.lastSyncAt)}` : 'Not synced'}
               onSelect={(id) => {
                 setActiveId(id);
-                setShowHistory(false);
-                setShowLogin(false);
-                setSidebarOpen(false);
+                changeScope('chat');
               }}
             />
           ))}
@@ -441,26 +482,13 @@ export default function App() {
             <Button
               variant="secondary"
               size="lg"
-              className={showLogin ? 'history-nav selected' : 'history-nav'}
+              className="history-nav"
               onClick={() => {
+                changeScope('chat');
                 setShowLogin(true);
-                setShowHistory(false);
-                setSidebarOpen(false);
               }}
             >
               Agents and sign-in
-            </Button>
-            <Button
-              variant="secondary"
-              size="lg"
-              className={showHistory ? 'history-nav selected' : 'history-nav'}
-              onClick={() => {
-                setShowHistory(true);
-                setShowLogin(false);
-                setSidebarOpen(false);
-              }}
-            >
-              Search all conversations
             </Button>
             <div className="auto-row" title="Pull synced chats on a timer">
               <CheckboxField
@@ -494,7 +522,13 @@ export default function App() {
               onCancel={cancelLogin}
               onCheck={checkLogin}
             />
-          ) : showHistory ? <SearchPanel /> : <>
+          ) : scope === 'all' ? (
+            <SearchPanel
+              query={query}
+              request={searchRequest}
+              onRequestHandled={handleSearchRequest}
+            />
+          ) : <>
           <div className="thread-head">
             <div>
               <h1>{active.name}</h1>

@@ -1,6 +1,8 @@
 # Search imported conversations
 
-Select **Search all conversations** in the sidebar. Search retained messages across providers, or filter by provider, thread ID/URL, and observation date. Each result shows the source, role, date, and nearby messages. **View message** opens the stored message. **Open thread** opens the vendor thread in its persistent login session.
+Use the search bar in the topbar. The scope control next to the bar selects **This chat** or **All conversations**. **This chat** filters the open chat as you type. **All conversations** searches retained history when you press Enter. A new query clears the old results, but it does not run a search. The scope control keeps the typed text.
+
+In **All conversations** scope, press Enter to search retained messages across providers, or filter by provider, thread ID/URL, and observation date. Each result shows the source, role, date, and nearby messages. **View message** opens the stored message. **Open thread** opens the vendor thread in its persistent login session. **Search** and **Ask locally** run the same search again with the provider, thread, and date filters.
 
 Keyword search works without models. Optional local embeddings add semantic search. **Ask locally** uses an optional local model to select quotations from the results. Answers are experimental: an exact quote can still be irrelevant or incomplete. Check the source messages.
 
