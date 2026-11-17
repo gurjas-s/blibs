@@ -85,8 +85,8 @@ A visible change needs a screenshot in the pull request.
 
 - Use `npm run e2e`. It writes `tests/e2e/artifacts/panel-dark.png` and
   `tests/e2e/artifacts/panel-light.png`.
-- Put the files in the pull request. Do not commit the ignored artifact
-  directory.
+- Attach the files to the pull request body with
+  `gh pr edit <number> --attach <path>`. Never commit them.
 - Use mocked data in the screenshot. Do not show a logged-in vendor session,
   a cookie, or a credential.
 

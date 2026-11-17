@@ -506,19 +506,21 @@ export default function App() {
   return (
     <div className="shell">
       <header className="topbar">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="sidebar-toggle"
-          aria-expanded={sidebarOpen}
-          aria-controls="agent-sidebar"
-          onClick={() => setSidebarOpen((open) => !open)}
-        >
-          Chats
-        </Button>
-        <div className="brand">
-          <span className="mark" aria-hidden="true">b</span>
-          <strong>blibs</strong>
+        <div className="topbar-start">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="sidebar-toggle"
+            aria-expanded={sidebarOpen}
+            aria-controls="agent-sidebar"
+            onClick={() => setSidebarOpen((open) => !open)}
+          >
+            Chats
+          </Button>
+          <div className="brand">
+            <span className="mark" aria-hidden="true">b</span>
+            <strong>blibs</strong>
+          </div>
         </div>
         <div className="search" role="search">
           <TextField

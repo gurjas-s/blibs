@@ -45,22 +45,37 @@ Shared setup: see [README.md](README.md).
    Expected: each token has a value in both themes. The background and text
    values differ between the themes.
 
-6. Resize the window to 1440 by 900 pixels and to 1024 by 800 pixels. Run this
-   at each width:
-   `document.documentElement.scrollWidth - document.documentElement.clientWidth`.
-   Expected: the value is `0` or `1`, and the sidebar is visible.
+6. Resize the window to 900, 1024, 1440, and 1600 pixels wide. Run this at each
+   width:
 
-7. Resize the window to 800 by 800 pixels.
+   ```js
+   const bar = document.querySelector('.search').getBoundingClientRect();
+   const offCenter = Math.round(bar.left + bar.width / 2) - Math.round(window.innerWidth / 2);
+   const sideways = document.documentElement.scrollWidth - document.documentElement.clientWidth;
+   const down = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+   ({ offCenter, sideways, down });
+   ```
+
+   Expected: `offCenter` is `0` or `1`. The search bar does not move when the
+   brand text or the sync state changes. `sideways` is `0` or `1`. `down` is
+   `0`, so the page has one scroll area and no double scrollbar. The sidebar is
+   visible at 1024 and wider.
+
+7. Open Settings, the search results, and the Agents screen in turn. Expected:
+   each view keeps the same content width and side gutter as the chat view.
+   The result list scrolls inside its pane.
+
+8. Resize the window to 800 by 800 pixels.
    Expected: the sidebar is hidden and the `Chats` button is visible. Select
    `Chats`. Expected: the sidebar shows and `aria-expanded` is `true`. Select
    `Chats` again. Expected: the sidebar hides and `aria-expanded` is `false`.
 
-8. Press `Tab` through the page. Expected: each control has a visible focus
+9. Press `Tab` through the page. Expected: each control has a visible focus
    ring and the theme control changes with the arrow keys.
 
-9. Check the text contrast in both themes. Check body text, muted text, status
-   text, and text on the accent color. Expected: each pair meets WCAG AA or
-   better.
+10. Check the text contrast in both themes. Check body text, muted text, status
+    text, and text on the accent color. Expected: each pair meets WCAG AA or
+    better.
 
 ## Failure signals and artifacts
 
@@ -70,6 +85,10 @@ Shared setup: see [README.md](README.md).
   theme.
 - The system preference does not update the page without a reload.
 - The layout scrolls sideways at 1024 or 1440 pixels.
+- The search bar center is more than 1 pixel from the window center between 900
+  and 1600 pixels.
+- The page has a second vertical scrollbar, or a view breaks its content width
+  or gutter.
 - The sidebar is hidden at 800 pixels and the `Chats` button is missing.
 - A control has no focus ring or a focus trap.
 - A text pair fails WCAG AA.
@@ -81,7 +100,8 @@ Artifacts: `tests/e2e/artifacts/panel-dark.png` and `panel-light.png`.
 1. Quit the mock app. On macOS, press `Cmd+Q`. On Linux or Windows, close the
    window. Press `Ctrl+C` in the terminal when the process stays open.
 2. Remove the temporary directory: `rm -rf "$TMP"`.
-3. Keep the screenshots only for the pull request body.
+3. Attach the screenshots to the pull request body with
+   `gh pr edit <number> --attach <path>`. Never commit them.
 
 ## Automated tests that cover it
 

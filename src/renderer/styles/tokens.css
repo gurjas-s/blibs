@@ -12,6 +12,33 @@
   /* Layout — the same at every theme. */
   --layout-sidebar-width: 264px;
   --layout-thread-measure: 76ch;
+  --layout-search-width: 520px;
+  --layout-gutter: var(--space-7);
+
+  /* Control scale — one height, radius, padding, border, and focus ring for
+   * buttons, text fields, selects, and cards. */
+  --control-height-sm: 26px;
+  --control-height-md: 34px;
+  --control-height-lg: 40px;
+  --control-padding-inline-sm: var(--space-2-5);
+  --control-padding-inline-md: var(--space-3);
+  --control-padding-inline-lg: var(--space-4);
+  --control-radius: var(--radius-lg);
+  --control-border-width: 1px;
+  --control-focus-ring-width: 3px;
+  --control-focus-ring: 0 0 0 var(--control-focus-ring-width) var(--color-focus-ring);
+  --card-radius: var(--control-radius);
+  --card-padding: var(--space-6);
+
+  /* Row scale — section labels and list rows use the same insets. */
+  --row-padding-inline: var(--space-2);
+  --row-padding-block: var(--space-1-5);
+}
+
+@media (max-width: 900px) {
+  :root {
+    --layout-gutter: var(--space-4);
+  }
 }
 
 :root,

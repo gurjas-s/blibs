@@ -52,8 +52,9 @@ inside the step that needs it.
 
 - List the observable failure signals: a status text, a console error, a
   missing screenshot, or a failed test name.
-- List the artifact paths. Put screenshots in the pull request body. Do not
-  commit an evidence report.
+- List the artifact paths. Attach screenshots to the pull request body with
+  `gh pr edit <number> --attach <path>`. Never commit a screenshot, an evidence
+  file, or a note.
 - Give the exact cleanup commands. Remove temporary directories and stop the
   app.
 

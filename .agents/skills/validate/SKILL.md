@@ -60,8 +60,9 @@ Do not commit a reproduction note or an evidence report.
 
 ## 6. Screenshot
 
-If the change changes what a user sees, add a screenshot to the PR body. Use
-mocked data. Do not commit the screenshot as an evidence report.
+If the change changes what a user sees, attach a screenshot to the PR body with
+`gh pr edit <number> --attach <path>`. Use mocked data. Never commit the
+screenshot, an evidence file, or a note.
 
 ## 7. PR text
 
