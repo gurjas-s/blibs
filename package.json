@@ -11,6 +11,7 @@
   "scripts": {
     "build": "tsc -b --force && node scripts/emit-cjs-markers.mjs && vite build",
     "clean": "node scripts/clean.mjs",
+    "e2e": "npm run build && node --import tsx --test tests/e2e/smoke.spec.ts",
     "postinstall": "node scripts/check-electron.mjs",
     "prestart": "node scripts/check-electron.mjs",
     "start": "electron .",
@@ -35,6 +36,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.8",
     "globals": "^17.14.0",
+    "playwright-core": "^1.65.1",
     "tsx": "^4.19.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.73.0",
