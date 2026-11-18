@@ -138,6 +138,29 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
       }
       if (req.url === '/api/health') return send(res, 200, { ok: true });
       if (req.url === '/api/relay' && req.method === 'GET') return send(res, 200, relay.status());
+      if (req.url === '/api/relay/projects' && req.method === 'POST') {
+        let payload: Record<string, unknown>;
+        try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+        const projects = payload.projects;
+        if (projects !== undefined && (!Array.isArray(projects) || projects.length > 200
+          || projects.some((entry) => typeof entry !== 'string' || !entry.trim() || entry.length > 500))) {
+          return send(res, 400, { error: 'projects must be an array of 0–200 paths' });
+        }
+        const discoveryRoot = payload.discoveryRoot;
+        if (discoveryRoot !== undefined && (typeof discoveryRoot !== 'string' || !discoveryRoot.trim() || discoveryRoot.length > 500)) {
+          return send(res, 400, { error: 'discoveryRoot must be a path' });
+        }
+        const model = payload.model;
+        if (model !== undefined && model !== null && (typeof model !== 'string' || !model.trim() || model.length > 200)) {
+          return send(res, 400, { error: 'model must be a provider/model id' });
+        }
+        const current = relay.registry();
+        return send(res, 200, relay.updateRegistry(
+          projects === undefined ? current.projects : projects as string[],
+          typeof discoveryRoot === 'string' ? discoveryRoot : current.discoveryRoot,
+          model === undefined ? undefined : model === null ? null : (model as string),
+        ));
+      }
       const routeUrl = new URL(req.url || '/', 'http://127.0.0.1');
       if (routeUrl.pathname === '/api/history' && req.method === 'GET') {
         const limit = Math.min(500, Math.max(1, Number(routeUrl.searchParams.get('limit')) || 100));

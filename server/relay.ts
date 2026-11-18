@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import type { HistoryMessage } from './history.js';
 import type { Harness, HarnessRun } from './harness/types.js';
 import { extractMentionTask, sanitizeReply } from './harness/mention.js';
-import { sessionKey, threadProjects } from './harness/router.js';
+import { listCandidates, resolveRegistryPaths, sessionKey, threadProjects } from './harness/router.js';
+import type { ProjectRegistry } from './harness/router.js';
 
 export const RELAY_QUEUE_LIMIT = 20;
 export const RELAY_PROCESSED_LIMIT = 500;
@@ -27,6 +28,10 @@ export interface RelayConfig {
   timeoutMs: number;
   /** Default harness model in provider/model form. Empty means the harness default. */
   model?: string;
+  /** Approved project directories. */
+  projects: string[];
+  /** Directory whose subdirectories are project candidates. */
+  discoveryRoot: string;
 }
 
 export interface RelayRunState {
@@ -41,6 +46,8 @@ export interface RelayStatus {
   enabled: boolean;
   provider: string;
   harness: { command: string; cwd: string; timeoutMs: number; model?: string };
+  projects: string[];
+  discoveryRoot: string;
   pending: number;
   running: boolean;
   processed: number;
@@ -65,6 +72,10 @@ interface RelayState {
   threads: string[];
   /** Coding sessions keyed by thread id and project path. */
   sessions: Record<string, string>;
+  projects: string[];
+  discoveryRoot: string;
+  /** Persisted harness model default. Empty means the harness default. */
+  model?: string;
   runs: number;
   lastRun: RelayRunState | null;
 }
@@ -113,9 +124,17 @@ export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig
     cwd: path.join(dataDir, 'harness'),
     timeoutMs: DEFAULT_RELAY_TIMEOUT_MS,
     model: undefined,
+    projects: [],
+    discoveryRoot: DEFAULT_DISCOVERY_ROOT,
     ...overrides,
   };
-  return { ...config, cwd: safeHarnessCwd(path.resolve(config.cwd), dataDir) };
+  const registry = resolveRegistryPaths(config.discoveryRoot, config.projects);
+  return {
+    ...config,
+    cwd: safeHarnessCwd(path.resolve(config.cwd), dataDir),
+    projects: registry.projects,
+    discoveryRoot: registry.discoveryRoot,
+  };
 }
 
 export function newSessionId(): string {
@@ -188,9 +207,13 @@ export class RelayService {
           processed: [],
           threads: [],
           sessions: {},
+          projects: [...options.config.projects],
+          discoveryRoot: options.config.discoveryRoot,
+          model: options.config.model,
           runs: 0,
           lastRun: null,
         };
+    if (loaded?.model) this.config = { ...this.config, model: loaded.model };
     this.knownThreads = new Set([...(options.knownThreads ?? []), ...this.state.threads].slice(-RELAY_THREAD_LIMIT));
     this.state.threads = [...this.knownThreads];
     if (this.state.lastRun?.state === 'running') {
@@ -224,7 +247,12 @@ export class RelayService {
           if (typeof value === 'string' && value) sessions[key.slice(0, 1000)] = value.slice(0, 100);
         }
       }
-      return { version: 2, watermark, processed, threads, sessions, runs, lastRun: this.readLastRun(raw.lastRun) };
+      const registry = resolveRegistryPaths(
+        typeof raw.discoveryRoot === 'string' && raw.discoveryRoot.trim() ? raw.discoveryRoot : this.config.discoveryRoot,
+        Array.isArray(raw.projects) ? raw.projects.filter((entry): entry is string => typeof entry === 'string') : this.config.projects,
+      );
+      const model = typeof raw.model === 'string' && raw.model.trim() ? raw.model.slice(0, 200) : undefined;
+      return { version: 2, watermark, processed, threads, sessions, projects: registry.projects, discoveryRoot: registry.discoveryRoot, model, runs, lastRun: this.readLastRun(raw.lastRun) };
     } catch {
       return null;
     }
@@ -301,6 +329,31 @@ export class RelayService {
   /** Project paths with sessions in one Muse thread, most recent last. */
   projectsFor(threadId: string): string[] {
     return threadProjects(this.state.sessions, threadId);
+  }
+
+  /** Approved projects and the discovery root. The registry persists in state. */
+  registry(): ProjectRegistry {
+    return { projects: [...this.state.projects], discoveryRoot: this.state.discoveryRoot };
+  }
+
+  /** Replace the registry. The caller validates the shape before this call. */
+  updateRegistry(projects: string[], discoveryRoot: string, model?: string | null): RelayStatus {
+    const resolved = resolveRegistryPaths(discoveryRoot, projects);
+    this.state.projects = resolved.projects;
+    this.state.discoveryRoot = resolved.discoveryRoot;
+    this.state.model = model === null ? undefined : (model ?? this.state.model);
+    if (model !== undefined) this.config = { ...this.config, model: model ?? undefined };
+    try { fs.mkdirSync(this.state.discoveryRoot, { recursive: true }); } catch { /* discovery stays optional */ }
+    for (const dir of this.state.projects) {
+      try { fs.mkdirSync(dir, { recursive: true }); } catch { /* a run records the failure */ }
+    }
+    this.save();
+    return this.status();
+  }
+
+  /** Registered projects plus discovery subdirectories. */
+  candidates(): string[] {
+    return listCandidates(this.registry());
   }
 
   // The first batch of a conversation is baseline: a sign-in sync is not work.
@@ -413,6 +466,8 @@ export class RelayService {
         timeoutMs: this.config.timeoutMs,
         ...(this.config.model ? { model: this.config.model } : {}),
       },
+      projects: [...this.state.projects],
+      discoveryRoot: this.state.discoveryRoot,
       pending: this.queue.length + (this.active ? 1 : 0),
       running: this.active !== null,
       processed: this.state.processed.length,

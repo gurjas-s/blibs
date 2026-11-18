@@ -1,7 +1,7 @@
 // Relay tests use a fake harness, temporary stores, and mocked rows.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -49,7 +49,9 @@ interface RelayServer {
 interface RelayStatus {
   enabled: boolean;
   provider: string;
-  harness: { command: string; cwd: string; timeoutMs: number };
+  harness: { command: string; cwd: string; timeoutMs: number; model?: string };
+  projects: string[];
+  discoveryRoot: string;
   pending: number;
   running: boolean;
   processed: number;
@@ -262,6 +264,35 @@ test('a configured model reaches the harness command', async () => {
   assert.equal(runs.length, 1);
   assert.equal(modelOf(runs[0]), 'test-provider/test-model');
   assert.equal(runs[0].cwd, realpathSync(server.harnessDir), 'the model flag does not change the directory');
+});
+
+test('the project registry persists over the local API', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-registry-'));
+  const server = await startRelay({ dataDir, removeDataOnClose: false });
+  const projA = path.join(dataDir, 'proj-a');
+  const post = await fetch(`${server.base}/api/relay/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projects: [projA], model: 'test-provider/test-model' }),
+  });
+  assert.equal(post.status, 200);
+  const updated = await statusOf(server);
+  assert.deepEqual(updated.projects, [projA]);
+  assert.equal(updated.harness.model, 'test-provider/test-model');
+  assert.ok(existsSync(projA), 'the registry creates project directories');
+  assert.ok(updated.discoveryRoot.length > 0);
+
+  const bad = await fetch(`${server.base}/api/relay/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projects: 'not-an-array' }),
+  });
+  assert.equal(bad.status, 400);
+  await server.close();
+
+  const restarted = await startRelay({ dataDir });
+  assert.deepEqual((await statusOf(restarted)).projects, [projA], 'the registry survives a restart');
+  assert.equal((await statusOf(restarted)).harness.model, 'test-provider/test-model');
 });
 
 test('one Muse thread can own one session per project', () => {
@@ -484,6 +515,8 @@ test('the harness command parser and relay defaults are bounded', () => {
   assert.equal(defaults.command, 'opencode run');
   assert.equal(defaults.timeoutMs, 120000);
   assert.equal(defaults.model, undefined);
+  assert.deepEqual(defaults.projects, []);
+  assert.ok(defaults.discoveryRoot.endsWith('Projects'));
   assert.equal(defaults.cwd, path.resolve('/tmp/blibs-data', 'harness'));
   const overridden = buildRelayConfig('/tmp/blibs-data', { enabled: false, provider: 'grok', timeoutMs: 400 });
   assert.equal(overridden.enabled, false);
