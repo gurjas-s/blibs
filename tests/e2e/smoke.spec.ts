@@ -9,13 +9,16 @@ import assert from 'node:assert/strict';
 import { existsSync, statSync } from 'node:fs';
 import type { Page } from 'playwright-core';
 import {
+  CONNECTIONS_STORAGE_KEY,
   completeOnboarding,
   displayAvailable,
   launch,
+  mockConnections,
   NO_DISPLAY_MESSAGE,
   openSettings,
   resetOnboarding,
   seedChats,
+  seedConnections,
   selectAgent,
   selectTheme,
   setTheme,
@@ -108,6 +111,15 @@ test(
     await page.keyboard.press('Enter');
     await page.locator('.thread[aria-label="Messages with Muse"]').waitFor({ timeout: 5_000 });
 
+    // Harness work appears as an action card with a harness name and a status.
+    assert.equal(await page.locator('.action-card').count(), 1);
+    assert.equal(await page.locator('.action-name').innerText(), 'Claude Code');
+    assert.equal(await page.locator('.action-msg .ui-status-pill').innerText(), 'Completed');
+    assert.match(
+      await page.locator('.action-detail').innerText(),
+      /ran 12 tests/,
+    );
+
     await selectAgent(page, 'Grok');
     assert.equal(await page.locator('.thread').getAttribute('aria-label'), 'Messages with Grok');
 
@@ -134,6 +146,12 @@ test(
     await page.setViewportSize({ width: 1024, height: 800 });
     assert.ok(await horizontalOverflow(page) <= 1, 'The 1024 px layout must not scroll sideways.');
     assert.equal(await page.locator('.sidebar').isVisible(), true);
+    assert.equal(
+      await page.locator('.context').isVisible(),
+      false,
+      'The context column collapses at 1024 px.',
+    );
+    assert.equal(await page.locator('.context-toggle').isVisible(), true);
 
     await page.setViewportSize({ width: 800, height: 800 });
     assert.equal(await page.locator('.sidebar').isVisible(), false);
@@ -144,9 +162,29 @@ test(
     await toggle.click();
     assert.equal(await page.locator('.sidebar').isVisible(), false);
 
+    // The context controls stay reachable at a narrow width.
+    await page.locator('.context-toggle').click();
+    assert.equal(await page.locator('.context').isVisible(), true);
+    assert.equal(await page.locator('.context-toggle').getAttribute('aria-expanded'), 'true');
+    assert.equal(
+      await page.getByRole('checkbox', { name: 'Claude Code for Grok' }).isVisible(),
+      true,
+    );
+    await page.getByRole('button', { name: 'Close context' }).click();
+    assert.equal(await page.locator('.context').isVisible(), false);
+
     await page.setViewportSize({ width: 1440, height: 900 });
     assert.ok(await horizontalOverflow(page) <= 1, 'The 1440 px layout must not scroll sideways.');
     assert.equal(await page.locator('.sidebar').isVisible(), true);
+    assert.equal(await page.locator('.context').isVisible(), true);
+    assert.equal(await page.locator('.context-toggle').isVisible(), false);
+
+    // The connected chat in the dark theme keeps the action card and context.
+    await selectAgent(page, 'Muse');
+    await selectTheme(page, 'dark');
+    assert.equal(await page.locator('.action-card').isVisible(), true);
+    assertImage(await app.screenshot('chat-connected-dark.png'));
+    await selectAgent(page, 'Grok');
     assertImage(await app.screenshot('panel-selected-chat.png'));
   },
 );
@@ -434,37 +472,68 @@ test(
 );
 
 test(
-  'first run shows onboarding steps and does not reappear',
+  'first run shows the connections matrix and does not reappear',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {
     assert.ok(app, 'The E2E app must start.');
     const { page } = app;
 
+    await page.evaluate((key) => localStorage.removeItem(key), CONNECTIONS_STORAGE_KEY);
     await resetOnboarding(page);
     await setTheme(page, 'dark');
 
-    assert.match(
+    assert.equal(
       await page.locator('#onboarding-title').innerText(),
-      /One window for your personal agents/,
+      'Connect your AI assistants to this Mac',
     );
-    assert.equal(await page.getByRole('button', { name: 'Back', exact: true }).isDisabled(), true);
-    assert.equal(await page.getByRole('button', { name: 'Skip', exact: true }).isVisible(), true);
+    assert.equal(await page.locator('.sidebar').count(), 0, 'Onboarding has no chat sidebar.');
+    assert.equal(await page.locator('.connections-matrix input[type="checkbox"]').count(), 9);
+    assert.equal(
+      await page.getByRole('checkbox', { name: 'Claude Code for Muse' }).isChecked(),
+      true,
+    );
+    assert.equal(await page.locator('.connections-folder-path').innerText(), '~/Projects');
+    assert.equal(await page.getByRole('button', { name: 'Change folder' }).isVisible(), true);
+    assert.equal(
+      await page.getByRole('button', { name: 'Connect another assistant' }).isVisible(),
+      true,
+    );
+    assert.equal(await page.getByRole('button', { name: 'Start chatting' }).isVisible(), true);
     assertImage(await app.screenshot('onboarding-dark.png'));
     await setTheme(page, 'light');
     assertImage(await app.screenshot('onboarding-light.png'));
     await setTheme(page, 'dark');
 
-    await page.getByRole('button', { name: 'Next', exact: true }).click();
-    assert.equal(await page.locator('#onboarding-title').innerText(), 'Connect a vendor');
-    assert.equal(await page.getByRole('combobox', { name: 'Vendor' }).isVisible(), true);
-
-    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    // The matrix keeps a keyboard toggle and saves the choice.
+    await page.getByRole('checkbox', { name: 'Codex for Muse' }).focus();
+    await page.keyboard.press('Space');
     assert.equal(
-      await page.locator('#onboarding-title').innerText(),
-      'One window for your personal agents',
+      await page.getByRole('checkbox', { name: 'Codex for Muse' }).isChecked(),
+      false,
+    );
+    await page.waitForFunction(
+      (key) => {
+        const raw = localStorage.getItem(key);
+        if (!raw) return false;
+        const state = JSON.parse(raw) as {
+          assistants?: Record<string, { harnesses?: Record<string, boolean> }>;
+        };
+        return state.assistants?.muse?.harnesses?.codex === false;
+      },
+      CONNECTIONS_STORAGE_KEY,
     );
 
-    await page.getByRole('button', { name: 'Skip', exact: true }).click();
+    // Change folder keeps the path in the connection state.
+    await page.getByRole('button', { name: 'Change folder' }).click();
+    await page.getByLabel('Shared folder path').fill('~/Work');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    assert.equal(await page.locator('.connections-folder-path').innerText(), '~/Work');
+    await page.waitForFunction(
+      (key) => (localStorage.getItem(key) ?? '').includes('~/Work'),
+      CONNECTIONS_STORAGE_KEY,
+    );
+
+    await page.getByRole('button', { name: 'Start chatting' }).click();
     await page.locator('.shell').waitFor({ state: 'visible' });
     assert.equal(await page.locator('.onboarding-screen').count(), 0);
 
@@ -526,5 +595,100 @@ test(
     await page.getByRole('button', { name: 'Agents', exact: true }).click();
     await page.getByRole('button', { name: 'Back to chats' }).click();
     await page.locator('.login-screen').waitFor({ state: 'detached' });
+  },
+);
+
+test(
+  'an unconnected assistant shows an inline setup card and a disabled composer',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page } = app;
+
+    await seedConnections(page, mockConnections({ setup: { grok: 'setup' } }));
+    await selectTheme(page, 'light');
+    await page.locator('.agent-main', { hasText: 'Grok' }).first().click();
+    await page.locator('.setup-card').waitFor({ state: 'visible' });
+
+    // The header reports the connection state.
+    assert.match(await page.locator('.chat-identity').innerText(), /Grok/);
+    assert.match(await page.locator('.chat-identity .ui-status-pill').innerText(), /Setup/);
+
+    // The card has three numbered steps and the assistant-specific link.
+    assert.equal(await page.locator('.setup-step').count(), 3);
+    assert.equal(
+      await page.locator('.link-box__value').innerText(),
+      'https://blibs.app/c/grok',
+    );
+    assert.equal(
+      await page.getByRole('button', { name: 'Copy the Grok connect link' }).isVisible(),
+      true,
+    );
+    assert.equal(await page.getByRole('button', { name: 'Check connection' }).isVisible(), true);
+    assert.equal(await page.getByRole('button', { name: 'Open Grok' }).isVisible(), true);
+
+    // The composer is disabled and says why.
+    const composer = page.locator('.composer--disabled');
+    assert.equal(await composer.locator('input').isDisabled(), true);
+    assert.equal(await composer.getByRole('button', { name: 'Send' }).isDisabled(), true);
+    assert.match(
+      await page.locator('.composer-reason').innerText(),
+      /Connect Grok above before you send a message/,
+    );
+
+    // The left list marks the assistant as Setup.
+    assert.match(
+      await page.locator('.agent--setup .astate').first().innerText(),
+      /Setup/,
+    );
+
+    // The context column holds the harness toggles and an honest empty activity.
+    assert.equal(
+      await page.getByRole('checkbox', { name: 'Claude Code for Grok' }).isVisible(),
+      true,
+    );
+    assert.equal(await page.locator('.context-empty').isVisible(), true);
+    assertImage(await app.screenshot('chat-setup-light.png'));
+
+    // Copy writes the connect link.
+    await page.getByRole('button', { name: 'Copy the Grok connect link' }).click();
+    await page.waitForFunction(
+      () => document.querySelector('.setup-card [role="status"]')?.textContent === 'Copied',
+    );
+
+    // A harness toggle in the context column persists for this assistant.
+    await page.getByRole('checkbox', { name: 'Codex for Grok' }).uncheck();
+    await page.waitForFunction(
+      (key) => {
+        const raw = localStorage.getItem(key);
+        if (!raw) return false;
+        const state = JSON.parse(raw) as {
+          assistants?: Record<string, { harnesses?: Record<string, boolean> }>;
+        };
+        return state.assistants?.grok?.harnesses?.codex === false;
+      },
+      CONNECTIONS_STORAGE_KEY,
+    );
+
+    // Open assistant starts the in-app sign-in attempt.
+    await page.getByRole('button', { name: 'Open Grok' }).click();
+    await page.waitForTimeout(500);
+    assert.equal(await page.locator('.setup-card').isVisible(), true);
+
+    // Check connection turns the assistant into a connected chat.
+    await page.getByRole('button', { name: 'Check connection' }).click();
+    await page
+      .locator('.thread[aria-label="Messages with Grok"]')
+      .waitFor({ state: 'visible', timeout: 10_000 });
+    assert.match(await page.locator('.chat-identity .ui-status-pill').innerText(), /Connected/);
+    assert.equal(await page.getByLabel('Message Grok').isEnabled(), true);
+
+    // The Connections entry opens the same screen with a Back control.
+    await page.getByRole('button', { name: 'Connections', exact: true }).click();
+    await page.locator('.connections-screen').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('.sidebar').count(), 0);
+    assert.equal(await page.getByRole('button', { name: 'Back to chats' }).isVisible(), true);
+    await page.getByRole('button', { name: 'Back to chats' }).click();
+    await page.locator('.shell').waitFor({ state: 'visible' });
   },
 );

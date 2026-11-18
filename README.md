@@ -4,7 +4,12 @@
 
 blibs is a desktop control panel for **personal agents** — the always-on,
 action-taking kind (Meta **Muse**, OpenAI **Dots**, xAI **Grok**), not plain chatbots.
-Chat with all three from one window, and reply from blibs straight into the real agent session.
+
+blibs connects each assistant to the local coding harnesses on your computer
+(**Claude Code**, **Codex**, **OpenCode**). You select the harnesses for each
+assistant one time. You also select the shared folder that the harnesses may
+read and write. Chat with all three assistants from one window, and reply from
+blibs straight into the real assistant session.
 
 There is no public chat-history or send API for any of these consumer products
 (verified Oct 2026), and all three block iframing (`X-Frame-Options: SAMEORIGIN` /
@@ -37,14 +42,23 @@ rather than letting `npm start` fail later with `Electron failed to install
 correctly`. After changing `package-lock.json`, use `npm install` locally and
 commit the updated lockfile; everyone else and CI use `npm ci`.
 
-The first start opens a short setup flow: what blibs does, connect a vendor,
-sign in, and start. Use **Agents** in the sidebar to sign in to
-Muse, Dots, or Grok (once each). The **Agents** menu is a second path. The
-sign-in window shares cookies with the hidden sync view, so after sign-in you
-can close it — syncing continues in the background. If the vendor asks for a
-mobile code or a CAPTCHA, the agents screen shows that step. Select **Check
-again** after you complete it. **Back to chats**, **Cancel**, and **Escape**
-always return to the panel.
+The first start opens the **Connections** screen. It shows one row for each
+local harness and one column for each assistant. Turn on the harnesses that each
+assistant can use. Set the shared folder. Select **Start chatting**.
+
+Select **Connect another assistant** on the Connections screen to sign in to
+Muse, Dots, or Grok (once each). The **Agents** item in the sidebar and the
+**Agents** menu are other paths to the same screen. The sign-in window shares
+cookies with the hidden sync view, so after sign-in you can close it — syncing
+continues in the background. If the vendor asks for a mobile code or a CAPTCHA,
+the agents screen shows that step. Select **Check again** after you complete it.
+**Back to chats**, **Cancel**, and **Escape** always return to the panel.
+
+An assistant with no signed-in session shows a setup card in its chat. The card
+lists the steps, gives the connect link, and offers **Check connection** and
+**Open assistant**. The composer stays disabled until the assistant is
+connected. Select **Connections** in the sidebar to change the harnesses or the
+folder later.
 
 > **If npm blocks Electron's install script:** approve it, then reinstall:
 >
@@ -130,6 +144,8 @@ The smoke spec verifies these items:
 - The backend answers `/api/health` through the panel proxy and directly.
 - The panel reports a successful import pull.
 - The sidebar shows a selected chat and the narrow layout collapses.
+- The connected chat shows a harness action card and the context column.
+- The context column becomes an overlay at 1024 pixels and stays reachable.
 - Settings holds the Auto-sync toggle and interval, and the sidebar footer
   keeps only the Agents entry.
 - The topbar search runs one global search, a provider tag limits it, and
@@ -137,23 +153,27 @@ The smoke spec verifies these items:
 - The message thread shows roles, timestamps, and wrapped long text.
 - The theme control follows the system preference and saves the choice.
 - The layout has no horizontal scroll at 1024 and 1440 pixels.
-- The first-run flow shows its steps, supports Back and Skip, and stays
-  complete after a reload.
+- The first-run connections screen shows the harness matrix, changes the shared
+  folder, starts the chat, and stays complete after a reload.
+- An unconnected assistant shows the inline setup card and a disabled composer.
 - The agents screen is the in-app sign-in entry point.
 - A mocked sign-in shows progress, a mobile verification step, and Cancel.
 - Escape and Back return to the home screen after a mocked sign-in.
 
 The spec writes light and dark screenshots to
 `tests/e2e/artifacts/panel-dark.png` and
-`tests/e2e/artifacts/panel-light.png`. It also writes onboarding, sign-in, and
-post-sign-in home screenshots. The repository ignores this directory. The
-screenshots use mock chats and mocked sign-in steps, not a vendor login.
+`tests/e2e/artifacts/panel-light.png`. It also writes the connections screen, the
+connected chat, the setup chat, and the sign-in screenshots. The repository
+ignores this directory. The screenshots use mock chats, mock connection state,
+and mocked sign-in steps, not a vendor login.
 
 The reusable module is `tests/e2e/harness.ts`. It exports `launch`,
 `waitForPanel`, `screenshot`, `selectAgent`, `selectTheme`, `setTheme`,
-`seedChats`, `resetOnboarding`, and `completeOnboarding`. The harness starts the
-app with `BLIBS_MOCK_LOGIN=1`, so a sign-in attempt uses fixed mock steps. Add a
-new spec in `tests/e2e/` to test another feature.
+`seedChats`, `resetOnboarding`, `completeOnboarding`, `seedConnections`,
+`mockConnections`, and `CONNECTIONS_STORAGE_KEY`. `seedConnections` writes mock
+connection state, so a test can select a connected or unconnected assistant. The
+harness starts the app with `BLIBS_MOCK_LOGIN=1`, so a sign-in attempt uses fixed
+mock steps. Add a new spec in `tests/e2e/` to test another feature.
 
 The check needs a display. macOS and Windows use the desktop session. On Linux
 without `DISPLAY` or `WAYLAND_DISPLAY`, the spec skips with a clear message. Use
@@ -188,11 +208,12 @@ src/
     agent.ts        scrape + send; injected into every vendor session
     panel.ts        narrow sign-in bridge for the panel
   renderer/     React UI (DOM only — bundled by Vite into dist/)
-    App.tsx         app state, thread, composer, auto-pull, view switch
+    App.tsx         three-pane shell: assistants, chat, context column
     main.tsx        React entry (loaded by index.html)
     client.ts       the only typed data client for backend routes
+    connections.ts  connection state, setup derivation, local storage
     desktop.ts      typed access to the panel preload bridge
-    Onboarding.tsx  first-run steps
+    Onboarding.tsx  first-run connections screen and harness matrix
     LoginScreen.tsx agents screen and inline sign-in steps
     components/     reusable UI components with typed props
     styles/         design tokens (light + dark) and base styles
@@ -200,7 +221,7 @@ src/
     SettingsPanel.tsx sync, search defaults, index, answers, and theme
     search.ts       search parsing and persistent defaults
     providers.ts    the three vendors — the seam for future native APIs
-    types.ts        Agent / ChatMessage
+    types.ts        Agent / ChatMessage / harness types
     *.css, assets/  layout, theme entry, static assets
 server/
   proxy.ts      local backend (plain Node HTTP, zero deps): chat fan-out,
@@ -224,7 +245,8 @@ Generated, never edited or committed: `build/` (compiled main/preload/backend),
 in `<Electron userData>/history`; `BLIBS_DATA_DIR` overrides that directory. See
 [conversation search storage](docs/conversation-search.md) for migration details.
 Panel state lives in `localStorage` (`blibs-messages-v2`, `blibs-agents-v2`,
-`blibs-theme-v1`, …) — swap for a DB + OAuth in production.
+`blibs-connections-v1`, `blibs-theme-v1`, …) — swap for a DB + OAuth in
+production.
 
 ## Modules (read this before touching the build)
 
@@ -280,6 +302,14 @@ declares for reference.
 | Login lost after restart | Partitions persist per OS user; check you didn't clear app data |
 
 ## Limits (honest POC notes)
+
+**Connections:** The harness choice, the shared folder, and the setup state are
+local to this window. The app saves them in `localStorage`. The app does not
+start a harness run, open the shared folder, or resolve the connect link yet.
+The activity list and the chat action card appear only when a backend reports
+work. Until then, the context column shows an honest empty state. The setup card
+uses the saved login status for Muse, Dots, and Grok. A status change updates
+the card and the assistant list.
 
 **Conversation search:** Use the search bar in the topbar. It searches all
 retained conversations after a short pause, and Enter runs the search at once.

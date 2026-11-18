@@ -41,7 +41,8 @@ Non-obvious facts:
 
 | User-facing feature | Document | Main automated check |
 | --- | --- | --- |
-| Onboarding and first run | [onboarding.md](onboarding.md) | `smoke.spec.ts`: `first run shows onboarding steps and does not reappear` |
+| Onboarding and first run | [onboarding.md](onboarding.md) | `smoke.spec.ts`: `first run shows the connections matrix and does not reappear` |
+| Connections and assistant chat | [connections-chat.md](connections-chat.md) | `smoke.spec.ts`: `panel shows a selected chat and a readable message thread`; `an unconnected assistant shows an inline setup card and a disabled composer`; `connections.test.ts` |
 | Vendor login and sessions | [vendor-login.md](vendor-login.md) | `smoke.spec.ts`: `vendor sign-in entry point shows mocked steps and returns home` |
 | Chat and sending | [chat-sending.md](chat-sending.md) | `smoke.spec.ts`: `panel shows a selected chat and a readable message thread`; `proxy.test.ts`: outbox; `search-desktop.cjs`: delayed echo |
 | Sync and status | [sync-status.md](sync-status.md) | `proxy.test.ts`: legacy imports; `test-harness.ts`: health and sweep |
