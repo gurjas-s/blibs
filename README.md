@@ -342,5 +342,5 @@ JSON backup; retained history is not capped at the panel's 500 messages.
 - The relay runs one harness at a time and keeps the first part of a long
   message or reply. It is a proof of concept, not a full job queue. Every relay
   reply is a normal user message in the vendor chat, so a vendor agent can
-  answer it and start another run.
+  answer it and start another run. Quit the app to end the loop.
 - Personal use on your own accounts; check vendor ToS before productizing.

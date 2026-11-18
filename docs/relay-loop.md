@@ -75,18 +75,21 @@ A row must meet all these conditions:
 - The import inserted a new row. An update or a duplicate does not count.
 - The role is `agent`. A user message and a typed relay reply do not count.
 - The provider is `BLIBS_RELAY_PROVIDER`.
-- The thread is a conversation page below the vendor root, not the vendor
-  landing page. The vendor view scrapes marketing articles as agent text
-  when it is signed out.
+- The thread is a provider page. A root path counts only after the
+  conversation has a user message. Muse keeps chats at `https://muse.ai/`. The
+  signed-out landing page has only agent-role scrapes and no user turn.
+- The conversation had a baseline observation. The first import batch for a
+  conversation is history: blibs records those rows and does not run them. This
+  covers the messages that a sign-in sync adds after start. A later agent
+  message in that conversation can start a run.
 - The message ID is not in the processed set.
 - The timestamp is later than the durable high-water mark.
-- The conversation is not new. The first import batch of a conversation is
-  its baseline, so a sign-in sync does not relay stored history.
 - The queue is not full.
 
 The first enabled start sets the high-water mark to the start time. Messages
-that are already stored are backlog. Messages that arrive later can start a
-run. The mark, the processed IDs, and the known conversations are in
+that are already stored are backlog. The first batch of a conversation is a
+baseline, so a sign-in sync does not relay stored history. Later messages can
+start a run. The mark, the processed IDs, and the known conversations are in
 `<data>/relay-state.json`. A restart does not replay history. A run that was
 active during a shutdown is recorded as an error on the next start.
 
@@ -141,6 +144,9 @@ and mocked import rows. It covers:
 
 - one new Muse agent message -> one run -> one Muse outbox item
 - a user message does not trigger
+- a landing-page scrape does not trigger
+- the first batch of a conversation is baseline
+- a root-path conversation with a user turn can trigger
 - a duplicate import does not trigger
 - backlog before start and older messages do not trigger
 - a harness failure records an error and queues nothing
@@ -179,7 +185,10 @@ a command, a log, or a commit.
    `running` to `ok`.
 8. Check `curl http://127.0.0.1:8787/api/outbox`. The reply item changes from
    `queued` to `sent` after the next outbox drain.
-9. Check the Muse chat. The harness reply is a user message.
+9. Check the Muse chat. The harness reply appears with the vendor's `You:`
+   label, because blibs types it as a user message. Muse can answer that reply,
+   and that answer is a new agent message that can start another run. Quit the
+   app to end the loop.
 
 If a vendor gate blocks the sign-in (CAPTCHA, provider policy, or a missing
 verification code), stop at the gate. Do not try again in a loop. Record the

@@ -77,6 +77,8 @@ export interface RelayServiceOptions {
   enqueue: (provider: string, text: string) => void;
   /** Threads that the history store already knew at startup. */
   knownThreads?: string[];
+  /** True when the thread already has a user message. */
+  threadHasUser?: (provider: string, threadId: string) => boolean;
 }
 
 /** Replace a credential value if it appears in status text. */
@@ -127,6 +129,16 @@ export function relayConfigFromEnv(env: NodeJS.ProcessEnv = process.env, dataDir
   };
 }
 
+/** A Muse user turn is scraped with the vendor's "You:" label and agent role. */
+export function isUserEcho(text: string): boolean {
+  return text.trimStart().startsWith('You:');
+}
+
+/** A rendered time label is not a message. */
+export function isTimeLabel(text: string): boolean {
+  return /^\d{1,2}:\d{2}\s*(?:AM|PM)$/i.test(text.trim());
+}
+
 /** Build the bounded prompt that the harness receives. */
 export function buildPrompt(task: string): string {
   return `${PROMPT_HEADER}\n\n${task.trim().slice(0, RELAY_PROMPT_LIMIT)}`;
@@ -137,12 +149,23 @@ export function buildPrompt(task: string): string {
  * articles on `https://muse.ai/`, so a thread must be a provider page below
  * the root. Providers without a known host keep their rows.
  */
-export function isConversationThread(provider: string, threadId: string): boolean {
+export function isProviderThread(provider: string, threadId: string): boolean {
   const host = PROVIDER_HOSTS[provider];
   if (!host) return true;
   try {
     const url = new URL(threadId);
-    if (url.protocol !== 'https:' || url.hostname !== host) return false;
+    return url.protocol === 'https:' && url.hostname === host;
+  } catch {
+    return false;
+  }
+}
+
+/** True for a provider URL below its root, such as `/chat/abc`. */
+export function isConversationThread(provider: string, threadId: string): boolean {
+  if (!isProviderThread(provider, threadId)) return false;
+  if (!PROVIDER_HOSTS[provider]) return true;
+  try {
+    const url = new URL(threadId);
     return url.pathname !== '/' && url.pathname !== '';
   } catch {
     return false;
@@ -154,6 +177,7 @@ export class RelayService {
   private readonly stateDir: string;
   private readonly stateFile: string;
   private readonly enqueueReply: (provider: string, text: string) => void;
+  private readonly threadHasUser: (provider: string, threadId: string) => boolean;
   private readonly cwd: string;
   private readonly state: RelayState;
   private readonly knownThreads: Set<string>;
@@ -167,6 +191,7 @@ export class RelayService {
     this.stateDir = options.stateDir;
     this.stateFile = path.join(options.stateDir, 'relay-state.json');
     this.enqueueReply = options.enqueue;
+    this.threadHasUser = options.threadHasUser ?? (() => false);
 
     // Never run the harness in the blibs checkout, even with a bad override.
     const dataFallback = path.join(options.stateDir, 'harness');
@@ -242,7 +267,13 @@ export class RelayService {
     if (!this.config.enabled || this.closed) return false;
     if (message.role !== 'agent') return false;
     if (message.provider.toLowerCase() !== this.config.provider) return false;
-    if (!isConversationThread(this.config.provider, message.threadId)) return false;
+    // Muse renders the user turn with a "You:" label but reports role agent.
+    if (isUserEcho(message.text) || isTimeLabel(message.text)) return false;
+    if (!isProviderThread(this.config.provider, message.threadId)) return false;
+    // A root path is the landing page until the conversation has a user turn.
+    // The Muse chat stays at `https://muse.ai/`.
+    if (!isConversationThread(this.config.provider, message.threadId)
+      && !this.threadHasUser(this.config.provider, message.threadId)) return false;
     if (this.state.processed.includes(message.id)) return false;
     return message.ts > this.state.watermark;
   }

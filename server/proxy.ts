@@ -113,6 +113,8 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
     stateDir: dataDir,
     enqueue: (provider, text) => { enqueueOutbox(provider, text.slice(0, 4000)); },
     knownThreads: history.threads(relayConfig.provider),
+    threadHasUser: (provider, threadId) => history.hasUserMessage(provider, threadId)
+      || (provider === 'muse' && history.hasMessagePrefix(provider, threadId, 'You:')),
   });
   async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
     let body = '';

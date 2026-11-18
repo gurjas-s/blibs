@@ -10,7 +10,7 @@ import { afterEach, test } from 'node:test';
 import { createProxyServer } from '../server/proxy.ts';
 import { HistoryStore } from '../server/history.ts';
 import { harnessEnv, splitCommand } from '../server/harness.ts';
-import { isConversationThread, relayConfigFromEnv } from '../server/relay.ts';
+import { isConversationThread, isProviderThread, relayConfigFromEnv } from '../server/relay.ts';
 
 process.env.BLIBS_RELAY = '0';
 
@@ -185,9 +185,34 @@ test('a user message does not start a run', async () => {
 test('a landing-page scrape does not start a run', async () => {
   const server = await startRelay();
   await importItems(server, [museMessage({ text: 'How We Built Safety Into Muse', url: 'https://muse.ai/', sourceId: 'landing-1' })]);
+  await sleep(300);
+  // The first batch is baseline. A later landing-page scrape has no user turn.
+  await importItems(server, [museMessage({ text: 'How We Designed Muse', url: 'https://muse.ai/', sourceId: 'landing-2' })]);
   await sleep(400);
   assert.equal(readRuns(server).length, 0);
   assert.equal((await outboxOf(server)).items.length, 0);
+});
+
+test('a root-path conversation with a user turn can relay', async () => {
+  const server = await startRelay();
+  const url = 'https://muse.ai/';
+  const echoTs = Date.now() + 5000;
+  // Muse reports the user turn with role agent and a "You:" label.
+  await importItems(server, [museMessage({ role: 'agent', text: 'You:\n\nWhat is on my plate today?', url, sourceId: 'user-echo', ts: echoTs })]);
+  await sleep(300);
+  assert.equal(readRuns(server).length, 0, 'the user turn does not start a run');
+  await importItems(server, [
+    museMessage({ role: 'agent', text: '9:57 PM', url, sourceId: 'time-label', ts: echoTs + 1000 }),
+    museMessage({ text: 'You have two errands.', url, sourceId: 'assistant-msg-reply', ts: echoTs + 1000 }),
+  ]);
+  await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
+  assert.equal(readRuns(server).length, 1);
+  assert.match(readRuns(server)[0].prompt, /You have two errands\./);
+
+  // The reply typed back into Muse is also a "You:" echo. It must not run.
+  await importItems(server, [museMessage({ role: 'agent', text: 'You:\n\nharness reply', url, sourceId: 'reply-echo', ts: echoTs + 2000 })]);
+  await sleep(400);
+  assert.equal(readRuns(server).length, 1);
 });
 
 test('the first import of a conversation is baseline, not a trigger', async () => {
@@ -361,6 +386,8 @@ test('the harness command parser and environment filter are bounded', () => {
   assert.equal(config.cwd, path.resolve('/tmp/blibs-data', 'harness'));
   assert.equal(relayConfigFromEnv({}, '/tmp/blibs-data').enabled, false);
   assert.equal(isConversationThread('muse', 'https://muse.ai/'), false);
+  assert.equal(isProviderThread('muse', 'https://muse.ai/'), true);
+  assert.equal(isProviderThread('muse', 'https://example.com/'), false);
   assert.equal(isConversationThread('muse', 'https://muse.ai/chat/abc'), true);
   assert.equal(isConversationThread('muse', 'https://example.com/chat/abc'), false);
   assert.equal(isConversationThread('custom', 'unknown-thread'), true);
