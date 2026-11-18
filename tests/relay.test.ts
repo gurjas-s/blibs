@@ -1,21 +1,23 @@
 // Relay tests use a fake harness, temporary stores, and mocked rows.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import { createProxyServer } from '../server/proxy.ts';
 import { HistoryStore } from '../server/history.ts';
 import { splitCommand } from '../server/harness/opencode.ts';
-import { buildRelayConfig, isConversationThread, isProviderThread } from '../server/relay.ts';
+import { buildRelayConfig, isConversationThread, isProviderThread, newSessionId } from '../server/relay.ts';
+import { extractMentionTask, sanitizeReply } from '../server/harness/mention.ts';
 
 const FAKE_HARNESS = `import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const dir = path.dirname(fileURLToPath(import.meta.url));
-const prompt = process.argv.at(-1) || '';
-fs.appendFileSync(path.join(dir, 'runs.jsonl'), JSON.stringify({ pid: process.pid, prompt }) + '\\n');
+const args = process.argv.slice(2);
+const prompt = args.at(-1) || '';
+fs.appendFileSync(path.join(dir, 'runs.jsonl'), JSON.stringify({ pid: process.pid, prompt, args, cwd: process.cwd(), pwd: process.env.PWD || '' }) + '\\n');
 if (prompt.includes('FAIL_HARNESS')) {
   console.error('fake harness failed');
   process.exit(3);
@@ -43,6 +45,7 @@ interface RelayStatus {
   running: boolean;
   processed: number;
   watermark: number;
+  sessions: number;
   lastRun: { state: string; startedAt: number; endedAt?: number; error?: string } | null;
 }
 
@@ -84,23 +87,28 @@ async function startRelay(options: { dataDir?: string; timeoutMs?: number; remov
   return { base, dataDir, harnessDir, close };
 }
 
-function readRuns(server: RelayServer): Array<{ pid: number; prompt: string }> {
+function readRuns(server: RelayServer): Array<{ pid: number; prompt: string; args: string[]; cwd: string; pwd: string }> {
   try {
     return readFileSync(path.join(server.harnessDir, 'runs.jsonl'), 'utf8')
       .split('\n')
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { pid: number; prompt: string });
+      .map((line) => JSON.parse(line) as { pid: number; prompt: string; args: string[]; cwd: string; pwd: string });
   } catch {
     return [];
   }
+}
+
+function sessionOf(run: { args: string[] }): string | undefined {
+  const index = run.args.indexOf('--session');
+  return index === -1 ? undefined : run.args[index + 1];
 }
 
 async function statusOf(server: RelayServer): Promise<RelayStatus> {
   return fetch(`${server.base}/api/relay`).then((response) => response.json() as Promise<RelayStatus>);
 }
 
-async function outboxOf(server: RelayServer): Promise<{ items: Array<{ provider: string; text: string; status: string }> }> {
-  return fetch(`${server.base}/api/outbox`).then((response) => response.json() as Promise<{ items: Array<{ provider: string; text: string; status: string }> }>);
+async function outboxOf(server: RelayServer): Promise<{ items: Array<{ provider: string; text: string; status: string; threadId?: string }> }> {
+  return fetch(`${server.base}/api/outbox`).then((response) => response.json() as Promise<{ items: Array<{ provider: string; text: string; status: string; threadId?: string }> }>);
 }
 
 async function importItems(server: RelayServer, items: unknown[]): Promise<{ added: number; updated: number }> {
@@ -126,7 +134,7 @@ function museMessage(overrides: Record<string, unknown> = {}): Record<string, un
   return {
     provider: 'muse',
     role: 'agent',
-    text: 'Summarize the release notes.',
+    text: '@opencode Summarize the release notes.',
     ts: Date.now() + 5000,
     url: 'https://muse.ai/chat/relay-test',
     sourceId: `relay-${Math.random().toString(36).slice(2)}`,
@@ -135,10 +143,10 @@ function museMessage(overrides: Record<string, unknown> = {}): Record<string, un
   };
 }
 
-test('a new Muse agent message starts one run and queues one Muse outbox item', async () => {
+test('a user @opencode message starts one run and queues one Muse outbox item', async () => {
   const server = await startRelay();
   const ts = Date.now() + 5000;
-  const report = await importItems(server, [museMessage({ text: 'Summarize the release notes.', ts, sourceId: 'agent-1' })]);
+  const report = await importItems(server, [museMessage({ role: 'user', text: '@opencode Summarize the release notes.', ts, sourceId: 'user-1' })]);
   assert.equal(report.added, 1);
 
   const status = await waitFor(async () => {
@@ -155,17 +163,40 @@ test('a new Muse agent message starts one run and queues one Muse outbox item', 
   const runs = readRuns(server);
   assert.equal(runs.length, 1);
   assert.match(runs[0].prompt, /Summarize the release notes\./);
+  assert.ok(!runs[0].prompt.includes('@opencode'), 'the harness prompt has no mention token');
+  assert.ok(sessionOf(runs[0]), 'the run carries a session id');
+  assert.equal(runs[0].cwd, realpathSync(server.harnessDir), 'the harness runs in its own directory');
+  assert.equal(runs[0].pwd, server.harnessDir, 'the harness PWD matches its directory');
 
   const outbox = await outboxOf(server);
   assert.equal(outbox.items.length, 1);
   assert.equal(outbox.items[0].provider, 'muse');
   assert.equal(outbox.items[0].text, 'harness reply: Summarize the release notes.');
+  assert.equal(outbox.items[0].threadId, 'https://muse.ai/chat/relay-test');
 
   const blocked = await fetch(`${server.base}/api/relay`, { headers: { Origin: 'https://untrusted.example' } });
   assert.equal(blocked.status, 403);
 });
 
-test('a user message does not start a run', async () => {
+test('a Muse @opencode delegation starts a run', async () => {
+  const server = await startRelay();
+  await importItems(server, [museMessage({ text: '@opencode Fix the build.', ts: Date.now() + 5000, sourceId: 'agent-delegate' })]);
+  await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
+  const runs = readRuns(server);
+  assert.equal(runs.length, 1);
+  assert.match(runs[0].prompt, /Fix the build\./);
+});
+
+test('a message without a mention does not start a run', async () => {
+  const server = await startRelay();
+  await importItems(server, [museMessage({ text: 'Summarize the release notes with no mention.', ts: Date.now() + 5000, sourceId: 'agent-plain' })]);
+  await sleep(400);
+  assert.equal(readRuns(server).length, 0);
+  assert.equal((await outboxOf(server)).items.length, 0);
+  assert.equal((await statusOf(server)).lastRun, null);
+});
+
+test('a user message without a mention does not start a run', async () => {
   const server = await startRelay();
   await importItems(server, [museMessage({ role: 'user', text: 'Please send this to the agent.', sourceId: 'user-1' })]);
   await sleep(400);
@@ -192,14 +223,14 @@ test('a root-path conversation with a user turn can relay', async () => {
   // Muse reports the user turn with role agent and a "You:" label.
   await importItems(server, [museMessage({ role: 'agent', text: 'You:\n\nWhat is on my plate today?', url, sourceId: 'user-echo', ts: echoTs })]);
   await sleep(300);
-  assert.equal(readRuns(server).length, 0, 'the user turn does not start a run');
+  assert.equal(readRuns(server).length, 0, 'the user turn without a mention does not start a run');
   await importItems(server, [
     museMessage({ role: 'agent', text: '9:57 PM', url, sourceId: 'time-label', ts: echoTs + 1000 }),
-    museMessage({ text: 'You have two errands.', url, sourceId: 'assistant-msg-reply', ts: echoTs + 1000 }),
+    museMessage({ text: 'You:\n\n@opencode What is on my plate today?', url, sourceId: 'user-mention', ts: echoTs + 1000 }),
   ]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   assert.equal(readRuns(server).length, 1);
-  assert.match(readRuns(server)[0].prompt, /You have two errands\./);
+  assert.match(readRuns(server)[0].prompt, /What is on my plate today\?/);
 
   // The reply typed back into Muse is also a "You:" echo. It must not run.
   await importItems(server, [museMessage({ role: 'agent', text: 'You:\n\nharness reply', url, sourceId: 'reply-echo', ts: echoTs + 2000 })]);
@@ -207,18 +238,45 @@ test('a root-path conversation with a user turn can relay', async () => {
   assert.equal(readRuns(server).length, 1);
 });
 
+test('each Muse chat keeps its own harness session', async () => {
+  const server = await startRelay();
+  const urlA = 'https://muse.ai/chat/thread-a';
+  const urlB = 'https://muse.ai/chat/thread-b';
+  await importItems(server, [
+    museMessage({ text: 'Baseline A.', url: urlA, sourceId: 'baseline-a', ts: Date.now() + 5000 }),
+    museMessage({ text: 'Baseline B.', url: urlB, sourceId: 'baseline-b', ts: Date.now() + 5000 }),
+  ]);
+  await sleep(300);
+  assert.equal(readRuns(server).length, 0);
+
+  await importItems(server, [museMessage({ role: 'user', text: '@opencode Task for A.', url: urlA, sourceId: 'a-1', ts: Date.now() + 5100 })]);
+  await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
+  await importItems(server, [museMessage({ role: 'user', text: '@opencode Task for B.', url: urlB, sourceId: 'b-1', ts: Date.now() + 5200 })]);
+  await waitFor(async () => (readRuns(server).length >= 2 ? true : undefined));
+  await importItems(server, [museMessage({ role: 'user', text: '@opencode Second task for A.', url: urlA, sourceId: 'a-2', ts: Date.now() + 5300 })]);
+  await waitFor(async () => (readRuns(server).length >= 3 ? true : undefined));
+
+  const runs = readRuns(server);
+  assert.equal(runs.length, 3);
+  const sessionA = sessionOf(runs[0]);
+  const sessionB = sessionOf(runs[1]);
+  assert.ok(sessionA && sessionB && sessionA !== sessionB, 'threads get different sessions');
+  assert.equal(sessionOf(runs[2]), sessionA, 'the same thread reuses its session');
+  assert.equal((await statusOf(server)).sessions, 2);
+});
+
 test('the first import of a conversation is baseline, not a trigger', async () => {
   const server = await startRelay();
   const url = 'https://muse.ai/chat/baseline-thread';
   await importItems(server, [
-    museMessage({ text: 'First agent line.', url, sourceId: 'baseline-1', ts: Date.now() + 5000 }),
-    museMessage({ text: 'Second agent line.', url, sourceId: 'baseline-2', ts: Date.now() + 5001 }),
+    museMessage({ text: '@opencode First agent line.', url, sourceId: 'baseline-1', ts: Date.now() + 5000 }),
+    museMessage({ text: '@opencode Second agent line.', url, sourceId: 'baseline-2', ts: Date.now() + 5001 }),
   ]);
   await sleep(400);
   assert.equal(readRuns(server).length, 0);
   assert.equal((await outboxOf(server)).items.length, 0);
 
-  await importItems(server, [museMessage({ text: 'Third agent line.', url, sourceId: 'baseline-3', ts: Date.now() + 5002 })]);
+  await importItems(server, [museMessage({ text: '@opencode Third agent line.', url, sourceId: 'baseline-3', ts: Date.now() + 5002 })]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   const runs = readRuns(server);
   assert.equal(runs.length, 1);
@@ -227,7 +285,7 @@ test('the first import of a conversation is baseline, not a trigger', async () =
 
 test('a duplicate import does not start a second run', async () => {
   const server = await startRelay();
-  const item = museMessage({ text: 'Run the duplicate check.', ts: Date.now() + 5000, sourceId: 'agent-dup' });
+  const item = museMessage({ text: '@opencode Run the duplicate check.', ts: Date.now() + 5000, sourceId: 'agent-dup' });
   assert.equal((await importItems(server, [item])).added, 1);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   assert.equal((await importItems(server, [item])).added, 0);
@@ -261,14 +319,14 @@ test('stored backlog and older messages do not start a run', async () => {
   await sleep(300);
   assert.equal(readRuns(server).length, 0);
 
-  await importItems(server, [museMessage({ text: 'Fresh message.', ts: Date.now() + 5000, sourceId: 'fresh-1' })]);
+  await importItems(server, [museMessage({ text: '@opencode Fresh message.', ts: Date.now() + 5000, sourceId: 'fresh-1' })]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   assert.equal(readRuns(server).length, 1);
 });
 
 test('a harness failure records an error and queues nothing', async () => {
   const server = await startRelay();
-  await importItems(server, [museMessage({ text: 'FAIL_HARNESS please break.', ts: Date.now() + 5000, sourceId: 'fail-1' })]);
+  await importItems(server, [museMessage({ text: '@opencode FAIL_HARNESS please break.', ts: Date.now() + 5000, sourceId: 'fail-1' })]);
   const status = await waitFor(async () => {
     const current = await statusOf(server);
     return current.lastRun?.state === 'error' ? current : undefined;
@@ -280,7 +338,7 @@ test('a harness failure records an error and queues nothing', async () => {
 
 test('a timeout kills the run and queues nothing', async () => {
   const server = await startRelay({ timeoutMs: 400 });
-  await importItems(server, [museMessage({ text: 'SLOW_HARNESS please wait.', ts: Date.now() + 5000, sourceId: 'slow-1' })]);
+  await importItems(server, [museMessage({ text: '@opencode SLOW_HARNESS please wait.', ts: Date.now() + 5000, sourceId: 'slow-1' })]);
   const status = await waitFor(async () => {
     const current = await statusOf(server);
     return current.lastRun?.state === 'error' ? current : undefined;
@@ -298,7 +356,7 @@ test('a timeout kills the run and queues nothing', async () => {
 test('a restart does not replay the previous message', async () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-restart-'));
   const first = await startRelay({ dataDir, removeDataOnClose: false });
-  const item = museMessage({ text: 'Run this one time.', ts: Date.now() + 5000, sourceId: 'restart-1' });
+  const item = museMessage({ text: '@opencode Run this one time.', ts: Date.now() + 5000, sourceId: 'restart-1' });
   await importItems(first, [item]);
   await waitFor(async () => (await statusOf(first)).lastRun?.state === 'ok' ? true : undefined);
   assert.equal(readRuns(first).length, 1);
@@ -313,6 +371,18 @@ test('a restart does not replay the previous message', async () => {
   await sleep(300);
   assert.equal(readRuns(server).length, 0);
   assert.equal((await outboxOf(server)).items.length, queued, 'the restart does not queue a second reply');
+});
+
+test('the mention parser strips the token and the reply never retriggers', () => {
+  assert.equal(extractMentionTask('@opencode Build the settings page.'), 'Build the settings page.');
+  assert.equal(extractMentionTask('Hey @opencode fix the build please'), 'Hey  fix the build please');
+  assert.equal(extractMentionTask('You:\n\n@opencode What is on my plate?'), 'What is on my plate?');
+  assert.equal(extractMentionTask('@OPENCODE uppercase works.'), 'uppercase works.');
+  assert.equal(extractMentionTask('No mention here.'), null);
+  assert.equal(extractMentionTask('@opencode'), null);
+  assert.equal(extractMentionTask('@opencode!'), null);
+  assert.equal(sanitizeReply('done via @opencode run'), 'done via opencode run');
+  assert.match(newSessionId(), /^ses_[A-Za-z0-9]{24}$/);
 });
 
 test('the harness command parser and relay defaults are bounded', () => {
