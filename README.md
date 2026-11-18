@@ -60,18 +60,6 @@ lists the steps, gives the connect link, and offers **Check connection** and
 connected. Select **Connections** in the sidebar to change the harnesses or the
 folder later.
 
-> **If npm blocks Electron's install script:** approve it, then reinstall:
->
-> ```bash
-> npm install-scripts approve electron
-> npm ci
-> ```
->
-> Some Node.js and npm versions can leave `node_modules/electron/dist/`
-> with only `LICENSES.chromium.html`. Check that `node -v` prints `v24.…` and
-> that `node_modules/electron/path.txt` exists; delete `node_modules` and run
-> `npm ci` again if it does not.
-
 Chats flow in automatically: the app pushes seconds after chat content changes
 (plus a 1-minute backup sweep), and the panel auto-pulls every 15s by default.
 The Auto-sync toggle and interval are in Settings.
@@ -96,9 +84,8 @@ The agent's reply syncs back on its own.
 | `npm run clean` | Wipe `build/` + `dist/` |
 | `npm run verify:clean-build` | Delete generated output, rebuild with the existing incremental cache, and check that all required output was regenerated |
 
-CI runs on Linux and Windows for every push and pull request. To block merging
-when checks fail, a repository admin must require both **Build, lint, and test**
-checks in the default branch's protection rules. See `AGENTS.md` for contribution guidance.
+CI runs the build, lint, and test checks on Linux and Windows for every push
+and pull request.
 
 ## App icon and packaging
 
@@ -130,68 +117,16 @@ installer, add a packager and then:
 
 ## End-to-end tests
 
-`npm run e2e` builds the app and runs a smoke spec in the real Electron app. The
-harness starts Electron with `--remote-debugging-port` on a free port. It
-connects `playwright-core` over the Chrome DevTools Protocol (CDP). It uses the
-Chromium engine inside Electron, so it does not download a browser.
+`npm run e2e` builds the app and runs the smoke spec in `tests/e2e/` against the
+real Electron app. It starts Electron with a remote debugging port and drives it
+over the Chrome DevTools Protocol through `playwright-core`, so it downloads no
+browser. The app runs with a temporary profile, free ports, mock chats, and
+`BLIBS_MOCK_LOGIN=1`, so it needs no vendor account. It writes light and dark
+screenshots to `tests/e2e/artifacts/`, which Git ignores.
 
-The harness starts the app with a temporary profile and history directory. It
-uses free ports for the panel and the backend. It needs no vendor login.
-
-The smoke spec verifies these items:
-
-- The panel window loads.
-- The backend answers `/api/health` through the panel proxy and directly.
-- The panel reports a successful import pull.
-- The sidebar shows a selected chat and the narrow layout collapses.
-- The connected chat shows a harness action card and the context column.
-- The context column becomes an overlay at 1024 pixels and stays reachable.
-- Settings holds the Auto-sync toggle and interval, and the sidebar footer
-  keeps only the Agents entry.
-- The topbar search runs one global search, a provider tag limits it, and
-  Settings holds the index controls and the theme.
-- The message thread shows roles, timestamps, and wrapped long text.
-- The theme control follows the system preference and saves the choice.
-- The layout has no horizontal scroll at 1024 and 1440 pixels.
-- The first-run connections screen shows the harness matrix, changes the shared
-  folder, starts the chat, and stays complete after a reload.
-- An unconnected assistant shows the inline setup card and a disabled composer.
-- The agents screen is the in-app sign-in entry point.
-- A mocked sign-in shows progress, a mobile verification step, and Cancel.
-- Escape and Back return to the home screen after a mocked sign-in.
-
-The spec writes light and dark screenshots to
-`tests/e2e/artifacts/panel-dark.png` and
-`tests/e2e/artifacts/panel-light.png`. It also writes the connections screen, the
-connected chat, the setup chat, and the sign-in screenshots. The repository
-ignores this directory. The screenshots use mock chats, mock connection state,
-and mocked sign-in steps, not a vendor login.
-
-The reusable module is `tests/e2e/harness.ts`. It exports `launch`,
-`waitForPanel`, `screenshot`, `selectAgent`, `selectTheme`, `setTheme`,
-`seedChats`, `resetOnboarding`, `completeOnboarding`, `seedConnections`,
-`mockConnections`, and `CONNECTIONS_STORAGE_KEY`. `seedConnections` writes mock
-connection state, so a test can select a connected or unconnected assistant. The
-harness starts the app with `BLIBS_MOCK_LOGIN=1`, so a sign-in attempt uses fixed
-mock steps. Add a new spec in `tests/e2e/` to test another feature.
-
-The check needs a display. macOS and Windows use the desktop session. On Linux
-without `DISPLAY` or `WAYLAND_DISPLAY`, the spec skips with a clear message. Use
-`xvfb-run -a npm run e2e` on a headless Linux machine. `npm test` does not run
-the e2e check.
-
-## Contributing
-
-Read `AGENTS.md` before you change code. The repository skills in
-`.agents/skills/` hold the repeatable steps:
-
-- `onboarding` — set up a fresh checkout and start the app.
-- `design` — add UI with the component layer and design tokens.
-- `validate` — run the build, lint, unit tests, one manual test, and add a
-  screenshot when the change is visible.
-
-Write PR titles, PR descriptions, review comments, and user-facing docs in
-English. Use ASD-STE100 Simplified Technical English.
+The check needs a display. On Linux without `DISPLAY` or `WAYLAND_DISPLAY`, the
+spec skips with a message; use `xvfb-run -a npm run e2e` on a headless machine.
+`npm test` does not run the e2e check.
 
 ## Repo layout
 
@@ -298,7 +233,7 @@ declares for reference.
 |---|---|
 | `Cannot find module '…/build/main/index.js'` on `npm start` | You skipped the build — run `npm run build` first (`build/` is generated) |
 | `exports is not defined in ES module scope` | CJS markers missing — re-run `npm run build` |
-| `Electron failed to install correctly` | Use Node.js 24.x, approve Electron's install script if npm asks, then run `npm ci` (see First run) |
+| `Electron failed to install correctly` | Use Node.js 24.x. If npm blocked the install script, run `npm install-scripts approve electron`, then `npm ci` again |
 | Weird behavior right after `npm start` | Make sure `ELECTRON_RUN_AS_NODE` is **not** exported in your shell (`unset` it and remove it from `~/.zshrc` — it makes Electron act as plain Node) |
 | Blibs: `Backend unreachable` pill | Backend didn't boot with the app — restart; check the terminal for `[blibs] proxy exited` |
 | `EADDRINUSE` on `:5174`/`:8787` in `npm test` | A previous app instance is still running — quit it first |

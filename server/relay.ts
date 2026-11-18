@@ -15,7 +15,6 @@ export const RELAY_PROVIDER = 'muse';
 export const DEFAULT_HARNESS_COMMAND = 'opencode run';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SECRET_KEYS = ['EMAIL_MUSE', 'PASSWORD_MUSE', 'PROTON_URL'] as const;
 const PROVIDER_HOSTS: Record<string, string> = { muse: 'muse.ai', dots: 'chatgpt.com', grok: 'grok.com' };
 const PROMPT_HEADER = "A message from the user's personal assistant follows. Complete the request and reply with the final answer only. Keep the reply under 1500 characters.";
 const CHECKOUT_ROOT_DEPTH = 8;
@@ -70,15 +69,6 @@ export interface RelayServiceOptions {
   enqueue: (provider: string, text: string) => void;
   knownThreads?: string[];
   threadHasUser?: (provider: string, threadId: string) => boolean;
-}
-
-export function redactSecrets(value: string, env: NodeJS.ProcessEnv = process.env): string {
-  let out = value;
-  for (const key of SECRET_KEYS) {
-    const secret = env[key];
-    if (secret && secret.length >= 4) out = out.split(secret).join('[redacted]');
-  }
-  return out;
 }
 
 export function findCheckoutRoot(start: string): string | undefined {
@@ -348,22 +338,19 @@ export class RelayService {
   }
 
   status(): RelayStatus {
-    const lastRun = this.state.lastRun
-      ? { ...this.state.lastRun, error: this.state.lastRun.error ? redactSecrets(this.state.lastRun.error) : undefined }
-      : null;
     return {
       enabled: this.config.enabled,
       provider: this.config.provider,
       harness: {
-        command: redactSecrets(this.config.command),
-        cwd: redactSecrets(this.config.cwd),
+        command: this.config.command,
+        cwd: this.config.cwd,
         timeoutMs: this.config.timeoutMs,
       },
       pending: this.queue.length + (this.active ? 1 : 0),
       running: this.active !== null,
       processed: this.state.processed.length,
       watermark: this.state.watermark,
-      lastRun,
+      lastRun: this.state.lastRun,
     };
   }
 

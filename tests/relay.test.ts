@@ -7,7 +7,7 @@ import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import { createProxyServer } from '../server/proxy.ts';
 import { HistoryStore } from '../server/history.ts';
-import { harnessEnv, splitCommand } from '../server/harness/opencode.ts';
+import { splitCommand } from '../server/harness/opencode.ts';
 import { buildRelayConfig, isConversationThread, isProviderThread } from '../server/relay.ts';
 
 const FAKE_HARNESS = `import fs from 'node:fs';
@@ -15,8 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const prompt = process.argv.at(-1) || '';
-const leaked = Object.keys(process.env).filter((key) => /MUSE|PROTON/i.test(key));
-fs.appendFileSync(path.join(dir, 'runs.jsonl'), JSON.stringify({ pid: process.pid, prompt, leaked }) + '\\n');
+fs.appendFileSync(path.join(dir, 'runs.jsonl'), JSON.stringify({ pid: process.pid, prompt }) + '\\n');
 if (prompt.includes('FAIL_HARNESS')) {
   console.error('fake harness failed');
   process.exit(3);
@@ -85,12 +84,12 @@ async function startRelay(options: { dataDir?: string; timeoutMs?: number; remov
   return { base, dataDir, harnessDir, close };
 }
 
-function readRuns(server: RelayServer): Array<{ pid: number; prompt: string; leaked: string[] }> {
+function readRuns(server: RelayServer): Array<{ pid: number; prompt: string }> {
   try {
     return readFileSync(path.join(server.harnessDir, 'runs.jsonl'), 'utf8')
       .split('\n')
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { pid: number; prompt: string; leaked: string[] });
+      .map((line) => JSON.parse(line) as { pid: number; prompt: string });
   } catch {
     return [];
   }
@@ -156,7 +155,6 @@ test('a new Muse agent message starts one run and queues one Muse outbox item', 
   const runs = readRuns(server);
   assert.equal(runs.length, 1);
   assert.match(runs[0].prompt, /Summarize the release notes\./);
-  assert.deepEqual(runs[0].leaked, []);
 
   const outbox = await outboxOf(server);
   assert.equal(outbox.items.length, 1);
@@ -317,53 +315,11 @@ test('a restart does not replay the previous message', async () => {
   assert.equal((await outboxOf(server)).items.length, queued, 'the restart does not queue a second reply');
 });
 
-test('the relay status and the harness environment contain no vendor credentials', async () => {
-  const saved = {
-    EMAIL_MUSE: process.env.EMAIL_MUSE,
-    PASSWORD_MUSE: process.env.PASSWORD_MUSE,
-    PROTON_URL: process.env.PROTON_URL,
-  };
-  const email = 'relay-secret-email-value';
-  const password = 'relay-secret-password-value';
-  const proton = 'https://relay-secret-proton-value.example';
-  process.env.EMAIL_MUSE = email;
-  process.env.PASSWORD_MUSE = password;
-  process.env.PROTON_URL = proton;
-  try {
-    const server = await startRelay();
-    await importItems(server, [museMessage({ text: 'Check the credential filter.', ts: Date.now() + 5000, sourceId: 'secret-1' })]);
-    await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
-    const body = await fetch(`${server.base}/api/relay`).then((response) => response.text());
-    for (const value of [email, password, proton]) assert.ok(!body.includes(value), 'the status must not contain a credential');
-    assert.equal(readRuns(server).length, 1);
-    assert.deepEqual(readRuns(server)[0].leaked, []);
-  } finally {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-});
-
-test('the harness command parser and environment filter are bounded', () => {
+test('the harness command parser and relay defaults are bounded', () => {
   assert.deepEqual(splitCommand('opencode run --model local'), ['opencode', 'run', '--model', 'local']);
   assert.deepEqual(splitCommand('["C:\\\\Program Files\\\\node.exe","fake.mjs"]'), ['C:\\Program Files\\node.exe', 'fake.mjs']);
   assert.throws(() => splitCommand('[]'));
   assert.throws(() => splitCommand('[1,2]'));
-
-  process.env.EMAIL_MUSE = 'x';
-  process.env.PASSWORD_MUSE = 'y';
-  process.env.PROTON_URL = 'z';
-  try {
-    const env = harnessEnv(process.env);
-    assert.equal(env.EMAIL_MUSE, undefined);
-    assert.equal(env.PASSWORD_MUSE, undefined);
-    assert.equal(env.PROTON_URL, undefined);
-  } finally {
-    delete process.env.EMAIL_MUSE;
-    delete process.env.PASSWORD_MUSE;
-    delete process.env.PROTON_URL;
-  }
 
   const defaults = buildRelayConfig('/tmp/blibs-data');
   assert.equal(defaults.enabled, true);

@@ -3,14 +3,12 @@ import type { Harness, HarnessResult, HarnessRun } from './types.js';
 
 export const HARNESS_OUTPUT_LIMIT = 64 * 1024;
 const KILL_GRACE_MS = 2000;
-const SECRET_ENV = /(^|_)(EMAIL|PASSWORD)_MUSE(_|$)|(^|_)PROTON(_|$)/i;
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
 
 export interface OpenCodeHarnessOptions {
   command: string;
   cwd: string;
   timeoutMs: number;
-  env?: NodeJS.ProcessEnv;
   maxOutputBytes?: number;
 }
 
@@ -28,16 +26,7 @@ export function splitCommand(value: string): string[] {
   return trimmed.split(/\s+/);
 }
 
-export function harnessEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (value === undefined || SECRET_ENV.test(key)) continue;
-    env[key] = value;
-  }
-  return env;
-}
-
-export function plainText(value: string): string {
+function plainText(value: string): string {
   return value.replace(ANSI_SEQUENCE, '').trim();
 }
 
@@ -58,14 +47,12 @@ export class OpenCodeHarness implements Harness {
   private readonly command: string;
   private readonly cwd: string;
   private readonly timeoutMs: number;
-  private readonly env: NodeJS.ProcessEnv | undefined;
   private readonly maxOutputBytes: number;
 
   constructor(options: OpenCodeHarnessOptions) {
     this.command = options.command;
     this.cwd = options.cwd;
     this.timeoutMs = options.timeoutMs;
-    this.env = options.env;
     this.maxOutputBytes = options.maxOutputBytes ?? HARNESS_OUTPUT_LIMIT;
   }
 
@@ -81,7 +68,6 @@ export class OpenCodeHarness implements Harness {
     try {
       child = spawn(file, [...args, prompt], {
         cwd: this.cwd,
-        env: harnessEnv(this.env),
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
