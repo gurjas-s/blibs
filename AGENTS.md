@@ -98,6 +98,7 @@ Keep `--force` in the TypeScript build command.
 
 - Use one branch and a focused commit for each issue. Explain the behavior and the validation in the PR.
 - Keep new logic typed. Test changes that affect delivery, storage, or session state.
+- Write a code comment only when the behavior is not clear from the code itself.
 - Use plain, task-oriented language. Follow the Google developer documentation style guide when project usage does not answer a writing question.
 - Use the repository skills in `.agents/skills/` for onboarding and validation.
 - Keep the flat slate theme with one accent color.

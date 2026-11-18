@@ -7,13 +7,13 @@
 // How it works:
 // - Spawns server/proxy (import store + outbox) as a child process.
 // - Serves the built panel (dist/) over HTTP, forwarding /api/* to the proxy.
-// - Keeps one hidden BrowserView per vendor (persisted partitions, so login
+// - Keeps one hidden vendor window per vendor (persisted partitions, so login
 //   survives restarts) that scrapes chats and delivers outbox sends.
 // - The panel's agents screen and Menu > Agents open a sign-in window per
 //   vendor (shared partition, so the hidden view picks up the session).
 //
 // Run: npm install && npm run build && npm start
-import { app, BrowserWindow, BrowserView, Menu, ipcMain, nativeImage } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, nativeImage } from 'electron';
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
@@ -106,8 +106,8 @@ let proxyChild: ChildProcess | null = null;
 let proxySetupError = '';
 let staticServer: http.Server | null = null;
 let mainWin: BrowserWindow | null = null;
-/** provider id -> BrowserView (hidden but alive) */
-export const _views = new Map<string, BrowserView>();
+/** provider id -> hidden BrowserWindow (alive, real layout viewport) */
+export const _views = new Map<string, BrowserWindow>();
 /** reqId -> resolve (main -> preload request/response) */
 export const _pending = new Map<string, (result: CollectResult | SendResult) => void>();
 let reqSeq = 0;
@@ -276,23 +276,34 @@ export function createMainWindow(): BrowserWindow {
     return { action: 'deny' };
   });
   mainWin.on('closed', () => {
+    closeVendorViews();
     mainWin = null;
   });
   return mainWin;
 }
 
 function attachVendorViews(): void {
-  if (!mainWin) return;
+  // A hidden window keeps a real viewport, so the outbox send can find the composer.
   for (const v of VENDORS) {
     if (_views.has(v.id)) continue;
-    const view = new BrowserView({
-      webPreferences: { preload: PRELOAD, partition: v.partition },
+    const view = new BrowserWindow({
+      show: false,
+      width: 1280,
+      height: 860,
+      webPreferences: { preload: PRELOAD, partition: v.partition, backgroundThrottling: false },
     });
-    mainWin.addBrowserView(view);
-    view.setBounds({ x: 0, y: 0, width: 0, height: 0 }); // hidden but alive
-    void view.webContents.loadURL(v.url);
+    void view.loadURL(v.url);
     _views.set(v.id, view);
   }
+}
+
+function closeVendorViews(): void {
+  for (const view of _views.values()) {
+    const candidate = view as unknown as { isDestroyed?: () => boolean; destroy?: () => void };
+    if (typeof candidate.isDestroyed === 'function' && candidate.isDestroyed()) continue;
+    candidate.destroy?.();
+  }
+  _views.clear();
 }
 
 /** Visible sign-in window sharing the hidden view's partition (same cookies). */
@@ -559,6 +570,7 @@ if (!process.env.BLIBS_NO_AUTOSTART) {
 // Exported for the headless test harness (BLIBS_NO_AUTOSTART=1).
 export async function shutdown(): Promise<void> {
   closeLoginWindows();
+  closeVendorViews();
   const pending: Promise<void>[] = [];
   if (proxyChild) {
     const child = proxyChild;
