@@ -4,19 +4,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HistoryMessage } from './history.js';
 import type { Harness, HarnessRun } from './harness/types.js';
+import { extractMentionTask, sanitizeReply } from './harness/mention.js';
 
 export const RELAY_QUEUE_LIMIT = 20;
 export const RELAY_PROCESSED_LIMIT = 500;
 export const RELAY_THREAD_LIMIT = 500;
-export const RELAY_PROMPT_LIMIT = 2000;
-export const RELAY_REPLY_LIMIT = 4000;
 export const DEFAULT_RELAY_TIMEOUT_MS = 120_000;
 export const RELAY_PROVIDER = 'muse';
 export const DEFAULT_HARNESS_COMMAND = 'opencode run';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROVIDER_HOSTS: Record<string, string> = { muse: 'muse.ai', dots: 'chatgpt.com', grok: 'grok.com' };
-const PROMPT_HEADER = "A message from the user's personal assistant follows. Complete the request and reply with the final answer only. Keep the reply under 1500 characters.";
 const CHECKOUT_ROOT_DEPTH = 8;
 const ERROR_TEXT_LIMIT = 300;
 
@@ -44,13 +42,16 @@ export interface RelayStatus {
   running: boolean;
   processed: number;
   watermark: number;
+  sessions: number;
   lastRun: RelayRunState | null;
 }
 
 interface RelayItem {
   id: string;
   provider: string;
+  threadId: string;
   task: string;
+  sessionId: string;
 }
 
 interface RelayState {
@@ -58,6 +59,7 @@ interface RelayState {
   watermark: number;
   processed: string[];
   threads: string[];
+  sessions: Record<string, string>;
   runs: number;
   lastRun: RelayRunState | null;
 }
@@ -66,7 +68,7 @@ export interface RelayServiceOptions {
   config: RelayConfig;
   harness: Harness;
   stateDir: string;
-  enqueue: (provider: string, text: string) => void;
+  enqueue: (provider: string, text: string, threadId?: string) => void;
   knownThreads?: string[];
   threadHasUser?: (provider: string, threadId: string) => boolean;
 }
@@ -108,9 +110,11 @@ export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig
   return { ...config, cwd: safeHarnessCwd(path.resolve(config.cwd), dataDir) };
 }
 
-// Muse reports the user turn with role agent and a "You:" label.
-export function isUserEcho(text: string): boolean {
-  return text.trimStart().startsWith('You:');
+export function newSessionId(): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let suffix = '';
+  for (let i = 0; i < 24; i++) suffix += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return `ses_${suffix}`;
 }
 
 export function isTimeLabel(text: string): boolean {
@@ -118,7 +122,7 @@ export function isTimeLabel(text: string): boolean {
 }
 
 export function buildPrompt(task: string): string {
-  return `${PROMPT_HEADER}\n\n${task.trim().slice(0, RELAY_PROMPT_LIMIT)}`;
+  return task.trim();
 }
 
 // A signed-out vendor page scrapes marketing text, so its root is not a chat.
@@ -149,7 +153,7 @@ export class RelayService {
   private readonly stateDir: string;
   private readonly stateFile: string;
   private readonly harness: Harness;
-  private readonly enqueueReply: (provider: string, text: string) => void;
+  private readonly enqueueReply: (provider: string, text: string, threadId?: string) => void;
   private readonly threadHasUser: (provider: string, threadId: string) => boolean;
   private readonly state: RelayState;
   private readonly knownThreads: Set<string>;
@@ -170,7 +174,7 @@ export class RelayService {
     const loaded = this.loadState();
     this.state = loaded
       ? loaded
-      : { version: 1, watermark: Date.now(), processed: [], threads: [], runs: 0, lastRun: null };
+      : { version: 1, watermark: Date.now(), processed: [], threads: [], sessions: {}, runs: 0, lastRun: null };
     this.knownThreads = new Set([...(options.knownThreads ?? []), ...this.state.threads].slice(-RELAY_THREAD_LIMIT));
     this.state.threads = [...this.knownThreads];
     if (this.state.lastRun?.state === 'running') {
@@ -198,7 +202,13 @@ export class RelayService {
         ? raw.threads.filter((id): id is string => typeof id === 'string').slice(-RELAY_THREAD_LIMIT)
         : [];
       const runs = typeof raw.runs === 'number' && raw.runs >= 0 ? raw.runs : 0;
-      return { version: 1, watermark, processed, threads, runs, lastRun: this.readLastRun(raw.lastRun) };
+      const sessions: Record<string, string> = {};
+      if (raw.sessions && typeof raw.sessions === 'object') {
+        for (const [key, value] of Object.entries(raw.sessions as Record<string, unknown>)) {
+          if (typeof value === 'string' && value) sessions[key.slice(0, 500)] = value.slice(0, 100);
+        }
+      }
+      return { version: 1, watermark, processed, threads, sessions, runs, lastRun: this.readLastRun(raw.lastRun) };
     } catch {
       return null;
     }
@@ -229,14 +239,15 @@ export class RelayService {
 
   private accepts(message: HistoryMessage): boolean {
     if (!this.config.enabled || this.closed) return false;
-    if (message.role !== 'agent') return false;
+    if (message.role !== 'agent' && message.role !== 'user') return false;
     if (message.provider.toLowerCase() !== this.config.provider) return false;
-    if (isUserEcho(message.text) || isTimeLabel(message.text)) return false;
+    if (isTimeLabel(message.text)) return false;
     if (!isProviderThread(this.config.provider, message.threadId)) return false;
     // A root path is the landing page until the conversation has a user turn.
     if (!isConversationThread(this.config.provider, message.threadId)
       && !this.threadHasUser(this.config.provider, message.threadId)) return false;
     if (this.state.processed.includes(message.id)) return false;
+    if (extractMentionTask(message.text) === null) return false;
     return message.ts > this.state.watermark;
   }
 
@@ -249,8 +260,22 @@ export class RelayService {
   private rememberThread(threadId: string): void {
     this.knownThreads.add(threadId);
     const threads = [...this.knownThreads];
-    if (threads.length > RELAY_THREAD_LIMIT) this.knownThreads.delete(threads[0]);
+    if (threads.length > RELAY_THREAD_LIMIT) {
+      const oldest = threads[0];
+      this.knownThreads.delete(oldest);
+      delete this.state.sessions[oldest];
+    }
     this.state.threads = [...this.knownThreads].slice(-RELAY_THREAD_LIMIT);
+  }
+
+  private sessionFor(threadId: string): string {
+    const existing = this.state.sessions[threadId];
+    if (existing) return existing;
+    const created = newSessionId();
+    this.state.sessions[threadId] = created;
+    const keys = Object.keys(this.state.sessions);
+    if (keys.length > RELAY_THREAD_LIMIT) delete this.state.sessions[keys[0]];
+    return created;
   }
 
   // The first batch of a conversation is baseline: a sign-in sync is not work.
@@ -272,8 +297,14 @@ export class RelayService {
         changed = true;
         continue;
       }
+      const seenTasks = new Set<string>();
       for (const message of rows) {
         if (!this.accepts(message)) continue;
+        const task = extractMentionTask(message.text);
+        if (task === null) continue;
+        const taskKey = `${threadId}\n${task}`;
+        if (seenTasks.has(taskKey)) continue;
+        seenTasks.add(taskKey);
         this.remember(message);
         changed = true;
         if (this.queue.length >= RELAY_QUEUE_LIMIT) {
@@ -281,7 +312,7 @@ export class RelayService {
           this.state.lastRun = { state: 'skipped', messageId: message.id, startedAt: now, endedAt: now, error: 'relay queue is full; message dropped' };
           continue;
         }
-        this.queue.push({ id: message.id, provider: message.provider, task: message.text });
+        this.queue.push({ id: message.id, provider: message.provider, threadId: message.threadId, task, sessionId: this.sessionFor(message.threadId) });
         queued = true;
       }
     }
@@ -308,7 +339,7 @@ export class RelayService {
     const startedAt = Date.now();
     this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
     this.save();
-    const run = this.harness.start(buildPrompt(item.task));
+    const run = this.harness.start(buildPrompt(item.task), item.sessionId);
     this.active = run;
     let ok = false;
     let error: string | undefined;
@@ -317,7 +348,7 @@ export class RelayService {
       error = result.error;
       if (result.ok) {
         try {
-          this.enqueueReply(item.provider, result.reply.slice(0, RELAY_REPLY_LIMIT));
+          this.enqueueReply(item.provider, sanitizeReply(result.reply), item.threadId);
           ok = true;
         } catch {
           error = 'outbox write failed';
@@ -350,6 +381,7 @@ export class RelayService {
       running: this.active !== null,
       processed: this.state.processed.length,
       watermark: this.state.watermark,
+      sessions: Object.keys(this.state.sessions).length,
       lastRun: this.state.lastRun,
     };
   }

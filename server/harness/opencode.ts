@@ -30,6 +30,10 @@ function plainText(value: string): string {
   return value.replace(ANSI_SEQUENCE, '').trim();
 }
 
+function hasSessionFlag(args: string[]): boolean {
+  return args.some((arg) => arg === '--session' || arg === '-s' || arg === '--continue' || arg === '-c');
+}
+
 function killTree(child: ReturnType<typeof spawn>): void {
   if (child.exitCode !== null || child.signalCode !== null) return;
   try {
@@ -56,22 +60,28 @@ export class OpenCodeHarness implements Harness {
     this.maxOutputBytes = options.maxOutputBytes ?? HARNESS_OUTPUT_LIMIT;
   }
 
-  start(prompt: string): HarnessRun {
+  start(prompt: string, sessionId?: string): HarnessRun {
     const command = splitCommand(this.command);
     const maxOutput = this.maxOutputBytes;
     if (!command.length) {
       return { promise: Promise.resolve({ ok: false, reply: '', code: null, error: 'harness command is empty' }), kill() {} };
     }
     const [file, ...args] = command;
+    const finalArgs = [...args];
+    if (sessionId && !hasSessionFlag(finalArgs)) finalArgs.push('--session', sessionId);
+    finalArgs.push(prompt);
 
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(file, [...args, prompt], {
+      child = spawn(file, finalArgs, {
         cwd: this.cwd,
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         detached: process.platform !== 'win32',
+        // Node keeps the parent PWD in the child env. Tools that read $PWD
+        // for their location must see the harness directory, not ours.
+        env: { ...process.env, PWD: this.cwd },
       });
     } catch (error) {
       return { promise: Promise.resolve({ ok: false, reply: '', code: null, error: `harness could not start: ${(error as Error).message}` }), kill() {} };

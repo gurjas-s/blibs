@@ -12,5 +12,5 @@ export interface HarnessRun {
 
 export interface Harness {
   readonly id: string;
-  start(prompt: string): HarnessRun;
+  start(prompt: string, sessionId?: string): HarnessRun;
 }

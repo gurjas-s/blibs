@@ -49,6 +49,7 @@ interface OutboxItem {
   id: string;
   provider: string;
   text: string;
+  threadId?: string;
   ts: number;
   status: 'queued' | 'sent' | 'failed';
   attempts: number;
@@ -99,9 +100,10 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
   function newOutId(): string {
     return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   }
-  function enqueueOutbox(provider: string, text: string): OutboxItem {
+  function enqueueOutbox(provider: string, text: string, threadId?: string): OutboxItem {
     const store = loadOutbox();
     const item: OutboxItem = { id: newOutId(), provider, text, ts: Date.now(), status: 'queued', attempts: 0 };
+    if (threadId) item.threadId = threadId.slice(0, 500);
     store.push(item);
     saveOutbox(store);
     return item;
@@ -111,7 +113,7 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
     config: relayConfig,
     harness: new OpenCodeHarness(relayConfig),
     stateDir: dataDir,
-    enqueue: (provider, text) => { enqueueOutbox(provider, text); },
+    enqueue: (provider, text, threadId) => { enqueueOutbox(provider, text, threadId); },
     knownThreads: history.threads(relayConfig.provider),
     threadHasUser: (provider, threadId) => history.hasUserMessage(provider, threadId)
       || (provider === 'muse' && history.hasMessagePrefix(provider, threadId, 'You:')),
@@ -195,9 +197,10 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         let payload: Record<string, unknown>;
         try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
         const provider = String(payload?.provider || 'custom').toLowerCase();
-        const text = String(payload?.text || '').trim().slice(0, 4000);
+        const text = String(payload?.text || '').trim();
+        const threadId = typeof payload?.threadId === 'string' ? payload.threadId.slice(0, 500) : undefined;
         if (!text) return send(res, 400, { error: 'missing text' });
-        const item = enqueueOutbox(provider, text);
+        const item = enqueueOutbox(provider, text, threadId);
         return send(res, 200, { ok: true, id: item.id });
       }
 

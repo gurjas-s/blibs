@@ -138,6 +138,7 @@ interface OutboxItem {
   id: string;
   provider: string;
   text: string;
+  threadId?: string;
 }
 
 function proxyUrl(p: string): string {
@@ -467,12 +468,15 @@ export async function drainOutbox(reason: string): Promise<{ drained: number; er
   }
   let drained = 0;
   for (const item of pending.slice(0, 5)) {
-    if (!_views.has(String(item.provider || '').toLowerCase())) {
+    const provider = String(item.provider || '').toLowerCase();
+    const view = _views.get(provider);
+    if (!view) {
       await ackOutbox(item.id, false, `no view for provider "${item.provider}"`);
       continue;
     }
     try {
-      const r = (await askView(item.provider, 'blibs:send', { text: item.text })) as SendResult;
+      await ensureThread(view, provider, item.threadId);
+      const r = (await askView(provider, 'blibs:send', { text: item.text })) as SendResult;
       await ackOutbox(item.id, !!r?.ok, r?.ok ? undefined : r?.reason || 'view send failed');
       if (r?.ok) drained++;
     } catch (e) {
@@ -480,6 +484,37 @@ export async function drainOutbox(reason: string): Promise<{ drained: number; er
     }
   }
   return { drained };
+}
+
+// A reply belongs to one conversation. Move the hidden view to that thread
+// before sending, so the message lands in the chat that mentioned @opencode.
+async function ensureThread(view: BrowserWindow, provider: string, threadId?: string): Promise<void> {
+  if (!threadId) return;
+  let target: URL;
+  try {
+    target = new URL(threadId);
+  } catch {
+    return;
+  }
+  if (target.protocol !== 'https:') return;
+  const vendor = VENDORS.find((v) => v.id === provider);
+  if (!vendor) return;
+  let vendorHost: string;
+  try {
+    vendorHost = new URL(vendor.url).hostname;
+  } catch {
+    return;
+  }
+  if (target.hostname !== vendorHost) return;
+  let current: string;
+  try {
+    current = view.webContents.getURL();
+  } catch {
+    return;
+  }
+  if (current.split('#')[0] === threadId.split('#')[0]) return;
+  await view.loadURL(threadId);
+  await new Promise((resolve) => setTimeout(resolve, 2000));
 }
 
 async function ackOutbox(id: string, ok: boolean, error?: string): Promise<void> {
