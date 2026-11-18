@@ -78,7 +78,7 @@ export class HistoryStore {
       if (report.rejected) this.migrationWarning = `${report.rejected} invalid legacy rows skipped; original and backup preserved.`;
     } catch (error) { this.migrationWarning = `Legacy migration pending: ${String(error)}. Original JSON preserved; fix it and restart.`; }
   }
-  import(items: unknown[], legacy = false, onAdded?: (message: HistoryMessage) => void): { added: number; updated: number; rejected: number; total: number } {
+  import(items: unknown[], legacy = false, onAdded?: (messages: HistoryMessage[]) => void): { added: number; updated: number; rejected: number; total: number } {
     let added = 0, updated = 0, rejected = 0;
     const inserted: HistoryMessage[] = [];
     const occurrences = new Map<string, number>();
@@ -119,10 +119,15 @@ export class HistoryStore {
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     // Call after COMMIT: the relay must not act on a row that was rolled back.
-    for (const message of inserted) onAdded?.(message);
+    if (inserted.length) onAdded?.(inserted);
     return { added, updated, rejected, total: this.count() };
   }
   count(): number { return Number(this.db.prepare('SELECT count(*) AS n FROM messages').get()!.n); }
+  /** Threads that the store already knows. The relay uses them as baseline. */
+  threads(provider: string): string[] {
+    return (this.db.prepare('SELECT DISTINCT threadId FROM messages WHERE provider=? ORDER BY threadId LIMIT 2000').all(provider) as unknown as { threadId: string }[])
+      .map((row) => row.threadId);
+  }
   list(limit = 500, offset = 0): HistoryMessage[] { return this.db.prepare('SELECT * FROM messages ORDER BY ts,id LIMIT ? OFFSET ?').all(limit, offset) as unknown as HistoryMessage[]; }
   recent(): HistoryMessage[] { return (this.db.prepare('SELECT * FROM messages ORDER BY ts DESC,id DESC LIMIT 500').all() as unknown as HistoryMessage[]).reverse(); }
   message(id: string): HistoryMessage | undefined { return this.db.prepare('SELECT * FROM messages WHERE id=?').get(id) as unknown as HistoryMessage | undefined; }

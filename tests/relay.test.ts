@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import { createProxyServer } from '../server/proxy.ts';
+import { HistoryStore } from '../server/history.ts';
 import { harnessEnv, splitCommand } from '../server/harness.ts';
 import { isConversationThread, relayConfigFromEnv } from '../server/relay.ts';
 
@@ -62,6 +63,11 @@ async function startRelay(options: { dataDir?: string; timeoutMs?: number; remov
   const harnessDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-harness-'));
   const fake = path.join(harnessDir, 'fake-harness.mjs');
   writeFileSync(fake, FAKE_HARNESS);
+  // The relay treats the first batch of a conversation as baseline. A real
+  // conversation already has rows in the store before a new reply arrives.
+  const seed = new HistoryStore(dataDir);
+  seed.import([{ provider: 'muse', role: 'user', text: 'Earlier user message.', ts: 1, url: 'https://muse.ai/chat/relay-test', sourceId: 'seed-user', identity: 'source-id' }]);
+  seed.close();
   const server = createProxyServer(dataDir, {}, {
     relay: {
       enabled: true,
@@ -182,6 +188,24 @@ test('a landing-page scrape does not start a run', async () => {
   await sleep(400);
   assert.equal(readRuns(server).length, 0);
   assert.equal((await outboxOf(server)).items.length, 0);
+});
+
+test('the first import of a conversation is baseline, not a trigger', async () => {
+  const server = await startRelay();
+  const url = 'https://muse.ai/chat/baseline-thread';
+  await importItems(server, [
+    museMessage({ text: 'First agent line.', url, sourceId: 'baseline-1', ts: Date.now() + 5000 }),
+    museMessage({ text: 'Second agent line.', url, sourceId: 'baseline-2', ts: Date.now() + 5001 }),
+  ]);
+  await sleep(400);
+  assert.equal(readRuns(server).length, 0);
+  assert.equal((await outboxOf(server)).items.length, 0);
+
+  await importItems(server, [museMessage({ text: 'Third agent line.', url, sourceId: 'baseline-3', ts: Date.now() + 5002 })]);
+  await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
+  const runs = readRuns(server);
+  assert.equal(runs.length, 1);
+  assert.match(runs[0].prompt, /Third agent line\./);
 });
 
 test('a duplicate import does not start a second run', async () => {
@@ -334,7 +358,7 @@ test('the harness command parser and environment filter are bounded', () => {
   assert.equal(config.enabled, true);
   assert.equal(config.provider, 'muse');
   assert.equal(config.timeoutMs, 600000);
-  assert.equal(config.cwd, path.join('/tmp/blibs-data', 'harness'));
+  assert.equal(config.cwd, path.resolve('/tmp/blibs-data', 'harness'));
   assert.equal(relayConfigFromEnv({}, '/tmp/blibs-data').enabled, false);
   assert.equal(isConversationThread('muse', 'https://muse.ai/'), false);
   assert.equal(isConversationThread('muse', 'https://muse.ai/chat/abc'), true);

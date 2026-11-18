@@ -80,13 +80,15 @@ A row must meet all these conditions:
   when it is signed out.
 - The message ID is not in the processed set.
 - The timestamp is later than the durable high-water mark.
+- The conversation is not new. The first import batch of a conversation is
+  its baseline, so a sign-in sync does not relay stored history.
 - The queue is not full.
 
 The first enabled start sets the high-water mark to the start time. Messages
 that are already stored are backlog. Messages that arrive later can start a
-run. The mark and the processed IDs are in `<data>/relay-state.json`. A restart
-does not replay history. A run that was active during a shutdown is recorded
-as an error on the next start.
+run. The mark, the processed IDs, and the known conversations are in
+`<data>/relay-state.json`. A restart does not replay history. A run that was
+active during a shutdown is recorded as an error on the next start.
 
 Limits:
 

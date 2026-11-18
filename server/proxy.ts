@@ -107,10 +107,12 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
     saveOutbox(store);
     return item;
   }
+  const relayConfig = { ...relayConfigFromEnv(process.env, dataDir), ...options.relay };
   const relay = new RelayService({
-    config: { ...relayConfigFromEnv(process.env, dataDir), ...options.relay },
+    config: relayConfig,
     stateDir: dataDir,
     enqueue: (provider, text) => { enqueueOutbox(provider, text.slice(0, 4000)); },
+    knownThreads: history.threads(relayConfig.provider),
   });
   async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
     let body = '';
@@ -181,7 +183,7 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
         const items = Array.isArray(payload.items) ? payload.items : [];
         if (items.length > 2000) return send(res, 400, { error: 'Import at most 2,000 messages per request.' });
-        const report = history.import(items, false, (message) => relay.observe(message));
+        const report = history.import(items, false, (messages) => relay.observeBatch(messages));
         retrieval.schedule();
         return send(res, 200, { ok: true, ...report });
       }

@@ -16,6 +16,7 @@ import type { HarnessResult } from './harness.js';
 
 export const RELAY_QUEUE_LIMIT = 20;
 export const RELAY_PROCESSED_LIMIT = 500;
+export const RELAY_THREAD_LIMIT = 500;
 export const RELAY_PROMPT_LIMIT = 2000;
 export const DEFAULT_RELAY_TIMEOUT_MS = 120_000;
 
@@ -62,6 +63,8 @@ interface RelayState {
   version: 1;
   watermark: number;
   processed: string[];
+  /** Conversations that already had a baseline observation. */
+  threads: string[];
   runs: number;
   lastRun: RelayRunState | null;
 }
@@ -72,6 +75,8 @@ export interface RelayServiceOptions {
   stateDir: string;
   /** Writes the reply to the existing outbox. */
   enqueue: (provider: string, text: string) => void;
+  /** Threads that the history store already knew at startup. */
+  knownThreads?: string[];
 }
 
 /** Replace a credential value if it appears in status text. */
@@ -151,6 +156,7 @@ export class RelayService {
   private readonly enqueueReply: (provider: string, text: string) => void;
   private readonly cwd: string;
   private readonly state: RelayState;
+  private readonly knownThreads: Set<string>;
   private readonly queue: RelayItem[] = [];
   private active: { kill(): void } | null = null;
   private closed = false;
@@ -173,7 +179,9 @@ export class RelayService {
     const loaded = this.loadState();
     this.state = loaded
       ? loaded
-      : { version: 1, watermark: Date.now(), processed: [], runs: 0, lastRun: null };
+      : { version: 1, watermark: Date.now(), processed: [], threads: [], runs: 0, lastRun: null };
+    this.knownThreads = new Set([...(options.knownThreads ?? []), ...this.state.threads].slice(-RELAY_THREAD_LIMIT));
+    this.state.threads = [...this.knownThreads];
     if (this.state.lastRun?.state === 'running') {
       this.state.lastRun = {
         state: 'error',
@@ -196,8 +204,11 @@ export class RelayService {
       const processed = Array.isArray(raw.processed)
         ? raw.processed.filter((id): id is string => typeof id === 'string').slice(-RELAY_PROCESSED_LIMIT)
         : [];
+      const threads = Array.isArray(raw.threads)
+        ? raw.threads.filter((id): id is string => typeof id === 'string').slice(-RELAY_THREAD_LIMIT)
+        : [];
       const runs = typeof raw.runs === 'number' && raw.runs >= 0 ? raw.runs : 0;
-      return { version: 1, watermark, processed, runs, lastRun: this.readLastRun(raw.lastRun) };
+      return { version: 1, watermark, processed, threads, runs, lastRun: this.readLastRun(raw.lastRun) };
     } catch {
       return null;
     }
@@ -226,7 +237,7 @@ export class RelayService {
     } catch { /* keep the in-memory state; the next write retries */ }
   }
 
-  /** True when a new row can start a run. */
+  /** True when a new row in a known thread can start a run. */
   private accepts(message: HistoryMessage): boolean {
     if (!this.config.enabled || this.closed) return false;
     if (message.role !== 'agent') return false;
@@ -236,21 +247,56 @@ export class RelayService {
     return message.ts > this.state.watermark;
   }
 
-  /** Observe one row that the import store just inserted. */
-  observe(message: HistoryMessage): void {
-    if (!this.accepts(message)) return;
+  private remember(message: HistoryMessage): void {
     this.state.processed.push(message.id);
     if (this.state.processed.length > RELAY_PROCESSED_LIMIT) this.state.processed.splice(0, this.state.processed.length - RELAY_PROCESSED_LIMIT);
     this.state.watermark = Math.max(this.state.watermark, message.ts);
-    if (this.queue.length >= RELAY_QUEUE_LIMIT) {
-      const now = Date.now();
-      this.state.lastRun = { state: 'skipped', messageId: message.id, startedAt: now, endedAt: now, error: 'relay queue is full; message dropped' };
-      this.save();
-      return;
+  }
+
+  private rememberThread(threadId: string): void {
+    this.knownThreads.add(threadId);
+    const threads = [...this.knownThreads];
+    if (threads.length > RELAY_THREAD_LIMIT) this.knownThreads.delete(threads[0]);
+    this.state.threads = [...this.knownThreads].slice(-RELAY_THREAD_LIMIT);
+  }
+
+  /**
+   * Observe the rows that one import inserted. The first batch for a
+   * conversation is its baseline: a sign-in sync must not relay history.
+   */
+  observeBatch(messages: HistoryMessage[]): void {
+    if (!this.config.enabled || this.closed) return;
+    const groups = new Map<string, HistoryMessage[]>();
+    for (const message of messages) {
+      if (message.provider.toLowerCase() !== this.config.provider) continue;
+      const group = groups.get(message.threadId) ?? [];
+      group.push(message);
+      groups.set(message.threadId, group);
     }
-    this.queue.push({ id: message.id, provider: message.provider, task: message.text });
-    this.save();
-    void this.drain();
+    let queued = false;
+    let changed = false;
+    for (const [threadId, rows] of groups) {
+      if (!this.knownThreads.has(threadId)) {
+        this.rememberThread(threadId);
+        for (const row of rows) this.remember(row);
+        changed = true;
+        continue;
+      }
+      for (const message of rows) {
+        if (!this.accepts(message)) continue;
+        this.remember(message);
+        changed = true;
+        if (this.queue.length >= RELAY_QUEUE_LIMIT) {
+          const now = Date.now();
+          this.state.lastRun = { state: 'skipped', messageId: message.id, startedAt: now, endedAt: now, error: 'relay queue is full; message dropped' };
+          continue;
+        }
+        this.queue.push({ id: message.id, provider: message.provider, task: message.text });
+        queued = true;
+      }
+    }
+    if (changed) this.save();
+    if (queued) void this.drain();
   }
 
   private async drain(): Promise<void> {
