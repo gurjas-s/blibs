@@ -1,7 +1,7 @@
 // Relay tests use a fake harness, temporary stores, and mocked rows.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -9,6 +9,15 @@ import { createProxyServer } from '../server/proxy.ts';
 import { HistoryStore } from '../server/history.ts';
 import { splitCommand } from '../server/harness/opencode.ts';
 import { buildRelayConfig, isConversationThread, isProviderThread, newSessionId } from '../server/relay.ts';
+import {
+  clarificationText,
+  findExplicitPath,
+  isAllowedProject,
+  listCandidates,
+  resolveProject,
+  sessionKey,
+  threadProjects,
+} from '../server/harness/router.ts';
 import { extractMentionTask, sanitizeReply } from '../server/harness/mention.ts';
 
 const FAKE_HARNESS = `import fs from 'node:fs';
@@ -56,7 +65,7 @@ afterEach(async () => {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function startRelay(options: { dataDir?: string; timeoutMs?: number; removeDataOnClose?: boolean } = {}): Promise<RelayServer> {
+async function startRelay(options: { dataDir?: string; timeoutMs?: number; model?: string; removeDataOnClose?: boolean } = {}): Promise<RelayServer> {
   const dataDir = options.dataDir ?? mkdtempSync(path.join(tmpdir(), 'blibs-relay-'));
   const harnessDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-harness-'));
   const fake = path.join(harnessDir, 'fake-harness.mjs');
@@ -72,6 +81,7 @@ async function startRelay(options: { dataDir?: string; timeoutMs?: number; remov
       command: JSON.stringify([process.execPath, fake]),
       cwd: harnessDir,
       timeoutMs: options.timeoutMs ?? 5000,
+      ...(options.model ? { model: options.model } : {}),
     },
   });  server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -100,6 +110,11 @@ function readRuns(server: RelayServer): Array<{ pid: number; prompt: string; arg
 
 function sessionOf(run: { args: string[] }): string | undefined {
   const index = run.args.indexOf('--session');
+  return index === -1 ? undefined : run.args[index + 1];
+}
+
+function modelOf(run: { args: string[] }): string | undefined {
+  const index = run.args.indexOf('--model');
   return index === -1 ? undefined : run.args[index + 1];
 }
 
@@ -164,6 +179,7 @@ test('a user @opencode message starts one run and queues one Muse outbox item', 
   assert.equal(runs.length, 1);
   assert.match(runs[0].prompt, /Summarize the release notes\./);
   assert.ok(!runs[0].prompt.includes('@opencode'), 'the harness prompt has no mention token');
+  assert.ok(!runs[0].args.includes('--model'), 'no model flag without a configured model');
   assert.ok(sessionOf(runs[0]), 'the run carries a session id');
   assert.equal(runs[0].cwd, realpathSync(server.harnessDir), 'the harness runs in its own directory');
   assert.equal(runs[0].pwd, server.harnessDir, 'the harness PWD matches its directory');
@@ -236,6 +252,77 @@ test('a root-path conversation with a user turn can relay', async () => {
   await importItems(server, [museMessage({ role: 'agent', text: 'You:\n\nharness reply', url, sourceId: 'reply-echo', ts: echoTs + 2000 })]);
   await sleep(400);
   assert.equal(readRuns(server).length, 1);
+});
+
+test('a configured model reaches the harness command', async () => {
+  const server = await startRelay({ model: 'test-provider/test-model' });
+  await importItems(server, [museMessage({ role: 'user', text: '@opencode Summarize the model run.', ts: Date.now() + 5000, sourceId: 'model-1' })]);
+  await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
+  const runs = readRuns(server);
+  assert.equal(runs.length, 1);
+  assert.equal(modelOf(runs[0]), 'test-provider/test-model');
+  assert.equal(runs[0].cwd, realpathSync(server.harnessDir), 'the model flag does not change the directory');
+});
+
+test('one Muse thread can own one session per project', () => {
+  const sessions: Record<string, string> = {};
+  sessions[sessionKey('thread-a', '/projects/alpha')] = 'ses_alpha';
+  sessions[sessionKey('thread-a', '/projects/beta')] = 'ses_beta';
+  sessions[sessionKey('thread-b', '/projects/alpha')] = 'ses_other';
+  assert.deepEqual(threadProjects(sessions, 'thread-a'), ['/projects/alpha', '/projects/beta']);
+  assert.deepEqual(threadProjects(sessions, 'thread-b'), ['/projects/alpha']);
+  assert.deepEqual(threadProjects(sessions, 'thread-unknown'), []);
+  assert.notEqual(sessionKey('t', '/a'), sessionKey('t', '/b'), 'projects get distinct keys');
+  assert.notEqual(sessionKey('t', '/a'), sessionKey('o', '/a'), 'threads get distinct keys');
+});
+
+test('the project router picks explicit paths, names, and thread memory', () => {
+  const candidates = ['/projects/alpha', '/projects/beta'];
+  const roots = ['/projects'];
+  assert.equal(
+    resolveProject('Fix the build in /projects/alpha today', [], candidates, roots)?.projectPath,
+    '/projects/alpha',
+  );
+  assert.equal(
+    resolveProject('Fix the beta flake', [], candidates, roots)?.projectPath,
+    '/projects/beta',
+  );
+  assert.equal(resolveProject('Sync alpha and beta', [], candidates, roots), null, 'two name hits need a question');
+  assert.equal(
+    resolveProject('Do more work', ['/projects/alpha', '/projects/beta'], candidates, roots)?.confidence,
+    'map-hit',
+  );
+  assert.equal(
+    resolveProject('Do more work', ['/projects/alpha', '/projects/beta'], candidates, roots)?.projectPath,
+    '/projects/beta',
+  );
+  assert.equal(resolveProject('Do work', [], [], []), null, 'no registry means the relay falls back');
+  assert.equal(resolveProject('Fix it in /elsewhere/gamma', [], candidates, roots), null, 'outside roots need a question');
+  assert.equal(resolveProject('Do work', [], ['/only/project'], ['/'])?.projectPath, '/only/project');
+});
+
+test('the project allowlist and candidate listing stay bounded', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'blibs-router-'));
+  const alpha = path.join(root, 'alpha');
+  const beta = path.join(root, 'beta');
+  mkdirSync(alpha);
+  mkdirSync(beta);
+  mkdirSync(path.join(root, '.hidden'));
+  writeFileSync(path.join(root, 'notes.txt'), 'not a project');
+  const registry = { projects: [alpha], discoveryRoot: root };
+  const listed = listCandidates(registry);
+  assert.ok(listed.includes(alpha));
+  assert.ok(listed.includes(beta));
+  assert.ok(!listed.some((entry) => entry.endsWith('.hidden') || entry.endsWith('notes.txt')));
+  assert.ok(isAllowedProject(alpha, registry, '/fallback'));
+  assert.ok(isAllowedProject(beta, registry, '/fallback'));
+  assert.ok(!isAllowedProject('/elsewhere/gamma', registry, '/fallback'));
+  assert.ok(!isAllowedProject('/fallback', { projects: [], discoveryRoot: root }, '/other'), 'unknown paths stay blocked');
+  assert.equal(findExplicitPath('no path here'), null);
+  assert.equal(findExplicitPath('edit ~/projects/alpha now'), '~/projects/alpha');
+  const clarification = clarificationText(['/projects/alpha', '/projects/beta'], ['/projects/alpha']);
+  assert.ok(clarification.includes('alpha') && clarification.includes('beta'));
+  assert.ok(!clarification.includes('@opencode'), 'a clarification reply never retriggers');
 });
 
 test('each Muse chat keeps its own harness session', async () => {
@@ -396,6 +483,7 @@ test('the harness command parser and relay defaults are bounded', () => {
   assert.equal(defaults.provider, 'muse');
   assert.equal(defaults.command, 'opencode run');
   assert.equal(defaults.timeoutMs, 120000);
+  assert.equal(defaults.model, undefined);
   assert.equal(defaults.cwd, path.resolve('/tmp/blibs-data', 'harness'));
   const overridden = buildRelayConfig('/tmp/blibs-data', { enabled: false, provider: 'grok', timeoutMs: 400 });
   assert.equal(overridden.enabled, false);

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import type { HistoryMessage } from './history.js';
 import type { Harness, HarnessRun } from './harness/types.js';
 import { extractMentionTask, sanitizeReply } from './harness/mention.js';
+import { sessionKey, threadProjects } from './harness/router.js';
 
 export const RELAY_QUEUE_LIMIT = 20;
 export const RELAY_PROCESSED_LIMIT = 500;
@@ -24,6 +25,8 @@ export interface RelayConfig {
   command: string;
   cwd: string;
   timeoutMs: number;
+  /** Default harness model in provider/model form. Empty means the harness default. */
+  model?: string;
 }
 
 export interface RelayRunState {
@@ -37,7 +40,7 @@ export interface RelayRunState {
 export interface RelayStatus {
   enabled: boolean;
   provider: string;
-  harness: { command: string; cwd: string; timeoutMs: number };
+  harness: { command: string; cwd: string; timeoutMs: number; model?: string };
   pending: number;
   running: boolean;
   processed: number;
@@ -52,13 +55,15 @@ interface RelayItem {
   threadId: string;
   task: string;
   sessionId: string;
+  projectPath: string;
 }
 
 interface RelayState {
-  version: 1;
+  version: 2;
   watermark: number;
   processed: string[];
   threads: string[];
+  /** Coding sessions keyed by thread id and project path. */
   sessions: Record<string, string>;
   runs: number;
   lastRun: RelayRunState | null;
@@ -98,6 +103,8 @@ function safeHarnessCwd(requested: string, dataDir: string): string {
   return inside(fallback, checkout) ? path.join(os.tmpdir(), 'blibs-harness') : fallback;
 }
 
+export const DEFAULT_DISCOVERY_ROOT = path.join(os.homedir(), 'Projects');
+
 export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig> = {}): RelayConfig {
   const config: RelayConfig = {
     enabled: true,
@@ -105,6 +112,7 @@ export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig
     command: DEFAULT_HARNESS_COMMAND,
     cwd: path.join(dataDir, 'harness'),
     timeoutMs: DEFAULT_RELAY_TIMEOUT_MS,
+    model: undefined,
     ...overrides,
   };
   return { ...config, cwd: safeHarnessCwd(path.resolve(config.cwd), dataDir) };
@@ -149,7 +157,7 @@ export function isConversationThread(provider: string, threadId: string): boolea
 }
 
 export class RelayService {
-  private readonly config: RelayConfig;
+  private config: RelayConfig;
   private readonly stateDir: string;
   private readonly stateFile: string;
   private readonly harness: Harness;
@@ -174,7 +182,15 @@ export class RelayService {
     const loaded = this.loadState();
     this.state = loaded
       ? loaded
-      : { version: 1, watermark: Date.now(), processed: [], threads: [], sessions: {}, runs: 0, lastRun: null };
+      : {
+          version: 2,
+          watermark: Date.now(),
+          processed: [],
+          threads: [],
+          sessions: {},
+          runs: 0,
+          lastRun: null,
+        };
     this.knownThreads = new Set([...(options.knownThreads ?? []), ...this.state.threads].slice(-RELAY_THREAD_LIMIT));
     this.state.threads = [...this.knownThreads];
     if (this.state.lastRun?.state === 'running') {
@@ -193,7 +209,7 @@ export class RelayService {
   private loadState(): RelayState | null {
     try {
       const raw = JSON.parse(fs.readFileSync(this.stateFile, 'utf8')) as Partial<RelayState>;
-      if (raw.version !== 1) return null;
+      if (raw.version !== 2) return null;
       const watermark = typeof raw.watermark === 'number' && Number.isFinite(raw.watermark) ? raw.watermark : Date.now();
       const processed = Array.isArray(raw.processed)
         ? raw.processed.filter((id): id is string => typeof id === 'string').slice(-RELAY_PROCESSED_LIMIT)
@@ -205,10 +221,10 @@ export class RelayService {
       const sessions: Record<string, string> = {};
       if (raw.sessions && typeof raw.sessions === 'object') {
         for (const [key, value] of Object.entries(raw.sessions as Record<string, unknown>)) {
-          if (typeof value === 'string' && value) sessions[key.slice(0, 500)] = value.slice(0, 100);
+          if (typeof value === 'string' && value) sessions[key.slice(0, 1000)] = value.slice(0, 100);
         }
       }
-      return { version: 1, watermark, processed, threads, sessions, runs, lastRun: this.readLastRun(raw.lastRun) };
+      return { version: 2, watermark, processed, threads, sessions, runs, lastRun: this.readLastRun(raw.lastRun) };
     } catch {
       return null;
     }
@@ -263,19 +279,28 @@ export class RelayService {
     if (threads.length > RELAY_THREAD_LIMIT) {
       const oldest = threads[0];
       this.knownThreads.delete(oldest);
-      delete this.state.sessions[oldest];
+      const prefix = `${oldest}\n`;
+      for (const key of Object.keys(this.state.sessions)) {
+        if (key.startsWith(prefix)) delete this.state.sessions[key];
+      }
     }
     this.state.threads = [...this.knownThreads].slice(-RELAY_THREAD_LIMIT);
   }
 
-  private sessionFor(threadId: string): string {
-    const existing = this.state.sessions[threadId];
+  private sessionFor(threadId: string, projectPath: string): string {
+    const key = sessionKey(threadId, projectPath);
+    const existing = this.state.sessions[key];
     if (existing) return existing;
     const created = newSessionId();
-    this.state.sessions[threadId] = created;
+    this.state.sessions[key] = created;
     const keys = Object.keys(this.state.sessions);
     if (keys.length > RELAY_THREAD_LIMIT) delete this.state.sessions[keys[0]];
     return created;
+  }
+
+  /** Project paths with sessions in one Muse thread, most recent last. */
+  projectsFor(threadId: string): string[] {
+    return threadProjects(this.state.sessions, threadId);
   }
 
   // The first batch of a conversation is baseline: a sign-in sync is not work.
@@ -305,6 +330,9 @@ export class RelayService {
         const taskKey = `${threadId}\n${task}`;
         if (seenTasks.has(taskKey)) continue;
         seenTasks.add(taskKey);
+        // The project router lands in a later change. Every task uses the
+        // configured harness directory until then.
+        const projectPath = this.config.cwd;
         this.remember(message);
         changed = true;
         if (this.queue.length >= RELAY_QUEUE_LIMIT) {
@@ -312,7 +340,14 @@ export class RelayService {
           this.state.lastRun = { state: 'skipped', messageId: message.id, startedAt: now, endedAt: now, error: 'relay queue is full; message dropped' };
           continue;
         }
-        this.queue.push({ id: message.id, provider: message.provider, threadId: message.threadId, task, sessionId: this.sessionFor(message.threadId) });
+        this.queue.push({
+          id: message.id,
+          provider: message.provider,
+          threadId: message.threadId,
+          task,
+          sessionId: this.sessionFor(threadId, projectPath),
+          projectPath,
+        });
         queued = true;
       }
     }
@@ -339,7 +374,7 @@ export class RelayService {
     const startedAt = Date.now();
     this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
     this.save();
-    const run = this.harness.start(buildPrompt(item.task), item.sessionId);
+    const run = this.harness.start(buildPrompt(item.task), { sessionId: item.sessionId, cwd: item.projectPath, model: this.config.model });
     this.active = run;
     let ok = false;
     let error: string | undefined;
@@ -376,6 +411,7 @@ export class RelayService {
         command: this.config.command,
         cwd: this.config.cwd,
         timeoutMs: this.config.timeoutMs,
+        ...(this.config.model ? { model: this.config.model } : {}),
       },
       pending: this.queue.length + (this.active ? 1 : 0),
       running: this.active !== null,
