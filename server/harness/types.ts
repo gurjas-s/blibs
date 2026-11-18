@@ -10,7 +10,14 @@ export interface HarnessRun {
   kill(): void;
 }
 
+/** Per-run overrides. The harness falls back to its configured values. */
+export interface HarnessStartOptions {
+  sessionId?: string;
+  cwd?: string;
+  model?: string;
+}
+
 export interface Harness {
   readonly id: string;
-  start(prompt: string, sessionId?: string): HarnessRun;
+  start(prompt: string, options?: HarnessStartOptions | string): HarnessRun;
 }
