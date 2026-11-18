@@ -7,6 +7,9 @@ import { after, before, test } from 'node:test';
 import { createProxyServer } from '../server/proxy.ts';
 import http from 'node:http';
 
+// Keep the real harness off in route tests, even when the shell sets the flag.
+process.env.BLIBS_RELAY = '0';
+
 const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-routes-'));
 const server = createProxyServer(dataDir);
 let base: string;

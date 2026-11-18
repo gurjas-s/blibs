@@ -18,6 +18,8 @@ import { HistoryStore, copyIfAbsent } from './history.js';
 import { RetrievalService } from './retrieval.js';
 import type { LocalModels } from './retrieval.js';
 import type { SearchFilters } from './history.js';
+import { RelayService, relayConfigFromEnv } from './relay.js';
+import type { RelayConfig } from './relay.js';
 
 const PORT = Number(process.env.PROXY_PORT || 8787);
 const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -59,7 +61,12 @@ function send(res: ServerResponse, code: number, obj: unknown): void {
 }
 
 /** Each server owns its store and deduplication state. Tests use a temporary directory. */
-export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER_DIR, models: LocalModels = {}): http.Server {
+export interface ProxyOptions {
+  /** Overrides the relay configuration from the environment. Tests use this. */
+  relay?: Partial<RelayConfig>;
+}
+
+export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER_DIR, models: LocalModels = {}, options: ProxyOptions = {}): http.Server {
   fs.mkdirSync(dataDir, { recursive: true });
   // Copy retained legacy files on first desktop startup. Originals and delivery records are preserved.
   const legacyDir = process.env.BLIBS_LEGACY_DIR;
@@ -92,6 +99,19 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
   function newOutId(): string {
     return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   }
+  /** The one outbox write path. The panel and the relay both use it. */
+  function enqueueOutbox(provider: string, text: string): OutboxItem {
+    const store = loadOutbox();
+    const item: OutboxItem = { id: newOutId(), provider, text, ts: Date.now(), status: 'queued', attempts: 0 };
+    store.push(item);
+    saveOutbox(store);
+    return item;
+  }
+  const relay = new RelayService({
+    config: { ...relayConfigFromEnv(process.env, dataDir), ...options.relay },
+    stateDir: dataDir,
+    enqueue: (provider, text) => { enqueueOutbox(provider, text.slice(0, 4000)); },
+  });
   async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
     let body = '';
     for await (const chunk of req) { body += chunk; if (body.length > 4_000_000) throw new Error('Request exceeds 4 MB.'); }
@@ -111,6 +131,7 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         return res.end();
       }
       if (req.url === '/api/health') return send(res, 200, { ok: true });
+      if (req.url === '/api/relay' && req.method === 'GET') return send(res, 200, relay.status());
       const routeUrl = new URL(req.url || '/', 'http://127.0.0.1');
       if (routeUrl.pathname === '/api/history' && req.method === 'GET') {
         const limit = Math.min(500, Math.max(1, Number(routeUrl.searchParams.get('limit')) || 100));
@@ -160,7 +181,7 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
         const items = Array.isArray(payload.items) ? payload.items : [];
         if (items.length > 2000) return send(res, 400, { error: 'Import at most 2,000 messages per request.' });
-        const report = history.import(items);
+        const report = history.import(items, false, (message) => relay.observe(message));
         retrieval.schedule();
         return send(res, 200, { ok: true, ...report });
       }
@@ -172,10 +193,7 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         const provider = String(payload?.provider || 'custom').toLowerCase();
         const text = String(payload?.text || '').trim().slice(0, 4000);
         if (!text) return send(res, 400, { error: 'missing text' });
-        const store = loadOutbox();
-        const item: OutboxItem = { id: newOutId(), provider, text, ts: Date.now(), status: 'queued', attempts: 0 };
-        store.push(item);
-        saveOutbox(store);
+        const item = enqueueOutbox(provider, text);
         return send(res, 200, { ok: true, id: item.id });
       }
 
@@ -257,10 +275,25 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
       try { send(res, 500, { error: String(e) }); } catch { /* already sent */ }
     });
   });
-  server.on('close', () => { void retrieval.close(); });
+  let serverClosed = false;
+  server.on('close', () => {
+    if (serverClosed) return;
+    serverClosed = true;
+    relay.close();
+    void retrieval.close().catch(() => { /* already closed */ });
+  });
   return server;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  createProxyServer().listen(PORT, '127.0.0.1', () => console.log(`blibs proxy on http://127.0.0.1:${PORT}`));
+  const server = createProxyServer();
+  const shutdown = (): void => {
+    server.close();
+    server.closeAllConnections?.();
+    // The relay kills its harness child from the close handler.
+    setTimeout(() => process.exit(0), 500).unref();
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+  server.listen(PORT, '127.0.0.1', () => console.log(`blibs proxy on http://127.0.0.1:${PORT}`));
 }

@@ -81,6 +81,13 @@ backend, the app types it into the matching session and sends it, and the badge
 under your message flips `Sending…` → `Sent` (or `Not delivered` + Retry).
 The agent's reply syncs back on its own.
 
+**Relay to a local harness:** set `BLIBS_RELAY=1` and a harness command. A new
+Muse agent message then starts one non-interactive OpenCode run. The reply goes
+to the same Muse outbox, and the normal delivery loop types it into the chat.
+The relay has a durable high-water mark, so a restart does not replay history.
+Read [relay loop](docs/relay-loop.md) for the configuration, the verified
+command, and the manual check.
+
 ## Scripts
 
 | Command | What |
@@ -225,7 +232,10 @@ src/
     *.css, assets/  layout, theme entry, static assets
 server/
   proxy.ts      local backend (plain Node HTTP, zero deps): chat fan-out,
-                import store, send outbox. Spawned by the main process.
+                import store, send outbox, and the relay route. Spawned by the
+                main process.
+  relay.ts      relay queue, durable high-water mark, and run state
+  harness.ts    OpenCode adapter: no shell, scratch directory, timeout, caps
 tests/
   e2e/          real-app CDP harness (`harness.ts`) and smoke spec; run with
                 `npm run e2e`
@@ -277,6 +287,7 @@ re-run `npm run build`.
 | `POST /api/search` | panel | keyword/hybrid search with provider, thread, and date filters |
 | `POST /api/ask` | panel | experimental local extractive answers with validated evidence quotes |
 | `GET/POST /api/index` | panel | model/index status; resume, cancel, or rebuild vectors |
+| `GET /api/relay` | panel | relay state, pending count, and the last run |
 | `POST /api/outbox` | panel | enqueue a reply `{provider,text}` → `{id}` |
 | `GET /api/outbox/pending` | main | oldest queued sends |
 | `POST /api/outbox/ack` | main | confirm delivery `{id,ok,error?}` |
@@ -328,4 +339,8 @@ JSON backup; retained history is not capped at the panel's 500 messages.
   and WhatsApp/Slack DMs are out of reach.
 - Sending is best-effort DOM automation (fill composer → click send); vendors
   redesign pages, selectors need maintenance — failures always surface with a reason.
+- The relay runs one harness at a time and keeps the first part of a long
+  message or reply. It is a proof of concept, not a full job queue. Every relay
+  reply is a normal user message in the vendor chat, so a vendor agent can
+  answer it and start another run.
 - Personal use on your own accounts; check vendor ToS before productizing.

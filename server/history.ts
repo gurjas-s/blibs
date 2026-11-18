@@ -78,8 +78,9 @@ export class HistoryStore {
       if (report.rejected) this.migrationWarning = `${report.rejected} invalid legacy rows skipped; original and backup preserved.`;
     } catch (error) { this.migrationWarning = `Legacy migration pending: ${String(error)}. Original JSON preserved; fix it and restart.`; }
   }
-  import(items: unknown[], legacy = false): { added: number; updated: number; rejected: number; total: number } {
+  import(items: unknown[], legacy = false, onAdded?: (message: HistoryMessage) => void): { added: number; updated: number; rejected: number; total: number } {
     let added = 0, updated = 0, rejected = 0;
+    const inserted: HistoryMessage[] = [];
     const occurrences = new Map<string, number>();
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -111,11 +112,14 @@ export class HistoryStore {
           this.db.prepare('DELETE FROM chunks WHERE messageId=?').run(id); updated++;
         } else {
           this.db.prepare('INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?)').run(id, provider, threadId, sourceId, identity, role, text, ts, url); added++;
+          inserted.push({ id, provider, threadId, sourceId, identity, role, text, ts, url });
         }
         chunks(text).forEach((snippet, ordinal) => this.db.prepare('INSERT INTO chunks(messageId,ordinal,snippet,contentHash) VALUES(?,?,?,?)').run(id, ordinal, snippet, hash(snippet)));
       }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    // Call after COMMIT: the relay must not act on a row that was rolled back.
+    for (const message of inserted) onAdded?.(message);
     return { added, updated, rejected, total: this.count() };
   }
   count(): number { return Number(this.db.prepare('SELECT count(*) AS n FROM messages').get()!.n); }
