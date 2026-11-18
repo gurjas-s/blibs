@@ -18,8 +18,9 @@ import { HistoryStore, copyIfAbsent } from './history.js';
 import { RetrievalService } from './retrieval.js';
 import type { LocalModels } from './retrieval.js';
 import type { SearchFilters } from './history.js';
-import { RelayService, relayConfigFromEnv } from './relay.js';
+import { RelayService, buildRelayConfig } from './relay.js';
 import type { RelayConfig } from './relay.js';
+import { OpenCodeHarness } from './harness/opencode.js';
 
 const PORT = Number(process.env.PROXY_PORT || 8787);
 const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -62,7 +63,6 @@ function send(res: ServerResponse, code: number, obj: unknown): void {
 
 /** Each server owns its store and deduplication state. Tests use a temporary directory. */
 export interface ProxyOptions {
-  /** Overrides the relay configuration from the environment. Tests use this. */
   relay?: Partial<RelayConfig>;
 }
 
@@ -99,7 +99,6 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
   function newOutId(): string {
     return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   }
-  /** The one outbox write path. The panel and the relay both use it. */
   function enqueueOutbox(provider: string, text: string): OutboxItem {
     const store = loadOutbox();
     const item: OutboxItem = { id: newOutId(), provider, text, ts: Date.now(), status: 'queued', attempts: 0 };
@@ -107,11 +106,12 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
     saveOutbox(store);
     return item;
   }
-  const relayConfig = { ...relayConfigFromEnv(process.env, dataDir), ...options.relay };
+  const relayConfig = buildRelayConfig(dataDir, options.relay);
   const relay = new RelayService({
     config: relayConfig,
+    harness: new OpenCodeHarness(relayConfig),
     stateDir: dataDir,
-    enqueue: (provider, text) => { enqueueOutbox(provider, text.slice(0, 4000)); },
+    enqueue: (provider, text) => { enqueueOutbox(provider, text); },
     knownThreads: history.threads(relayConfig.provider),
     threadHasUser: (provider, threadId) => history.hasUserMessage(provider, threadId)
       || (provider === 'muse' && history.hasMessagePrefix(provider, threadId, 'You:')),
@@ -294,7 +294,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const shutdown = (): void => {
     server.close();
     server.closeAllConnections?.();
-    // The relay kills its harness child from the close handler.
     setTimeout(() => process.exit(0), 500).unref();
   };
   process.once('SIGTERM', shutdown);

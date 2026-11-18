@@ -7,11 +7,8 @@ import { after, before, test } from 'node:test';
 import { createProxyServer } from '../server/proxy.ts';
 import http from 'node:http';
 
-// Keep the real harness off in route tests, even when the shell sets the flag.
-process.env.BLIBS_RELAY = '0';
-
 const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-routes-'));
-const server = createProxyServer(dataDir);
+const server = createProxyServer(dataDir, {}, { relay: { enabled: false } });
 let base: string;
 before(async () => {
   server.listen(0, '127.0.0.1');
@@ -42,7 +39,7 @@ test('legacy imports deduplicate exact provider/thread/role/timestamp/text obser
   const matched = stored.imports.find((m: typeof item) => m.provider === item.provider && m.role === item.role);
   assert.deepEqual(Object.fromEntries(Object.keys(item).map(key => [key, matched[key]])), item);
 
-  const restarted = createProxyServer(dataDir);
+  const restarted = createProxyServer(dataDir, {}, { relay: { enabled: false } });
   restarted.listen(0, '127.0.0.1');
   await once(restarted, 'listening');
   try {

@@ -13,8 +13,6 @@ import net from 'node:net';
 import type * as MainApi from './index.ts';
 
 process.env.BLIBS_NO_AUTOSTART = '1';
-// Tests must never start the real OpenCode harness, even when the shell sets it.
-process.env.BLIBS_RELAY = '0';
 const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-harness-'));
 process.env.BLIBS_DATA_DIR = dataDir;
 async function freePort(): Promise<number> {

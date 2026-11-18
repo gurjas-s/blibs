@@ -1,24 +1,25 @@
-// Relay loop: one new inbound agent message starts one harness run, and the
-// bounded reply goes to the existing outbox.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HistoryMessage } from './history.js';
-import { RELAY_REPLY_LIMIT, startHarness } from './harness.js';
-import type { HarnessResult } from './harness.js';
+import type { Harness, HarnessRun } from './harness/types.js';
 
 export const RELAY_QUEUE_LIMIT = 20;
 export const RELAY_PROCESSED_LIMIT = 500;
 export const RELAY_THREAD_LIMIT = 500;
 export const RELAY_PROMPT_LIMIT = 2000;
+export const RELAY_REPLY_LIMIT = 4000;
 export const DEFAULT_RELAY_TIMEOUT_MS = 120_000;
+export const RELAY_PROVIDER = 'muse';
+export const DEFAULT_HARNESS_COMMAND = 'opencode run';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SECRET_KEYS = ['EMAIL_MUSE', 'PASSWORD_MUSE', 'PROTON_URL'] as const;
-const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 const PROVIDER_HOSTS: Record<string, string> = { muse: 'muse.ai', dots: 'chatgpt.com', grok: 'grok.com' };
 const PROMPT_HEADER = "A message from the user's personal assistant follows. Complete the request and reply with the final answer only. Keep the reply under 1500 characters.";
+const CHECKOUT_ROOT_DEPTH = 8;
+const ERROR_TEXT_LIMIT = 300;
 
 export interface RelayConfig {
   enabled: boolean;
@@ -64,13 +65,13 @@ interface RelayState {
 
 export interface RelayServiceOptions {
   config: RelayConfig;
+  harness: Harness;
   stateDir: string;
   enqueue: (provider: string, text: string) => void;
   knownThreads?: string[];
   threadHasUser?: (provider: string, threadId: string) => boolean;
 }
 
-/** Status text must never show a credential value. */
 export function redactSecrets(value: string, env: NodeJS.ProcessEnv = process.env): string {
   let out = value;
   for (const key of SECRET_KEYS) {
@@ -82,7 +83,7 @@ export function redactSecrets(value: string, env: NodeJS.ProcessEnv = process.en
 
 export function findCheckoutRoot(start: string): string | undefined {
   let dir = path.resolve(start);
-  for (let depth = 0; depth < 8; depth++) {
+  for (let depth = 0; depth < CHECKOUT_ROOT_DEPTH; depth++) {
     try {
       const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as { name?: unknown };
       if (manifest.name === 'blibs') return dir;
@@ -98,25 +99,26 @@ function inside(target: string, root: string): boolean {
   return target === root || target.startsWith(`${root}${path.sep}`);
 }
 
-export function relayConfigFromEnv(env: NodeJS.ProcessEnv = process.env, dataDir = ''): RelayConfig {
-  const provider = (env.BLIBS_RELAY_PROVIDER || 'muse').trim().toLowerCase().slice(0, 40) || 'muse';
-  const command = (env.BLIBS_HARNESS_CMD || 'opencode run').trim();
-  const fallbackCwd = path.join(dataDir || process.cwd(), 'harness');
-  const cwd = path.resolve((env.BLIBS_HARNESS_CWD || '').trim() || fallbackCwd);
-  const requestedTimeout = Number(env.BLIBS_RELAY_TIMEOUT_MS || DEFAULT_RELAY_TIMEOUT_MS);
-  const timeoutMs = Number.isFinite(requestedTimeout)
-    ? Math.min(600_000, Math.max(1000, Math.floor(requestedTimeout)))
-    : DEFAULT_RELAY_TIMEOUT_MS;
-  return {
-    enabled: TRUTHY.has((env.BLIBS_RELAY || '').trim().toLowerCase()),
-    provider,
-    command,
-    cwd,
-    timeoutMs,
-  };
+function safeHarnessCwd(requested: string, dataDir: string): string {
+  const checkout = findCheckoutRoot(MODULE_DIR);
+  if (!checkout || !inside(requested, checkout)) return requested;
+  const fallback = path.join(dataDir, 'harness');
+  return inside(fallback, checkout) ? path.join(os.tmpdir(), 'blibs-harness') : fallback;
 }
 
-/** Muse labels the user turn `You:` but reports role agent. */
+export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig> = {}): RelayConfig {
+  const config: RelayConfig = {
+    enabled: true,
+    provider: RELAY_PROVIDER,
+    command: DEFAULT_HARNESS_COMMAND,
+    cwd: path.join(dataDir, 'harness'),
+    timeoutMs: DEFAULT_RELAY_TIMEOUT_MS,
+    ...overrides,
+  };
+  return { ...config, cwd: safeHarnessCwd(path.resolve(config.cwd), dataDir) };
+}
+
+// Muse reports the user turn with role agent and a "You:" label.
 export function isUserEcho(text: string): boolean {
   return text.trimStart().startsWith('You:');
 }
@@ -129,7 +131,7 @@ export function buildPrompt(task: string): string {
   return `${PROMPT_HEADER}\n\n${task.trim().slice(0, RELAY_PROMPT_LIMIT)}`;
 }
 
-/** A signed-out vendor page scrapes marketing text, so its root is not a chat. */
+// A signed-out vendor page scrapes marketing text, so its root is not a chat.
 export function isProviderThread(provider: string, threadId: string): boolean {
   const host = PROVIDER_HOSTS[provider];
   if (!host) return true;
@@ -156,13 +158,13 @@ export class RelayService {
   private readonly config: RelayConfig;
   private readonly stateDir: string;
   private readonly stateFile: string;
+  private readonly harness: Harness;
   private readonly enqueueReply: (provider: string, text: string) => void;
   private readonly threadHasUser: (provider: string, threadId: string) => boolean;
-  private readonly cwd: string;
   private readonly state: RelayState;
   private readonly knownThreads: Set<string>;
   private readonly queue: RelayItem[] = [];
-  private active: { kill(): void } | null = null;
+  private active: HarnessRun | null = null;
   private closed = false;
   private draining = false;
 
@@ -170,16 +172,10 @@ export class RelayService {
     this.config = options.config;
     this.stateDir = options.stateDir;
     this.stateFile = path.join(options.stateDir, 'relay-state.json');
+    this.harness = options.harness;
     this.enqueueReply = options.enqueue;
     this.threadHasUser = options.threadHasUser ?? (() => false);
-
-    // Keep the harness out of the blibs checkout.
-    const dataFallback = path.join(options.stateDir, 'harness');
-    const checkout = findCheckoutRoot(MODULE_DIR);
-    const fallback = checkout && inside(dataFallback, checkout) ? path.join(os.tmpdir(), 'blibs-harness') : dataFallback;
-    const requested = path.resolve(options.config.cwd || fallback);
-    this.cwd = checkout && inside(requested, checkout) ? fallback : requested;
-    if (options.config.enabled) fs.mkdirSync(this.cwd, { recursive: true });
+    if (this.config.enabled) fs.mkdirSync(this.config.cwd, { recursive: true });
 
     const loaded = this.loadState();
     this.state = loaded
@@ -196,8 +192,7 @@ export class RelayService {
         error: 'interrupted by restart',
       };
     }
-    // Do not write a watermark while disabled. The first enabled start treats
-    // stored rows as backlog.
+    // No watermark is written on a disabled start, so stored rows stay backlog.
     if (!loaded && this.config.enabled) this.save();
   }
 
@@ -229,7 +224,7 @@ export class RelayService {
       messageId: raw.messageId,
       startedAt: raw.startedAt,
       endedAt: typeof raw.endedAt === 'number' ? raw.endedAt : undefined,
-      error: typeof raw.error === 'string' ? raw.error.slice(0, 300) : undefined,
+      error: typeof raw.error === 'string' ? raw.error.slice(0, ERROR_TEXT_LIMIT) : undefined,
     };
   }
 
@@ -268,7 +263,7 @@ export class RelayService {
     this.state.threads = [...this.knownThreads].slice(-RELAY_THREAD_LIMIT);
   }
 
-  /** The first batch of a conversation is baseline: a sign-in sync is not work. */
+  // The first batch of a conversation is baseline: a sign-in sync is not work.
   observeBatch(messages: HistoryMessage[]): void {
     if (!this.config.enabled || this.closed) return;
     const groups = new Map<string, HistoryMessage[]>();
@@ -323,33 +318,32 @@ export class RelayService {
     const startedAt = Date.now();
     this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
     this.save();
-    const run = startHarness(buildPrompt(item.task), {
-      command: this.config.command,
-      cwd: this.cwd,
-      timeoutMs: this.config.timeoutMs,
-    });
+    const run = this.harness.start(buildPrompt(item.task));
     this.active = run;
-    let result: HarnessResult;
+    let ok = false;
+    let error: string | undefined;
     try {
-      result = await run.promise;
-    } catch (error) {
-      result = { ok: false, reply: '', code: null, error: `harness failed: ${(error as Error).message}` };
+      const result = await run.promise;
+      error = result.error;
+      if (result.ok) {
+        try {
+          this.enqueueReply(item.provider, result.reply.slice(0, RELAY_REPLY_LIMIT));
+          ok = true;
+        } catch {
+          error = 'outbox write failed';
+        }
+      }
+    } catch (e) {
+      error = `harness failed: ${(e as Error).message}`;
     } finally {
       this.active = null;
     }
     if (this.closed) return;
-    if (result.ok) {
-      try {
-        this.enqueueReply(item.provider, result.reply.slice(0, RELAY_REPLY_LIMIT));
-      } catch {
-        result = { ok: false, reply: '', code: result.code, error: 'outbox write failed' };
-      }
-    }
     const endedAt = Date.now();
     this.state.runs += 1;
-    this.state.lastRun = result.ok
+    this.state.lastRun = ok
       ? { state: 'ok', messageId: item.id, startedAt, endedAt }
-      : { state: 'error', messageId: item.id, startedAt, endedAt, error: result.error ?? 'harness failed' };
+      : { state: 'error', messageId: item.id, startedAt, endedAt, error: error ?? 'harness failed' };
     this.save();
   }
 
@@ -362,7 +356,7 @@ export class RelayService {
       provider: this.config.provider,
       harness: {
         command: redactSecrets(this.config.command),
-        cwd: redactSecrets(this.cwd),
+        cwd: redactSecrets(this.config.cwd),
         timeoutMs: this.config.timeoutMs,
       },
       pending: this.queue.length + (this.active ? 1 : 0),

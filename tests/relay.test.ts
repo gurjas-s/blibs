@@ -7,10 +7,8 @@ import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import { createProxyServer } from '../server/proxy.ts';
 import { HistoryStore } from '../server/history.ts';
-import { harnessEnv, splitCommand } from '../server/harness.ts';
-import { isConversationThread, isProviderThread, relayConfigFromEnv } from '../server/relay.ts';
-
-process.env.BLIBS_RELAY = '0';
+import { harnessEnv, splitCommand } from '../server/harness/opencode.ts';
+import { buildRelayConfig, isConversationThread, isProviderThread } from '../server/relay.ts';
 
 const FAKE_HARNESS = `import fs from 'node:fs';
 import path from 'node:path';
@@ -73,8 +71,7 @@ async function startRelay(options: { dataDir?: string; timeoutMs?: number; remov
       cwd: harnessDir,
       timeoutMs: options.timeoutMs ?? 5000,
     },
-  });
-  server.listen(0, '127.0.0.1');
+  });  server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
@@ -357,31 +354,28 @@ test('the harness command parser and environment filter are bounded', () => {
   process.env.EMAIL_MUSE = 'x';
   process.env.PASSWORD_MUSE = 'y';
   process.env.PROTON_URL = 'z';
-  process.env.BLIBS_RELAY_PROVIDER = 'muse';
   try {
     const env = harnessEnv(process.env);
     assert.equal(env.EMAIL_MUSE, undefined);
     assert.equal(env.PASSWORD_MUSE, undefined);
     assert.equal(env.PROTON_URL, undefined);
-    assert.equal(env.BLIBS_RELAY_PROVIDER, 'muse');
   } finally {
     delete process.env.EMAIL_MUSE;
     delete process.env.PASSWORD_MUSE;
     delete process.env.PROTON_URL;
-    delete process.env.BLIBS_RELAY_PROVIDER;
   }
 
-  const config = relayConfigFromEnv({
-    BLIBS_RELAY: '1',
-    BLIBS_RELAY_PROVIDER: 'Muse',
-    BLIBS_HARNESS_CMD: 'opencode run',
-    BLIBS_RELAY_TIMEOUT_MS: '99999999',
-  }, '/tmp/blibs-data');
-  assert.equal(config.enabled, true);
-  assert.equal(config.provider, 'muse');
-  assert.equal(config.timeoutMs, 600000);
-  assert.equal(config.cwd, path.resolve('/tmp/blibs-data', 'harness'));
-  assert.equal(relayConfigFromEnv({}, '/tmp/blibs-data').enabled, false);
+  const defaults = buildRelayConfig('/tmp/blibs-data');
+  assert.equal(defaults.enabled, true);
+  assert.equal(defaults.provider, 'muse');
+  assert.equal(defaults.command, 'opencode run');
+  assert.equal(defaults.timeoutMs, 120000);
+  assert.equal(defaults.cwd, path.resolve('/tmp/blibs-data', 'harness'));
+  const overridden = buildRelayConfig('/tmp/blibs-data', { enabled: false, provider: 'grok', timeoutMs: 400 });
+  assert.equal(overridden.enabled, false);
+  assert.equal(overridden.provider, 'grok');
+  assert.equal(overridden.timeoutMs, 400);
+  assert.equal(buildRelayConfig(process.cwd()).cwd, path.join(tmpdir(), 'blibs-harness'));
   assert.equal(isConversationThread('muse', 'https://muse.ai/'), false);
   assert.equal(isProviderThread('muse', 'https://muse.ai/'), true);
   assert.equal(isProviderThread('muse', 'https://example.com/'), false);

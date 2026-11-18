@@ -118,12 +118,11 @@ export class HistoryStore {
       }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    // Call after COMMIT: the relay must not act on a row that was rolled back.
+    // After COMMIT: the relay must not act on a row that was rolled back.
     if (inserted.length) onAdded?.(inserted);
     return { added, updated, rejected, total: this.count() };
   }
   count(): number { return Number(this.db.prepare('SELECT count(*) AS n FROM messages').get()!.n); }
-  /** Threads that the store already knows. The relay uses them as baseline. */
   threads(provider: string): string[] {
     return (this.db.prepare('SELECT DISTINCT threadId FROM messages WHERE provider=? ORDER BY threadId LIMIT 2000').all(provider) as unknown as { threadId: string }[])
       .map((row) => row.threadId);
