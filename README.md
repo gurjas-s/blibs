@@ -42,6 +42,11 @@ rather than letting `npm start` fail later with `Electron failed to install
 correctly`. After changing `package-lock.json`, use `npm install` locally and
 commit the updated lockfile; everyone else and CI use `npm ci`.
 
+New Git worktrees need the machine-local `.env`, but the global Git hook does
+not run reliably when T3 creates them. See [worktree setup](docs/worktree-setup.md)
+for the checked-in setup script. The script copies `~/.secrets/blibs/.env` to
+the new checkout and never overwrites an existing file.
+
 The first start opens the **Connections** screen. It shows one row for each
 local harness and one column for each assistant. Turn on the harnesses that each
 assistant can use. Set the shared folder. Select **Start chatting**.

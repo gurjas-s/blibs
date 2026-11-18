@@ -1,0 +1,11 @@
+{
+  "scripts": [
+    {
+      "name": "Provision local env",
+      "command": "node scripts/provision-env.mjs",
+      "icon": "configure",
+      "runOnWorktreeCreate": true,
+      "async": false
+    }
+  ]
+}
