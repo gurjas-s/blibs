@@ -216,6 +216,7 @@ re-run `npm run build`.
 | `POST /api/ask` | panel | experimental local extractive answers with validated evidence quotes |
 | `GET/POST /api/index` | panel | model/index status; resume, cancel, or rebuild vectors |
 | `GET /api/relay` | panel | relay state, pending count, and the last run |
+| `POST /api/relay/projects` | panel | replace the project registry `{projects?, discoveryRoot?, model?}` |
 | `POST /api/outbox` | panel | enqueue a reply `{provider,text}` → `{id}` |
 | `GET /api/outbox/pending` | main | oldest queued sends |
 | `POST /api/outbox/ack` | main | confirm delivery `{id,ok,error?}` |

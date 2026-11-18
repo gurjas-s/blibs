@@ -49,6 +49,15 @@ export function insideDir(target: string, root: string): boolean {
   return resolved === root || resolved.startsWith(`${root}${path.sep}`);
 }
 
+/** Canonical form for stored paths. Missing paths stay resolved but unresolved. */
+export function canonicalDir(dir: string): string {
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return path.resolve(dir);
+  }
+}
+
 /** True when the backend may launch a harness in this directory. */
 export function isAllowedProject(target: string, registry: ProjectRegistry, fallbackCwd: string): boolean {
   const resolved = path.resolve(expandHome(target));
@@ -87,19 +96,17 @@ function basenameLower(dir: string): string {
 /**
  * Pick the project for one task. Return null when the task needs a question.
  * An explicit path wins. One basename hit wins. A known thread project wins.
+ * The caller canonicalizes the answer and enforces the allowlist.
  */
 export function resolveProject(
   task: string,
   threadKnown: string[],
   candidates: string[],
-  allowedRoots: string[],
 ): ProjectResolution | null {
   const normalized = task.toLowerCase();
   const explicit = findExplicitPath(task);
   if (explicit) {
     const resolved = path.resolve(expandHome(explicit));
-    const allowed = allowedRoots.some((root) => insideDir(resolved, root));
-    if (!allowed) return null;
     const root = candidates.find((dir) => insideDir(resolved, dir));
     return { projectPath: root ?? resolved, confidence: 'match' };
   }

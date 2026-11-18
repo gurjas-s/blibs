@@ -5,7 +5,16 @@ import { fileURLToPath } from 'node:url';
 import type { HistoryMessage } from './history.js';
 import type { Harness, HarnessRun } from './harness/types.js';
 import { extractMentionTask, sanitizeReply } from './harness/mention.js';
-import { listCandidates, resolveRegistryPaths, sessionKey, threadProjects } from './harness/router.js';
+import {
+  canonicalDir,
+  clarificationText,
+  isAllowedProject,
+  listCandidates,
+  resolveProject,
+  resolveRegistryPaths,
+  sessionKey,
+  threadProjects,
+} from './harness/router.js';
 import type { ProjectRegistry } from './harness/router.js';
 
 export const RELAY_QUEUE_LIMIT = 20;
@@ -131,7 +140,7 @@ export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig
   const registry = resolveRegistryPaths(config.discoveryRoot, config.projects);
   return {
     ...config,
-    cwd: safeHarnessCwd(path.resolve(config.cwd), dataDir),
+    cwd: canonicalDir(safeHarnessCwd(path.resolve(config.cwd), dataDir)),
     projects: registry.projects,
     discoveryRoot: registry.discoveryRoot,
   };
@@ -207,8 +216,8 @@ export class RelayService {
           processed: [],
           threads: [],
           sessions: {},
-          projects: [...options.config.projects],
-          discoveryRoot: options.config.discoveryRoot,
+          projects: options.config.projects.map(canonicalDir),
+          discoveryRoot: canonicalDir(options.config.discoveryRoot),
           model: options.config.model,
           runs: 0,
           lastRun: null,
@@ -252,7 +261,18 @@ export class RelayService {
         Array.isArray(raw.projects) ? raw.projects.filter((entry): entry is string => typeof entry === 'string') : this.config.projects,
       );
       const model = typeof raw.model === 'string' && raw.model.trim() ? raw.model.slice(0, 200) : undefined;
-      return { version: 2, watermark, processed, threads, sessions, projects: registry.projects, discoveryRoot: registry.discoveryRoot, model, runs, lastRun: this.readLastRun(raw.lastRun) };
+      return {
+        version: 2,
+        watermark,
+        processed,
+        threads,
+        sessions,
+        projects: registry.projects.map(canonicalDir),
+        discoveryRoot: canonicalDir(registry.discoveryRoot),
+        model,
+        runs,
+        lastRun: this.readLastRun(raw.lastRun),
+      };
     } catch {
       return null;
     }
@@ -339,14 +359,14 @@ export class RelayService {
   /** Replace the registry. The caller validates the shape before this call. */
   updateRegistry(projects: string[], discoveryRoot: string, model?: string | null): RelayStatus {
     const resolved = resolveRegistryPaths(discoveryRoot, projects);
-    this.state.projects = resolved.projects;
-    this.state.discoveryRoot = resolved.discoveryRoot;
-    this.state.model = model === null ? undefined : (model ?? this.state.model);
-    if (model !== undefined) this.config = { ...this.config, model: model ?? undefined };
-    try { fs.mkdirSync(this.state.discoveryRoot, { recursive: true }); } catch { /* discovery stays optional */ }
-    for (const dir of this.state.projects) {
+    try { fs.mkdirSync(resolved.discoveryRoot, { recursive: true }); } catch { /* discovery stays optional */ }
+    for (const dir of resolved.projects) {
       try { fs.mkdirSync(dir, { recursive: true }); } catch { /* a run records the failure */ }
     }
+    this.state.projects = resolved.projects.map(canonicalDir);
+    this.state.discoveryRoot = canonicalDir(resolved.discoveryRoot);
+    this.state.model = model === null ? undefined : (model ?? this.state.model);
+    if (model !== undefined) this.config = { ...this.config, model: model ?? undefined };
     this.save();
     return this.status();
   }
@@ -354,6 +374,20 @@ export class RelayService {
   /** Registered projects plus discovery subdirectories. */
   candidates(): string[] {
     return listCandidates(this.registry());
+  }
+
+  private resolveRequest(threadId: string, task: string): { projectPath: string } | null {
+    const known = this.projectsFor(threadId);
+    const candidates = this.candidates();
+    if (known.length === 0 && candidates.length === 0) {
+      return { projectPath: this.config.cwd };
+    }
+    const resolved = resolveProject(task, known, candidates);
+    if (!resolved) return null;
+    const projectPath = canonicalDir(resolved.projectPath);
+    if (!isAllowedProject(projectPath, this.registry(), this.config.cwd)) return null;
+    try { fs.mkdirSync(projectPath, { recursive: true }); } catch { /* the run records the failure */ }
+    return { projectPath };
   }
 
   // The first batch of a conversation is baseline: a sign-in sync is not work.
@@ -383,9 +417,18 @@ export class RelayService {
         const taskKey = `${threadId}\n${task}`;
         if (seenTasks.has(taskKey)) continue;
         seenTasks.add(taskKey);
-        // The project router lands in a later change. Every task uses the
-        // configured harness directory until then.
-        const projectPath = this.config.cwd;
+        const resolution = this.resolveRequest(threadId, task);
+        if (!resolution) {
+          this.remember(message);
+          changed = true;
+          this.enqueueReply(
+            message.provider,
+            sanitizeReply(clarificationText(this.candidates(), this.projectsFor(threadId))),
+            message.threadId,
+          );
+          continue;
+        }
+        const projectPath = resolution.projectPath;
         this.remember(message);
         changed = true;
         if (this.queue.length >= RELAY_QUEUE_LIMIT) {
