@@ -1,11 +1,5 @@
-// Relay service: one inbound assistant message in, one harness run, one reply
-// queued in the existing outbox.
-//
-// Scope:
-// - only new messages from the configured provider with role `agent`
-// - only messages newer than the durable high-water mark
-// - one run at a time, bounded queue, bounded prompt and reply
-// - state in the data directory, so a restart does not replay history
+// Relay loop: one new inbound agent message starts one harness run, and the
+// bounded reply goes to the existing outbox.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -63,7 +57,6 @@ interface RelayState {
   version: 1;
   watermark: number;
   processed: string[];
-  /** Conversations that already had a baseline observation. */
   threads: string[];
   runs: number;
   lastRun: RelayRunState | null;
@@ -71,17 +64,13 @@ interface RelayState {
 
 export interface RelayServiceOptions {
   config: RelayConfig;
-  /** Directory for `relay-state.json` and the default sandbox. */
   stateDir: string;
-  /** Writes the reply to the existing outbox. */
   enqueue: (provider: string, text: string) => void;
-  /** Threads that the history store already knew at startup. */
   knownThreads?: string[];
-  /** True when the thread already has a user message. */
   threadHasUser?: (provider: string, threadId: string) => boolean;
 }
 
-/** Replace a credential value if it appears in status text. */
+/** Status text must never show a credential value. */
 export function redactSecrets(value: string, env: NodeJS.ProcessEnv = process.env): string {
   let out = value;
   for (const key of SECRET_KEYS) {
@@ -91,7 +80,6 @@ export function redactSecrets(value: string, env: NodeJS.ProcessEnv = process.en
   return out;
 }
 
-/** Find the blibs checkout that contains `start`. */
 export function findCheckoutRoot(start: string): string | undefined {
   let dir = path.resolve(start);
   for (let depth = 0; depth < 8; depth++) {
@@ -110,7 +98,6 @@ function inside(target: string, root: string): boolean {
   return target === root || target.startsWith(`${root}${path.sep}`);
 }
 
-/** Build the relay configuration from the environment with safe defaults. */
 export function relayConfigFromEnv(env: NodeJS.ProcessEnv = process.env, dataDir = ''): RelayConfig {
   const provider = (env.BLIBS_RELAY_PROVIDER || 'muse').trim().toLowerCase().slice(0, 40) || 'muse';
   const command = (env.BLIBS_HARNESS_CMD || 'opencode run').trim();
@@ -129,26 +116,20 @@ export function relayConfigFromEnv(env: NodeJS.ProcessEnv = process.env, dataDir
   };
 }
 
-/** A Muse user turn is scraped with the vendor's "You:" label and agent role. */
+/** Muse labels the user turn `You:` but reports role agent. */
 export function isUserEcho(text: string): boolean {
   return text.trimStart().startsWith('You:');
 }
 
-/** A rendered time label is not a message. */
 export function isTimeLabel(text: string): boolean {
   return /^\d{1,2}:\d{2}\s*(?:AM|PM)$/i.test(text.trim());
 }
 
-/** Build the bounded prompt that the harness receives. */
 export function buildPrompt(task: string): string {
   return `${PROMPT_HEADER}\n\n${task.trim().slice(0, RELAY_PROMPT_LIMIT)}`;
 }
 
-/**
- * A vendor landing page is not a conversation. The view scrapes marketing
- * articles on `https://muse.ai/`, so a thread must be a provider page below
- * the root. Providers without a known host keep their rows.
- */
+/** A signed-out vendor page scrapes marketing text, so its root is not a chat. */
 export function isProviderThread(provider: string, threadId: string): boolean {
   const host = PROVIDER_HOSTS[provider];
   if (!host) return true;
@@ -160,7 +141,6 @@ export function isProviderThread(provider: string, threadId: string): boolean {
   }
 }
 
-/** True for a provider URL below its root, such as `/chat/abc`. */
 export function isConversationThread(provider: string, threadId: string): boolean {
   if (!isProviderThread(provider, threadId)) return false;
   if (!PROVIDER_HOSTS[provider]) return true;
@@ -193,7 +173,7 @@ export class RelayService {
     this.enqueueReply = options.enqueue;
     this.threadHasUser = options.threadHasUser ?? (() => false);
 
-    // Never run the harness in the blibs checkout, even with a bad override.
+    // Keep the harness out of the blibs checkout.
     const dataFallback = path.join(options.stateDir, 'harness');
     const checkout = findCheckoutRoot(MODULE_DIR);
     const fallback = checkout && inside(dataFallback, checkout) ? path.join(os.tmpdir(), 'blibs-harness') : dataFallback;
@@ -216,8 +196,8 @@ export class RelayService {
         error: 'interrupted by restart',
       };
     }
-    // A disabled relay must not write an early watermark. The first enabled
-    // start then treats everything already stored as backlog.
+    // Do not write a watermark while disabled. The first enabled start treats
+    // stored rows as backlog.
     if (!loaded && this.config.enabled) this.save();
   }
 
@@ -262,16 +242,13 @@ export class RelayService {
     } catch { /* keep the in-memory state; the next write retries */ }
   }
 
-  /** True when a new row in a known thread can start a run. */
   private accepts(message: HistoryMessage): boolean {
     if (!this.config.enabled || this.closed) return false;
     if (message.role !== 'agent') return false;
     if (message.provider.toLowerCase() !== this.config.provider) return false;
-    // Muse renders the user turn with a "You:" label but reports role agent.
     if (isUserEcho(message.text) || isTimeLabel(message.text)) return false;
     if (!isProviderThread(this.config.provider, message.threadId)) return false;
     // A root path is the landing page until the conversation has a user turn.
-    // The Muse chat stays at `https://muse.ai/`.
     if (!isConversationThread(this.config.provider, message.threadId)
       && !this.threadHasUser(this.config.provider, message.threadId)) return false;
     if (this.state.processed.includes(message.id)) return false;
@@ -291,10 +268,7 @@ export class RelayService {
     this.state.threads = [...this.knownThreads].slice(-RELAY_THREAD_LIMIT);
   }
 
-  /**
-   * Observe the rows that one import inserted. The first batch for a
-   * conversation is its baseline: a sign-in sync must not relay history.
-   */
+  /** The first batch of a conversation is baseline: a sign-in sync is not work. */
   observeBatch(messages: HistoryMessage[]): void {
     if (!this.config.enabled || this.closed) return;
     const groups = new Map<string, HistoryMessage[]>();
@@ -399,7 +373,6 @@ export class RelayService {
     };
   }
 
-  /** Stop the queue and kill the active harness run. */
   close(): void {
     if (this.closed) return;
     this.closed = true;

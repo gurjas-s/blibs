@@ -1,6 +1,4 @@
-// Relay loop tests. Every run uses a fake harness command, a temporary data
-// directory, and mocked import rows. No real OpenCode process and no vendor
-// session is involved.
+// Relay tests use a fake harness, temporary stores, and mocked rows.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -63,8 +61,7 @@ async function startRelay(options: { dataDir?: string; timeoutMs?: number; remov
   const harnessDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-harness-'));
   const fake = path.join(harnessDir, 'fake-harness.mjs');
   writeFileSync(fake, FAKE_HARNESS);
-  // The relay treats the first batch of a conversation as baseline. A real
-  // conversation already has rows in the store before a new reply arrives.
+  // A real conversation already has rows, so seed one before the relay starts.
   const seed = new HistoryStore(dataDir);
   seed.import([{ provider: 'muse', role: 'user', text: 'Earlier user message.', ts: 1, url: 'https://muse.ai/chat/relay-test', sourceId: 'seed-user', identity: 'source-id' }]);
   seed.close();

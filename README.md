@@ -82,11 +82,10 @@ under your message flips `Sending…` → `Sent` (or `Not delivered` + Retry).
 The agent's reply syncs back on its own.
 
 **Relay to a local harness:** set `BLIBS_RELAY=1` and a harness command. A new
-Muse agent message then starts one non-interactive OpenCode run. The reply goes
-to the same Muse outbox, and the normal delivery loop types it into the chat.
-The relay has a durable high-water mark, so a restart does not replay history.
-Read [relay loop](docs/relay-loop.md) for the configuration, the verified
-command, and the manual check.
+Muse agent message starts one non-interactive OpenCode run, and the reply goes
+to the same Muse outbox for the normal delivery loop. Read
+[relay loop](docs/relay-loop.md) for the keys, the verified command, and the
+manual check.
 
 ## Scripts
 
@@ -339,8 +338,6 @@ JSON backup; retained history is not capped at the panel's 500 messages.
   and WhatsApp/Slack DMs are out of reach.
 - Sending is best-effort DOM automation (fill composer → click send); vendors
   redesign pages, selectors need maintenance — failures always surface with a reason.
-- The relay runs one harness at a time and keeps the first part of a long
-  message or reply. It is a proof of concept, not a full job queue. Every relay
-  reply is a normal user message in the vendor chat, so a vendor agent can
-  answer it and start another run. Quit the app to end the loop.
+- The relay is a proof of concept. A vendor agent can answer a relay reply and
+  start another run; quit the app to end the loop.
 - Personal use on your own accounts; check vendor ToS before productizing.

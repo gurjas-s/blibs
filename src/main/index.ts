@@ -8,8 +8,7 @@
 // - Spawns server/proxy (import store + outbox) as a child process.
 // - Serves the built panel (dist/) over HTTP, forwarding /api/* to the proxy.
 // - Keeps one hidden vendor window per vendor (persisted partitions, so login
-//   survives restarts) that scrapes chats and delivers outbox sends. A real
-//   viewport matters: a 0x0 view leaves the composer invisible to the sender.
+//   survives restarts) that scrapes chats and delivers outbox sends.
 // - The panel's agents screen and Menu > Agents open a sign-in window per
 //   vendor (shared partition, so the hidden view picks up the session).
 //
@@ -284,9 +283,7 @@ export function createMainWindow(): BrowserWindow {
 }
 
 function attachVendorViews(): void {
-  // A hidden BrowserWindow keeps a real layout viewport. The composer in a 0x0
-  // BrowserView has width 0, and the outbox send path only accepts a visible
-  // editor. The windows stay hidden, so the panel remains the only surface.
+  // A hidden window keeps a real viewport, so the outbox send can find the composer.
   for (const v of VENDORS) {
     if (_views.has(v.id)) continue;
     const view = new BrowserWindow({

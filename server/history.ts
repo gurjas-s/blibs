@@ -128,11 +128,9 @@ export class HistoryStore {
     return (this.db.prepare('SELECT DISTINCT threadId FROM messages WHERE provider=? ORDER BY threadId LIMIT 2000').all(provider) as unknown as { threadId: string }[])
       .map((row) => row.threadId);
   }
-  /** True when the thread already has a user message. */
   hasUserMessage(provider: string, threadId: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM messages WHERE provider=? AND threadId=? AND role='user' LIMIT 1").get(provider, threadId));
   }
-  /** True when a row starts with the given label. */
   hasMessagePrefix(provider: string, threadId: string, prefix: string): boolean {
     return Boolean(this.db.prepare('SELECT 1 FROM messages WHERE provider=? AND threadId=? AND substr(text,1,?)=? LIMIT 1').get(provider, threadId, prefix.length, prefix));
   }
