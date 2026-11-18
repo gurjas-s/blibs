@@ -27,7 +27,7 @@ instead, because it runs inside the new worktree at the right time.
   "scripts": [
     {
       "name": "Provision local env",
-      "command": "node scripts/provision-env.mjs",
+      "command": "sh scripts/provision-env.sh",
       "icon": "configure",
       "runOnWorktreeCreate": true,
       "async": false
@@ -38,12 +38,13 @@ instead, because it runs inside the new worktree at the right time.
 
 `runOnWorktreeCreate` runs the script after T3 creates a worktree. `async: false`
 holds the agent until the script exits. The file is then ready before the agent
-starts.
+starts. The script is POSIX shell. macOS and Linux use the system `sh`. Windows
+needs `sh` from Git for Windows.
 
 You can run the same command yourself:
 
 ```bash
-node scripts/provision-env.mjs
+sh scripts/provision-env.sh
 ```
 
 ## Where the source file comes from
@@ -68,7 +69,7 @@ If no source file exists, the script prints a warning and exits 0. Set
 `BLIBS_REQUIRE_ENV=1` to make a missing source a hard failure with exit 1:
 
 ```bash
-BLIBS_REQUIRE_ENV=1 node scripts/provision-env.mjs
+BLIBS_REQUIRE_ENV=1 sh scripts/provision-env.sh
 ```
 
 Use the check mode for a test or a diagnosis. It reports whether the destination
@@ -76,7 +77,7 @@ exists and exits without writing or changing anything. It exits 0 when the file
 exists and 1 when it is missing:
 
 ```bash
-node scripts/provision-env.mjs --check
+sh scripts/provision-env.sh --check
 ```
 
 ## Git ignore rules
@@ -100,5 +101,5 @@ If the main checkout stays on another branch, the file is absent and T3 reports
 no setup script. Provision the file by hand until the main checkout changes:
 
 ```bash
-node scripts/provision-env.mjs
+sh scripts/provision-env.sh
 ```

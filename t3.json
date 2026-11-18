@@ -2,7 +2,7 @@
   "scripts": [
     {
       "name": "Provision local env",
-      "command": "node scripts/provision-env.mjs",
+      "command": "sh scripts/provision-env.sh",
       "icon": "configure",
       "runOnWorktreeCreate": true,
       "async": false
