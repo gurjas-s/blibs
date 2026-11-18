@@ -11,11 +11,14 @@
 :root {
   /* Layout — the same at every theme. */
   --layout-sidebar-width: 264px;
+  --layout-context-width: 288px;
   --layout-thread-measure: 76ch;
   --layout-chat-measure: 960px;
   --layout-search-width: 520px;
   --layout-status-space: 176px;
   --layout-gutter: var(--space-7);
+  --layout-matrix-min-width: 560px;
+  --layout-preview-height: 96px;
 
   /* Control scale — one height, radius, padding, border, and focus ring for
    * buttons, text fields, selects, and cards. */
@@ -31,6 +34,11 @@
   --control-focus-ring: 0 0 0 var(--control-focus-ring-width) var(--color-focus-ring);
   --card-radius: var(--control-radius);
   --card-padding: var(--space-6);
+
+  /* Switch — the shared toggle track. */
+  --switch-width: 36px;
+  --switch-height: 20px;
+  --switch-thumb: 16px;
 
   /* Row scale — section labels and list rows use the same insets. */
   --row-padding-inline: var(--space-2);
@@ -57,6 +65,7 @@
   --color-text: #e8eaee;
   --color-text-muted: #a7aeba;
   --color-text-subtle: #8b93a1;
+  --color-control-off: #7b8494;
   --color-accent: #4f46e5;
   --color-accent-hover: #6366f1;
   --color-accent-text: #ffffff;
@@ -130,6 +139,7 @@
   --color-text: #171a20;
   --color-text-muted: #4b5563;
   --color-text-subtle: #5b6472;
+  --color-control-off: #6b7280;
   --color-accent: #4338ca;
   --color-accent-hover: #4f46e5;
   --color-accent-text: #ffffff;

@@ -191,6 +191,9 @@ export const MESSAGES_STORAGE_KEY = 'blibs-messages-v2';
 /** Storage key that marks the first-run flow as complete. */
 export const ONBOARDING_STORAGE_KEY = 'blibs-onboarding-v1';
 
+/** Storage key that the panel uses for the connection state. */
+export const CONNECTIONS_STORAGE_KEY = 'blibs-connections-v1';
+
 /** Remove the saved onboarding result and load the first-run screen. */
 export async function resetOnboarding(page: Page): Promise<void> {
   await page.evaluate((key) => localStorage.removeItem(key), ONBOARDING_STORAGE_KEY);
@@ -198,11 +201,11 @@ export async function resetOnboarding(page: Page): Promise<void> {
   await page.locator('.onboarding-screen').waitFor({ state: 'visible', timeout: 15_000 });
 }
 
-/** Skip the first-run flow when it is visible, then wait for the chat shell. */
+/** Open the chat shell from the connections screen. */
 export async function completeOnboarding(page: Page): Promise<void> {
   const screen = page.locator('.onboarding-screen');
   if (await screen.isVisible().catch(() => false)) {
-    await page.getByRole('button', { name: 'Skip', exact: true }).click();
+    await page.getByRole('button', { name: 'Start chatting', exact: true }).click();
   }
   await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
 }
@@ -214,6 +217,11 @@ export interface MockChatMessage {
   text: string;
   ts: number;
   source: 'mock';
+  action?: {
+    harness: 'claude-code' | 'codex' | 'opencode';
+    status: 'completed' | 'running' | 'failed';
+    detail: string;
+  };
 }
 
 export type MockChats = Record<string, MockChatMessage[]>;
@@ -246,6 +254,19 @@ export function mockChats(now = Date.now()): MockChats {
         text: 'Added oat milk. The total is $42.18 and the order stays on the same delivery window.',
         ts: now - 47 * minute,
         source: 'mock',
+      },
+      {
+        id: 'mock-muse-4',
+        agentId: 'muse',
+        role: 'agent',
+        text: '',
+        ts: now - 46 * minute,
+        source: 'mock',
+        action: {
+          harness: 'claude-code',
+          status: 'completed',
+          detail: 'Updated the login handler and ran 12 tests in ~/Projects/blibs.',
+        },
       },
     ],
     dots: [
@@ -296,16 +317,111 @@ export function mockChats(now = Date.now()): MockChats {
 }
 
 /** Write mock chats into the panel store and reload the window. */
-export async function seedChats(page: Page, chats: MockChats = mockChats()): Promise<void> {
+export async function seedChats(
+  page: Page,
+  chats: MockChats = mockChats(),
+  connections: MockConnections = mockConnections(),
+): Promise<void> {
   await page.evaluate(
-    ({ key, value }) => {
-      localStorage.setItem(key, JSON.stringify(value));
+    ({ messageKey, messages, connectionKey, connectionState }) => {
+      localStorage.setItem(messageKey, JSON.stringify(messages));
+      localStorage.setItem(connectionKey, JSON.stringify(connectionState));
     },
-    { key: MESSAGES_STORAGE_KEY, value: chats },
+    {
+      messageKey: MESSAGES_STORAGE_KEY,
+      messages: chats,
+      connectionKey: CONNECTIONS_STORAGE_KEY,
+      connectionState: connections,
+    },
   );
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
   await page.locator('.msg').first().waitFor({ state: 'visible', timeout: 15_000 });
+}
+
+export type MockAssistantId = 'muse' | 'dots' | 'grok';
+export type MockHarnessId = 'claude-code' | 'codex' | 'opencode';
+export type MockSetup = 'connected' | 'setup';
+
+export interface MockAction {
+  id: string;
+  assistantId: MockAssistantId;
+  harness: MockHarnessId;
+  title: string;
+  detail: string;
+  status: 'completed' | 'running' | 'failed';
+  at: number;
+}
+
+export interface MockConnections {
+  folder: string;
+  assistants: Record<MockAssistantId, {
+    setup: MockSetup;
+    harnesses: Record<MockHarnessId, boolean>;
+  }>;
+  activity: MockAction[];
+}
+
+export interface MockConnectionsOptions {
+  folder?: string;
+  /** Connection state per assistant. Defaults to connected. */
+  setup?: Partial<Record<MockAssistantId, MockSetup>>;
+  /** Harness enablement per assistant. */
+  harnesses?: Partial<Record<MockAssistantId, Partial<Record<MockHarnessId, boolean>>>>;
+  activity?: MockAction[];
+}
+
+/** Deterministic connection state for screenshots and UI checks. */
+export function mockConnections(options: MockConnectionsOptions = {}): MockConnections {
+  const now = Date.now();
+  const harnesses: MockConnections['assistants'] = {
+    muse: { setup: 'connected', harnesses: { 'claude-code': true, codex: false, opencode: true } },
+    dots: { setup: 'connected', harnesses: { 'claude-code': false, codex: true, opencode: true } },
+    grok: { setup: 'connected', harnesses: { 'claude-code': true, codex: true, opencode: false } },
+  };
+  for (const id of Object.keys(harnesses) as MockAssistantId[]) {
+    const setup = options.setup?.[id];
+    if (setup) harnesses[id].setup = setup;
+    const enabled = options.harnesses?.[id];
+    if (enabled) Object.assign(harnesses[id].harnesses, enabled);
+  }
+  return {
+    folder: options.folder ?? '~/Projects',
+    assistants: harnesses,
+    activity: options.activity ?? [
+      {
+        id: 'mock-action-1',
+        assistantId: 'muse',
+        harness: 'claude-code',
+        title: 'Fixed login button',
+        detail: 'Updated the login handler and ran 12 tests in ~/Projects/blibs.',
+        status: 'completed',
+        at: now - 10 * 60_000,
+      },
+      {
+        id: 'mock-action-2',
+        assistantId: 'muse',
+        harness: 'codex',
+        title: 'Reviewed README',
+        detail: 'Checked the setup steps in ~/Projects/blibs/README.md.',
+        status: 'completed',
+        at: now - 120 * 60_000,
+      },
+    ],
+  };
+}
+
+/** Write mock connection state into the panel store and reload the window. */
+export async function seedConnections(
+  page: Page,
+  connections: MockConnections = mockConnections(),
+): Promise<void> {
+  await page.evaluate(
+    ({ key, value }) => localStorage.setItem(key, JSON.stringify(value)),
+    { key: CONNECTIONS_STORAGE_KEY, value: connections },
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
 }
 
 /** Click an agent in the sidebar and wait until its thread shows it. */

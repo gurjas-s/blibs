@@ -1,160 +1,180 @@
 import { useEffect, useState } from 'react';
-import { PROVIDERS } from './providers';
+import type { FormEvent } from 'react';
+import type { ConnectionState, HarnessMeta } from './connections';
+import { connectionFor } from './connections';
+import type { HarnessId, ProviderMeta } from './types';
+import { Avatar } from './components/Avatar';
 import { Button } from './components/Button';
 import { Card } from './components/Card';
-import { SelectField } from './components/SelectField';
-
-export interface OnboardingResult {
-  /** Open the agents screen for sign-in when true. */
-  openLogin?: boolean;
-  vendorId?: string;
-}
+import { CheckboxField } from './components/CheckboxField';
+import { TextField } from './components/TextField';
 
 export interface OnboardingProps {
-  onFinish: (result: OnboardingResult) => void;
+  /** Personal assistants, in display order. */
+  assistants: ProviderMeta[];
+  /** Local coding harnesses, in display order. */
+  harnesses: HarnessMeta[];
+  state: ConnectionState;
+  onToggleHarness: (assistantId: string, harnessId: HarnessId, enabled: boolean) => void;
+  onChangeFolder: (folder: string) => void;
+  /** Open the agents screen to sign in to another assistant. */
+  onConnectAnother: () => void;
+  /** Leave the connections screen and open the chat. */
+  onStart: () => void;
+  /** Return to the chat when the user opens Connections from the shell. */
+  onBack?: () => void;
 }
 
-const STEPS = ['What blibs does', 'Connect a vendor', 'Sign in', 'Start'];
-
-/** First-run steps. Skip is safe at every step that asks for setup. */
-export default function Onboarding({ onFinish }: OnboardingProps) {
-  const [step, setStep] = useState(0);
-  const [vendorId, setVendorId] = useState<string>(PROVIDERS[0].id);
-  const vendor = PROVIDERS.find((item) => item.id === vendorId) ?? PROVIDERS[0];
-  const last = STEPS.length - 1;
+/**
+ * First-run connections screen. It replaces the old four-step dialog.
+ * The user enables harnesses for each assistant, sets the shared folder, and
+ * starts a chat. The screen has no chat sidebar.
+ */
+export default function Onboarding({
+  assistants,
+  harnesses,
+  state,
+  onToggleHarness,
+  onChangeFolder,
+  onConnectAnother,
+  onStart,
+  onBack,
+}: OnboardingProps) {
+  const [editingFolder, setEditingFolder] = useState(false);
+  const [folderDraft, setFolderDraft] = useState(state.folder);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onFinish({});
+      if (event.key !== 'Escape') return;
+      if (editingFolder) {
+        setEditingFolder(false);
+        return;
+      }
+      if (onBack) onBack();
+      else onStart();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onFinish]);
+  }, [editingFolder, onBack, onStart]);
 
-  const skip = (): void => {
-    if (step === 0) onFinish({});
-    else setStep(last);
-  };
+  function startFolderEdit(): void {
+    setFolderDraft(state.folder);
+    setEditingFolder(true);
+  }
+
+  function saveFolder(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    if (!folderDraft.trim()) return;
+    onChangeFolder(folderDraft);
+    setEditingFolder(false);
+  }
+
+  const headingId = 'onboarding-title';
 
   return (
-    <div className="onboarding-screen" data-onboarding>
-      <Card className="onboarding-card" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+    <div className="onboarding-screen connections-screen" data-onboarding>
+      <header className="connections-top">
         <div className="onboarding-brand">
           <span className="mark" aria-hidden="true">b</span>
           <strong>blibs</strong>
         </div>
-
-        <ol className="onboarding-steps" aria-label="Setup steps">
-          {STEPS.map((label, index) => (
-            <li key={label} aria-current={index === step ? 'step' : undefined}>
-              <span aria-hidden="true">{index + 1}</span>
-              {label}
-            </li>
-          ))}
-        </ol>
-
-        <div className="onboarding-body">
-          {step === 0 && (
-            <>
-              <h1 id="onboarding-title">One window for your personal agents</h1>
-              <p>
-                blibs keeps your vendor sessions open inside the app. It collects
-                their chats into one panel and sends your replies back to the
-                real session.
-              </p>
-              <p>
-                You need an account with at least one vendor: Meta Muse, OpenAI
-                Dots, or xAI Grok.
-              </p>
-            </>
+        <div className="connections-top-actions">
+          {onBack && (
+            <Button variant="ghost" onClick={onBack}>
+              Back to chats
+            </Button>
           )}
+          <Button variant="primary" size="lg" onClick={onStart}>
+            Start chatting
+          </Button>
+        </div>
+      </header>
 
-          {step === 1 && (
-            <>
-              <h1 id="onboarding-title">Connect a vendor</h1>
-              <p>
-                Choose the vendor that you want to use first. You can connect the
-                other two later from the agents screen.
-              </p>
-              <SelectField
-                label="Vendor"
-                value={vendorId}
-                onChange={(event) => setVendorId(event.target.value)}
-              >
-                {PROVIDERS.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.vendor} {item.product}
-                  </option>
-                ))}
-              </SelectField>
-            </>
-          )}
-
-          {step === 2 && (
-            <>
-              <h1 id="onboarding-title">Sign in</h1>
-              <p>
-                Sign-in happens in a vendor window inside the app. The session
-                stays on this device. If the vendor asks for a code or a CAPTCHA,
-                blibs shows the next step in the agents screen.
-              </p>
-              <p className="onboarding-note">
-                Selected vendor: {vendor.vendor} {vendor.product}
-              </p>
-            </>
-          )}
-
-          {step === 3 && (
-            <>
-              <h1 id="onboarding-title">Start</h1>
-              <p>
-                Your chats sync after sign-in. Open the composer to send a reply.
-                Use Sync in Settings to set how often the panel collects new
-                messages.
-              </p>
-              <p className="onboarding-note">
-                Signs in to {vendor.vendor} {vendor.product} from the agents screen.
-              </p>
-            </>
-          )}
+      <main className="connections-center">
+        <div className="connections-hero">
+          <h1 id={headingId}>Connect your AI assistants to this Mac</h1>
+          <p>Turn on the coding tools each assistant can use.</p>
         </div>
 
-        <div className="onboarding-actions">
-          <Button variant="ghost" onClick={() => setStep((value) => Math.max(0, value - 1))} disabled={step === 0}>
-            Back
-          </Button>
-          <div className="onboarding-actions-end">
-            {step < last && (
-              <Button variant="ghost" onClick={skip}>
-                Skip
-              </Button>
-            )}
-            {step === 0 && (
-              <Button variant="primary" onClick={() => setStep(1)}>
-                Next
-              </Button>
-            )}
-            {step === 1 && (
-              <Button variant="primary" onClick={() => setStep(2)}>
-                Next
-              </Button>
-            )}
-            {step === 2 && (
-              <Button
-                variant="primary"
-                onClick={() => onFinish({ openLogin: true, vendorId })}
-              >
-                Sign in to {vendor.product}
-              </Button>
-            )}
-            {step === 3 && (
-              <Button variant="primary" onClick={() => onFinish({})}>
-                Start using blibs
-              </Button>
+        <Card className="connections-matrix">
+          <div className="matrix-scroll">
+            <table>
+              <caption className="sr-only">
+                Coding harnesses for each personal assistant
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Tools on this computer</th>
+                  {assistants.map((assistant) => (
+                    <th scope="col" key={assistant.id}>
+                      <span className="matrix-head">
+                        <Avatar name={assistant.product} />
+                        {assistant.product}
+                      </span>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {harnesses.map((harness) => (
+                  <tr key={harness.id}>
+                    <th scope="row">{harness.name}</th>
+                    {assistants.map((assistant) => {
+                      const connection = connectionFor(state, assistant.id);
+                      return (
+                        <td key={assistant.id}>
+                          <CheckboxField
+                            variant="switch"
+                            checked={connection.harnesses[harness.id]}
+                            label={`${harness.name} for ${assistant.product}`}
+                            onChange={(event) =>
+                              onToggleHarness(assistant.id, harness.id, event.target.checked)
+                            }
+                          />
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        <div className="connections-foot">
+          <div className="connections-folder">
+            {editingFolder ? (
+              <form className="connections-folder-form" onSubmit={saveFolder}>
+                <TextField
+                  label="Shared folder path"
+                  value={folderDraft}
+                  onChange={(event) => setFolderDraft(event.target.value)}
+                  placeholder="~/Projects"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <Button variant="primary" type="submit" disabled={!folderDraft.trim()}>
+                  Save
+                </Button>
+                <Button variant="ghost" onClick={() => setEditingFolder(false)}>
+                  Cancel
+                </Button>
+              </form>
+            ) : (
+              <>
+                <span className="connections-folder-label">Shared folder</span>
+                <code className="connections-folder-path">{state.folder}</code>
+                <Button variant="ghost" size="sm" onClick={startFolderEdit}>
+                  Change folder
+                </Button>
+              </>
             )}
           </div>
+          <Button variant="secondary" onClick={onConnectAnother}>
+            Connect another assistant
+          </Button>
         </div>
-      </Card>
+      </main>
     </div>
   );
 }
