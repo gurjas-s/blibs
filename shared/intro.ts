@@ -7,7 +7,6 @@
 /** First line of every introduction reply. An echo of this line is not a trigger. */
 export const INTRO_HEADER = 'blibs introduction';
 
-/** True when the text starts with the introduction header. */
 export function startsWithIntroHeader(text: string): boolean {
   return text.trimStart().startsWith(INTRO_HEADER);
 }

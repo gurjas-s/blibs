@@ -7,10 +7,8 @@
 import os from 'node:os';
 import path from 'node:path';
 
-/** Folder whose subdirectories are project candidates. */
 export const DEFAULT_DISCOVERY_ROOT = path.join(os.homedir(), 'Projects');
 
-/** Approved projects for a fresh install. */
 export const DEFAULT_PROJECTS = [
   path.join(DEFAULT_DISCOVERY_ROOT, 'LeetCode-Solutions'),
   path.join(DEFAULT_DISCOVERY_ROOT, 'streaming-simulator'),

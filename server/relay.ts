@@ -50,7 +50,6 @@ export const RELAY_COMMAND_ENV = 'BLIBS_RELAY_COMMAND';
 const RELAY_COMMAND_LIMIT = 2000;
 /** Window that treats the same trigger text in one thread as a re-scrape. */
 const TRIGGER_DEDUPE_MS = 2 * 60_000;
-/** Trigger keys kept in memory. */
 const TRIGGER_DEDUPE_LIMIT = 500;
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -356,7 +355,6 @@ export class RelayService {
     return HARNESS_KINDS.map((kind) => ({ id: kind.id, name: kind.name, enabled: true }));
   }
 
-  /** Replace the harness rows that the introduction reply lists. */
   updateHarnesses(reported: HarnessChoice[]): RelayStatus {
     this.state.harnesses = reported.map((choice) => ({ ...choice }));
     this.save();

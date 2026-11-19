@@ -189,8 +189,6 @@ export default function App() {
     writeConnectionState(connections);
   }, [connections]);
 
-  // The relay writes the introduction reply. It needs the same harness toggles
-  // that this panel shows for the relay assistant.
   useEffect(() => {
     const relayAgent = agents.find((agent) => agent.provider === RELAY_ASSISTANT_PROVIDER);
     if (!relayAgent) return;

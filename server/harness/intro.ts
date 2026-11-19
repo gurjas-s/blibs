@@ -10,7 +10,6 @@ import { HARNESS_KINDS } from './registry.js';
 
 export { INTRO_HEADER };
 
-/** Chat trigger for the introduction reply. */
 export const BLIBS_MENTION = '@blibs';
 
 /** Harness that the introduction suggests first when it is enabled. */
@@ -35,7 +34,6 @@ export function isIntroMessage(text: string): boolean {
   return startsWithIntroHeader(stripVendorLabel(text));
 }
 
-/** Chat tag for one harness id. */
 export function harnessTag(id: string): string {
   return `@${id}`;
 }

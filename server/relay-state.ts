@@ -9,9 +9,7 @@ import type { HarnessChoice } from './harness/intro.js';
 export const RELAY_STATE_VERSION = 2;
 export const RELAY_PROCESSED_LIMIT = 500;
 export const RELAY_THREAD_LIMIT = 500;
-/** Harness rows that the panel can report. */
 export const RELAY_HARNESS_LIMIT = 20;
-/** Length limit for one reported harness id or name. */
 export const HARNESS_TEXT_LIMIT = 60;
 /** Coding sessions kept in state. One thread can own one per project. */
 export const RELAY_SESSION_LIMIT = 500;
@@ -89,7 +87,6 @@ export function parseModel(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.slice(0, RELAY_MODEL_LIMIT) : undefined;
 }
 
-/** Keep valid harness rows that the panel reported, bounded for storage. */
 export function parseHarnesses(value: unknown): HarnessChoice[] {
   if (!Array.isArray(value)) return [];
   const harnesses: HarnessChoice[] = [];
