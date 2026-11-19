@@ -3,13 +3,12 @@
 // Only this module knows the trigger syntax. The relay asks it for the task
 // behind a mention and for reply text that cannot retrigger. A syntax change
 // or a new harness mention stays here.
+import { stripVendorLabel } from '../../shared/vendor-label.js';
+
 export const OPENCODE_MENTION = '@opencode';
 
 /** Muse reports the user turn with role agent and this label. */
 export const USER_ECHO_LABEL = 'You:';
-
-/** Vendor labels that a scraped bubble can carry before its text. */
-const VENDOR_LABEL = /^(?:you|user message|assistant message|agent message)\s*:\s*/i;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -26,11 +25,6 @@ export function isUserEcho(text: string): boolean {
 export function stripUserEcho(text: string): string {
   if (!isUserEcho(text)) return text;
   return text.trimStart().slice(USER_ECHO_LABEL.length).trimStart();
-}
-
-/** Remove one vendor bubble label. A re-scraped message keeps its text. */
-export function stripVendorLabel(text: string): string {
-  return text.trimStart().replace(VENDOR_LABEL, '').trimStart();
 }
 
 export function extractMentionTask(text: string, mention: string = OPENCODE_MENTION): string | null {

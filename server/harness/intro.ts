@@ -5,7 +5,7 @@
 // this assistant can use, and how a harness tag works. This module owns the
 // trigger and the reply text. The shared module owns the first line.
 import { INTRO_HEADER, startsWithIntroHeader } from '../../shared/intro.js';
-import { stripVendorLabel } from './mention.js';
+import { stripVendorLabel } from '../../shared/vendor-label.js';
 import { HARNESS_KINDS } from './registry.js';
 
 export { INTRO_HEADER };

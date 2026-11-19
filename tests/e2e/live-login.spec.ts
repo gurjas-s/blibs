@@ -28,6 +28,7 @@ import path from 'node:path';
 import type { Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
 import type { BrowserContext } from 'playwright-core';
+import { stripVendorLabel } from '../../shared/vendor-label.ts';
 import {
   ARTIFACT_DIR,
   completeOnboarding,
@@ -319,7 +320,7 @@ async function waitForImport(
 
 /** True when a vendor row is the `/clear` command, with or without a vendor label. */
 function isClearImport(text: string): boolean {
-  return /^\/clear\b/i.test(text.trimStart().replace(/^(?:you|user message)\s*:\s*/i, ''));
+  return /^\/clear\b/i.test(stripVendorLabel(text));
 }
 
 /** Print the relay and popout state when a live wait fails. */
