@@ -8,6 +8,9 @@ export const OPENCODE_MENTION = '@opencode';
 /** Muse reports the user turn with role agent and this label. */
 export const USER_ECHO_LABEL = 'You:';
 
+/** Vendor labels that a scraped bubble can carry before its text. */
+const VENDOR_LABEL = /^(?:you|user message|assistant message|agent message)\s*:\s*/i;
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -25,8 +28,13 @@ export function stripUserEcho(text: string): string {
   return text.trimStart().slice(USER_ECHO_LABEL.length).trimStart();
 }
 
+/** Remove one vendor bubble label. A re-scraped message keeps its text. */
+export function stripVendorLabel(text: string): string {
+  return text.trimStart().replace(VENDOR_LABEL, '').trimStart();
+}
+
 export function extractMentionTask(text: string, mention: string = OPENCODE_MENTION): string | null {
-  const body = stripUserEcho(text);
+  const body = stripVendorLabel(text);
   if (!mentionPattern(mention).test(body)) return null;
   const task = body.replace(mentionPattern(mention), '').trim().replace(/\n{3,}/g, '\n\n');
   if (task.length < 2) return null;

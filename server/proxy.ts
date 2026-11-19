@@ -20,7 +20,8 @@ import type { LocalModels } from './retrieval.js';
 import type { SearchFilters } from './history.js';
 import { RelayService, buildRelayConfig } from './relay.js';
 import type { RelayConfig } from './relay.js';
-import { RELAY_MODEL_LIMIT } from './relay-state.js';
+import type { HarnessChoice } from './harness/intro.js';
+import { HARNESS_TEXT_LIMIT, RELAY_HARNESS_LIMIT, RELAY_MODEL_LIMIT } from './relay-state.js';
 import { harnessKind } from './harness/registry.js';
 import { USER_ECHO_LABEL } from './harness/mention.js';
 import { PROJECT_LIMIT, PROJECT_PATH_LIMIT } from './harness/router.js';
@@ -121,6 +122,22 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
     }),
     stateDir: dataDir,
     enqueue: (provider, text, threadId) => { enqueueOutbox(provider, text, threadId); },
+    announce: (provider, text, threadId, triggerId) => {
+      // An introduction is a blibs reply, not a vendor message. Record it in
+      // the chat history so the panel shows it. Do not type it into the vendor.
+      const sourceId = `blibs-intro:${triggerId ?? Date.now().toString(36)}`;
+      history.import([{
+        provider,
+        role: 'agent',
+        text,
+        ts: Date.now(),
+        url: threadId ?? '',
+        threadId: threadId ?? 'unknown-thread',
+        sourceId,
+        identity: 'blibs',
+      }]);
+      retrieval.schedule();
+    },
     knownThreads: history.threads(relayConfig.provider),
     threadHasUser: (provider, threadId) => history.hasUserMessage(provider, threadId)
       || (provider === 'muse' && history.hasMessagePrefix(provider, threadId, USER_ECHO_LABEL)),
@@ -145,6 +162,28 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
       }
       if (req.url === '/api/health') return send(res, 200, { ok: true });
       if (req.url === '/api/relay' && req.method === 'GET') return send(res, 200, relay.status());
+      if (req.url === '/api/relay/harnesses' && req.method === 'POST') {
+        let payload: Record<string, unknown>;
+        try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+        const rows = payload.harnesses;
+        if (!Array.isArray(rows) || rows.length > RELAY_HARNESS_LIMIT) {
+          return send(res, 400, { error: `harnesses must be an array of 0–${RELAY_HARNESS_LIMIT} rows` });
+        }
+        const harnesses: HarnessChoice[] = [];
+        for (const row of rows) {
+          if (!row || typeof row !== 'object') return send(res, 400, { error: 'each harness must be an object' });
+          const entry = row as Record<string, unknown>;
+          if (typeof entry.id !== 'string' || !entry.id.trim() || entry.id.length > HARNESS_TEXT_LIMIT) {
+            return send(res, 400, { error: 'harness id must be a short string' });
+          }
+          if (typeof entry.name !== 'string' || !entry.name.trim() || entry.name.length > HARNESS_TEXT_LIMIT) {
+            return send(res, 400, { error: 'harness name must be a short string' });
+          }
+          if (typeof entry.enabled !== 'boolean') return send(res, 400, { error: 'harness enabled must be a boolean' });
+          harnesses.push({ id: entry.id.trim(), name: entry.name.trim(), enabled: entry.enabled });
+        }
+        return send(res, 200, relay.updateHarnesses(harnesses));
+      }
       if (req.url === '/api/relay/projects' && req.method === 'POST') {
         let payload: Record<string, unknown>;
         try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }

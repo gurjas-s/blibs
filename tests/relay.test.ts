@@ -10,6 +10,7 @@ import { createProxyServer } from '../server/proxy.ts';
 import { HistoryStore } from '../server/history.ts';
 import { splitCommand } from '../server/harness/opencode.ts';
 import { buildRelayConfig, isConversationThread, isProviderThread, newSessionId } from '../server/relay.ts';
+import { DEFAULT_PROJECTS } from '../server/relay-defaults.ts';
 import {
   canonicalDir,
   clarificationText,
@@ -21,6 +22,15 @@ import {
   threadProjects,
 } from '../server/harness/router.ts';
 import { extractMentionTask, sanitizeReply } from '../server/harness/mention.ts';
+import {
+  BLIBS_MENTION,
+  INTRO_HEADER,
+  harnessTag,
+  introMessage,
+  isBlibsMention,
+  isIntroMessage,
+} from '../server/harness/intro.ts';
+import { harnessHeader, harnessMessage } from '../server/harness/message.ts';
 import { ROUTING_MCP_NAME, parseRoutingReply, routingPrompt } from '../server/harness/routing-agent.ts';
 
 const FAKE_HARNESS = `import fs from 'node:fs';
@@ -61,6 +71,7 @@ interface RelayStatus {
   enabled: boolean;
   provider: string;
   harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
+  harnesses: Array<{ id: string; name: string; enabled: boolean }>;
   projects: string[];
   discoveryRoot: string;
   pending: number;
@@ -95,6 +106,7 @@ async function startRelay(options: { dataDir?: string; timeoutMs?: number; model
       cwd: harnessDir,
       timeoutMs: options.timeoutMs ?? 5000,
       // Tests isolate routing from the real home directory.
+      projects: [],
       discoveryRoot: path.join(harnessDir, 'no-such-root'),
       ...(options.model ? { model: options.model } : {}),
     },
@@ -140,6 +152,10 @@ async function statusOf(server: RelayServer): Promise<RelayStatus> {
 
 async function outboxOf(server: RelayServer): Promise<{ items: Array<{ provider: string; text: string; status: string; threadId?: string }> }> {
   return fetch(`${server.base}/api/outbox`).then((response) => response.json() as Promise<{ items: Array<{ provider: string; text: string; status: string; threadId?: string }> }>);
+}
+
+async function importsOf(server: RelayServer): Promise<{ imports: Array<{ text: string; role: string; threadId: string }> }> {
+  return fetch(`${server.base}/api/imports`).then((response) => response.json() as Promise<{ imports: Array<{ text: string; role: string; threadId: string }> }>);
 }
 
 async function importItems(server: RelayServer, items: unknown[]): Promise<{ added: number; updated: number }> {
@@ -216,7 +232,14 @@ test('a user @opencode message starts one run and queues one Muse outbox item', 
   const outbox = await outboxOf(server);
   assert.equal(outbox.items.length, 1);
   assert.equal(outbox.items[0].provider, 'muse');
-  assert.equal(outbox.items[0].text, 'harness reply: Summarize the release notes.');
+  assert.ok(
+    outbox.items[0].text.startsWith(harnessHeader('OpenCode')),
+    'the harness reply says which harness sent it',
+  );
+  assert.ok(
+    outbox.items[0].text.endsWith('harness reply: Summarize the release notes.'),
+    'the harness text follows the header',
+  );
   assert.equal(outbox.items[0].threadId, 'https://muse.ai/chat/relay-test');
 
   const blocked = await fetch(`${server.base}/api/relay`, { headers: { Origin: 'https://untrusted.example' } });
@@ -239,6 +262,159 @@ test('a message without a mention does not start a run', async () => {
   assert.equal(readRuns(server).length, 0);
   assert.equal((await outboxOf(server)).items.length, 0);
   assert.equal((await statusOf(server)).lastRun, null);
+});
+
+test('an @blibs mention returns one introduction reply in the chat', async () => {
+  const server = await startRelay();
+  const url = 'https://muse.ai/chat/intro';
+  const report = await importItems(server, [
+    museMessage({ role: 'user', text: '@blibs What can you do?', url, sourceId: 'intro-1', ts: Date.now() + 5000 }),
+  ]);
+  assert.equal(report.added, 1);
+
+  // The first batch of a conversation is baseline for harness work. The
+  // introduction is safe to answer, so it replies even here.
+  const intro = (await importsOf(server)).imports.find(
+    (message) => message.threadId === url && message.text.startsWith(INTRO_HEADER),
+  );
+  assert.ok(intro, 'the chat gets one introduction reply');
+  assert.equal(intro.role, 'agent', 'the panel shows the reply as an agent message');
+  assert.match(intro.text, /Available harnesses: OpenCode\./);
+  assert.match(intro.text, /Enabled for this assistant: OpenCode\./);
+  assert.match(intro.text, /How tagging works:/);
+  assert.ok(intro.text.endsWith('To give it a try do @opencode hi.'), 'the reply ends with the test task');
+  assert.equal(readRuns(server).length, 0, 'the introduction starts no harness run');
+  const introOutbox = await outboxOf(server);
+  assert.equal(introOutbox.items.length, 1, 'the introduction is sent into the chat');
+  assert.equal(introOutbox.items[0].provider, 'muse');
+  assert.equal(introOutbox.items[0].threadId, url);
+  assert.ok(introOutbox.items[0].text.startsWith(INTRO_HEADER));
+  assert.ok(introOutbox.items[0].text.endsWith('To give it a try do @opencode hi.'), 'the sent reply keeps the example tag');
+
+  // An echo of the reply never answers itself.
+  await importItems(server, [
+    museMessage({ role: 'agent', text: `You:\n\n${intro.text}`, url, sourceId: 'intro-echo', ts: Date.now() + 5100 }),
+  ]);
+  await sleep(300);
+  assert.equal(
+    (await importsOf(server)).imports.filter((message) => message.text.startsWith(INTRO_HEADER)).length,
+    1,
+    'the reply echo does not start a second introduction',
+  );
+  assert.equal((await outboxOf(server)).items.length, 1, 'the reply echo sends nothing');
+
+  // Muse can label the same bubble as "User message:" instead of "You:".
+  await importItems(server, [
+    museMessage({ role: 'agent', text: `User message: ${intro.text}`, url, sourceId: 'intro-echo-label', ts: Date.now() + 5150 }),
+  ]);
+  await sleep(200);
+  assert.equal(
+    (await importsOf(server)).imports.filter((message) => message.text.startsWith(INTRO_HEADER)).length,
+    1,
+    'a labeled reply echo does not start another introduction',
+  );
+  assert.equal((await outboxOf(server)).items.length, 1);
+  assert.equal(readRuns(server).length, 0, 'a labeled reply echo starts no harness run');
+
+  // A second @blibs message gets a second answer.
+  await importItems(server, [
+    museMessage({ role: 'user', text: '@BLIBS again', url, sourceId: 'intro-2', ts: Date.now() + 5200 }),
+  ]);
+  await sleep(100);
+  assert.equal(
+    (await importsOf(server)).imports.filter((message) => message.text.startsWith(INTRO_HEADER)).length,
+    2,
+  );
+  assert.equal((await outboxOf(server)).items.length, 2);
+  assert.equal(readRuns(server).length, 0);
+});
+
+test('the panel report controls the harness list in the introduction', async () => {
+  const server = await startRelay();
+  const harnesses = [
+    { id: 'claude-code', name: 'Claude Code', enabled: true },
+    { id: 'codex', name: 'Codex', enabled: false },
+    { id: 'opencode', name: 'OpenCode', enabled: true },
+  ];
+  const posted = await fetch(`${server.base}/api/relay/harnesses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ harnesses }),
+  });
+  assert.equal(posted.status, 200);
+  const status = await statusOf(server);
+  assert.deepEqual(status.harnesses, harnesses, 'the relay keeps the reported rows');
+
+  const badShape = await fetch(`${server.base}/api/relay/harnesses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ harnesses: [{ id: 'codex' }] }),
+  });
+  assert.equal(badShape.status, 400);
+  const badType = await fetch(`${server.base}/api/relay/harnesses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ harnesses: [{ id: 'codex', name: 'Codex', enabled: 'yes' }] }),
+  });
+  assert.equal(badType.status, 400);
+
+  const url = 'https://muse.ai/chat/intro-report';
+  await importItems(server, [
+    museMessage({ role: 'user', text: '@blibs list the harnesses', url, sourceId: 'intro-report-1', ts: Date.now() + 5000 }),
+  ]);
+  const intro = (await importsOf(server)).imports.find(
+    (message) => message.threadId === url && message.text.startsWith(INTRO_HEADER),
+  );
+  assert.ok(intro);
+  assert.match(intro.text, /Available harnesses: Claude Code, Codex, OpenCode\./);
+  assert.match(intro.text, /Enabled for this assistant: Claude Code, OpenCode\./);
+  assert.ok(!/Enabled for this assistant:.*Codex/.test(intro.text), 'a disabled harness is not listed as enabled');
+});
+
+test('a cleared chat can ask blibs again without replaying old tasks', async () => {
+  const server = await startRelay();
+  const url = 'https://muse.ai/chat/clear-reset';
+  await importItems(server, [
+    museMessage({ role: 'user', text: '@opencode Old baseline task.', url, sourceId: 'clear-base-task', ts: Date.now() + 5000 }),
+    museMessage({ role: 'user', text: '@blibs', url, sourceId: 'clear-base-intro', ts: Date.now() + 5001 }),
+  ]);
+  await sleep(300);
+  assert.equal(readRuns(server).length, 0, 'the baseline task starts no run');
+  assert.equal(
+    (await importsOf(server)).imports.filter((message) => message.text.startsWith(INTRO_HEADER)).length,
+    1,
+    'the baseline introduction is answered once',
+  );
+
+  // A new scrape can re-render an old bubble with a new position and message id.
+  await importItems(server, [
+    museMessage({ role: 'agent', text: 'You:\n\n@opencode Old baseline task.', url, sourceId: 'clear-replay', ts: Date.now() + 5100 }),
+  ]);
+  await sleep(300);
+  assert.equal(readRuns(server).length, 0, 'a re-rendered baseline task does not run');
+
+  // `/clear` resets the vendor context, so the next identical @blibs mention answers again.
+  await importItems(server, [
+    museMessage({ role: 'agent', text: 'You:\n\n/clear', url, sourceId: 'clear-command', ts: Date.now() + 5200 }),
+  ]);
+  await sleep(100);
+  await importItems(server, [
+    museMessage({ role: 'user', text: '@blibs', url, sourceId: 'clear-intro-2', ts: Date.now() + 5300 }),
+  ]);
+  await sleep(200);
+  assert.equal(
+    (await importsOf(server)).imports.filter((message) => message.text.startsWith(INTRO_HEADER)).length,
+    2,
+    'the cleared chat gets a new introduction',
+  );
+  assert.equal(readRuns(server).length, 0, 'the introduction still starts no harness run');
+
+  // The same task text after a clear is a new request, not a re-scrape.
+  await importItems(server, [
+    museMessage({ role: 'user', text: '@opencode Old baseline task.', url, sourceId: 'clear-task-again', ts: Date.now() + 5400 }),
+  ]);
+  await waitFor(async () => (readRuns(server).length >= 2 ? true : undefined));
+  assert.equal(readRuns(server)[1].prompt, 'Old baseline task.');
 });
 
 test('a user message without a mention does not start a run', async () => {
@@ -426,7 +602,8 @@ test('the routing agent forwards a task to the project it picks', async () => {
   assert.ok(sessionOf(runs[1]), 'the work run continues the project session');
   const outbox = await outboxOf(server);
   assert.equal(outbox.items.length, 1);
-  assert.ok(outbox.items[0].text.startsWith('harness reply:'), 'the work reply reaches the thread');
+  assert.ok(outbox.items[0].text.startsWith(harnessHeader('OpenCode')), 'the work reply carries the harness header');
+  assert.ok(outbox.items[0].text.includes('harness reply:'), 'the work reply reaches the thread');
   assert.ok(!outbox.items[0].text.includes('FORWARD'), 'the routing decision never reaches the thread');
   assert.equal((await statusOf(server)).lastRun?.state, 'ok');
 });
@@ -488,11 +665,14 @@ test('the routing agent session survives a restart', async () => {
 });
 
 test('the routing prompt and reply contract stay strict', () => {
-  const prompt = routingPrompt('Fix the build.', 'https://muse.ai/chat/x');
+  const prompt = routingPrompt('Fix the build.', 'https://example.com/chat/x');
   assert.ok(prompt.includes('Fix the build.'));
-  assert.ok(prompt.includes('https://muse.ai/chat/x'));
+  assert.ok(prompt.includes('https://example.com/chat/x'));
   assert.ok(prompt.includes(ROUTING_MCP_NAME));
   assert.ok(!prompt.includes('@opencode'), 'the routing prompt carries no mention token');
+  assert.ok(!/Muse/i.test(prompt), 'the routing prompt names no provider');
+  assert.match(prompt, /only job is to choose the project/, 'the router does not own the work');
+  assert.match(prompt, /message unchanged/, 'the project session receives the message unchanged');
   assert.deepEqual(
     parseRoutingReply('Reading the registry.\nFORWARD /projects/alpha'),
     { kind: 'forward', projectPath: '/projects/alpha' },
@@ -724,7 +904,33 @@ test('stored backlog and older messages do not start a run', async () => {
   assert.equal(readRuns(server).length, 2);
 });
 
-test('a harness failure records an error and queues nothing', async () => {
+test('a re-scraped mention does not run twice', async () => {
+  const server = await startRelay();
+  const url = 'https://muse.ai/chat/rescrape';
+  await importItems(server, [
+    museMessage({ role: 'user', text: 'Baseline.', url, sourceId: 'rescrape-base', ts: Date.now() + 5000 }),
+  ]);
+  await sleep(100);
+
+  const text = '@opencode Summarize the duplicate scrape.';
+  await importItems(server, [
+    museMessage({ role: 'user', text, url, sourceId: 'rescrape-1', ts: Date.now() + 5100 }),
+  ]);
+  await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
+  assert.equal(readRuns(server).length, 2);
+  assert.equal((await outboxOf(server)).items.length, 1);
+
+  // The same bubble at a new page position gets a new source id and a later
+  // observation time. It must not run the task again.
+  await importItems(server, [
+    museMessage({ role: 'agent', text: `You:\n\n${text}`, url, sourceId: 'rescrape-2', ts: Date.now() + 5200 }),
+  ]);
+  await sleep(500);
+  assert.equal(readRuns(server).length, 2, 'the repeated scrape starts no second run');
+  assert.equal((await outboxOf(server)).items.length, 1, 'the repeated scrape sends no second reply');
+});
+
+test('a harness failure records an error and tells the chat', async () => {
   const server = await startRelay();
   await importItems(server, [museMessage({ text: '@opencode FAIL_HARNESS please break.', ts: Date.now() + 5000, sourceId: 'fail-1' })]);
   const status = await waitFor(async () => {
@@ -733,11 +939,15 @@ test('a harness failure records an error and queues nothing', async () => {
   });
   assert.match(status.lastRun?.error ?? '', /harness exited with code 3/);
   assert.equal(readRuns(server).length, 1, 'a failed routing run forwards no work');
-  assert.equal((await outboxOf(server)).items.length, 0);
+  const outbox = await outboxOf(server);
+  assert.equal(outbox.items.length, 1, 'the chat gets one failure note');
+  assert.match(outbox.items[0].text, /routing agent failed/);
+  assert.match(outbox.items[0].text, /exited with code 3/);
+  assert.ok(!outbox.items[0].text.includes('FAIL_HARNESS'), 'the failure note has no message body');
   assert.ok(!JSON.stringify(status).includes('FAIL_HARNESS'), 'the status has no message body');
 });
 
-test('a timeout kills the run and queues nothing', async () => {
+test('a timeout kills the run and tells the chat', async () => {
   const server = await startRelay({ timeoutMs: 400 });
   await importItems(server, [museMessage({ text: '@opencode SLOW_HARNESS please wait.', ts: Date.now() + 5000, sourceId: 'slow-1' })]);
   const status = await waitFor(async () => {
@@ -745,13 +955,50 @@ test('a timeout kills the run and queues nothing', async () => {
     return current.lastRun?.state === 'error' ? current : undefined;
   });
   assert.match(status.lastRun?.error ?? '', /timed out after 400 ms/);
-  assert.equal((await outboxOf(server)).items.length, 0);
+  const outbox = await outboxOf(server);
+  assert.equal(outbox.items.length, 1, 'the chat gets one failure note');
+  assert.match(outbox.items[0].text, /timed out after 400 ms/);
 
   const runs = readRuns(server);
   assert.equal(runs.length, 1);
   await waitFor(() => {
     try { process.kill(runs[0].pid, 0); return undefined; } catch { return true; }
   }, 3000);
+});
+
+test('a stale session does not hide the current project registry', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-stale-'));
+  const emptyRoot = path.join(dataDir, 'empty-root');
+  mkdirSync(emptyRoot);
+  const url = 'https://muse.ai/chat/relay-test';
+  const stale = path.join(dataDir, 'stale-project');
+  const target = path.join(dataDir, 'current-project');
+  writeFileSync(path.join(dataDir, 'relay-state.json'), JSON.stringify({
+    version: 2,
+    watermark: 1,
+    processed: [],
+    threads: [url],
+    sessions: { [`${url}\n${stale}`]: 'ses_stale' },
+    projects: [],
+    discoveryRoot: emptyRoot,
+    runs: 0,
+    lastRun: null,
+  }));
+  const server = await startRelay({ dataDir });
+  const registry = await fetch(`${server.base}/api/relay/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projects: [target], discoveryRoot: emptyRoot }),
+  });
+  assert.equal(registry.status, 200);
+
+  await importItems(server, [museMessage({ role: 'user', text: '@opencode Do the work', url, sourceId: 'stale-1', ts: Date.now() + 5000 })]);
+  await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
+  const runs = readRuns(server);
+  assert.equal(runs.length, 2, 'the work run starts for the allowed project');
+  assert.equal(runs[1].cwd, realpathSync(target), 'the stale session is not used');
+  const outbox = await outboxOf(server);
+  assert.ok(outbox.items[0].text.startsWith(harnessHeader('OpenCode')));
 });
 
 test('a restart does not replay the previous message', async () => {
@@ -778,12 +1025,59 @@ test('the mention parser strips the token and the reply never retriggers', () =>
   assert.equal(extractMentionTask('@opencode Build the settings page.'), 'Build the settings page.');
   assert.equal(extractMentionTask('Hey @opencode fix the build please'), 'Hey  fix the build please');
   assert.equal(extractMentionTask('You:\n\n@opencode What is on my plate?'), 'What is on my plate?');
+  assert.equal(extractMentionTask('User message: @opencode hi'), 'hi');
+  assert.equal(extractMentionTask('Assistant message: @opencode fix it'), 'fix it');
   assert.equal(extractMentionTask('@OPENCODE uppercase works.'), 'uppercase works.');
   assert.equal(extractMentionTask('No mention here.'), null);
   assert.equal(extractMentionTask('@opencode'), null);
   assert.equal(extractMentionTask('@opencode!'), null);
   assert.equal(sanitizeReply('done via @opencode run'), 'done via opencode run');
   assert.match(newSessionId(), /^ses_[A-Za-z0-9]{24}$/);
+});
+
+test('the @blibs trigger, introduction text, and harness header stay stable', () => {
+  assert.equal(BLIBS_MENTION, '@blibs');
+  assert.equal(isBlibsMention('@blibs What can you do?'), true);
+  assert.equal(isBlibsMention('You:\n\n@blibs hi'), true);
+  assert.equal(isBlibsMention('User message: @blibs hi'), true);
+  assert.equal(isBlibsMention('@BLIBS uppercase works'), true);
+  assert.equal(isBlibsMention('Ask @blibs.'), true);
+  assert.equal(isBlibsMention('write to @blibs.example'), false);
+  assert.equal(isBlibsMention('no mention here'), false);
+  assert.equal(isIntroMessage('You:\n\nblibs introduction\n\nblibs is...'), true);
+  assert.equal(isIntroMessage('User message: blibs introduction\n\nblibs is...'), true);
+  assert.equal(isIntroMessage('Assistant message: blibs introduction'), true);
+  assert.equal(isIntroMessage('A normal message'), false);
+
+  const text = introMessage([
+    { id: 'claude-code', name: 'Claude Code', enabled: true },
+    { id: 'codex', name: 'Codex', enabled: false },
+    { id: 'opencode', name: 'OpenCode', enabled: true },
+  ]);
+  assert.ok(text.startsWith(INTRO_HEADER));
+  assert.ok(text.includes('Available harnesses: Claude Code, Codex, OpenCode.'));
+  assert.ok(text.includes('Enabled for this assistant: Claude Code, OpenCode.'));
+  assert.ok(text.includes('How tagging works:'));
+  assert.ok(text.includes(`${harnessTag('opencode')} fix the failing test`), 'the example uses the preferred enabled harness');
+  assert.ok(text.endsWith(`To give it a try do ${harnessTag('opencode')} hi.`));
+  assert.ok(introMessage([]).includes('OpenCode'), 'an empty report falls back to the build harnesses');
+  const codexOnly = introMessage([
+    { id: 'claude-code', name: 'Claude Code', enabled: false },
+    { id: 'codex', name: 'Codex', enabled: true },
+  ]);
+  assert.ok(codexOnly.endsWith(`To give it a try do ${harnessTag('codex')} hi.`), 'a disabled preferred harness falls back to the first enabled harness');
+  assert.ok(codexOnly.includes(`${harnessTag('codex')} fix the failing test`), 'the example follows the enabled harness');
+  const noneEnabled = introMessage([{ id: 'codex', name: 'Codex', enabled: false }]);
+  assert.ok(noneEnabled.includes('no harness yet'), 'a report with no enabled harness says so');
+  assert.ok(noneEnabled.includes('Turn on a harness in Connections'), 'the reply says how to enable a harness');
+  assert.ok(!noneEnabled.includes('To give it a try'), 'no enabled harness means no test tag line');
+
+  assert.equal(
+    harnessMessage('  done  ', 'OpenCode'),
+    "Sent from user's harness (OpenCode).\n\ndone",
+  );
+  assert.equal(harnessMessage('   ', 'OpenCode'), '');
+  assert.equal(harnessHeader('Codex'), "Sent from user's harness (Codex).");
 });
 
 test('the harness command parser and relay defaults are bounded', () => {
@@ -800,8 +1094,10 @@ test('the harness command parser and relay defaults are bounded', () => {
   assert.equal(buildRelayConfig('/tmp/blibs-data', { harnessId: 'unknown' }).harnessId, 'opencode', 'an unknown harness id falls back');
   assert.equal(defaults.timeoutMs, 120000);
   assert.equal(defaults.model, undefined);
-  assert.deepEqual(defaults.projects, []);
+  assert.deepEqual(defaults.projects, DEFAULT_PROJECTS, 'a fresh install starts with the two known projects');
+  assert.ok(defaults.projects.every((dir) => path.isAbsolute(dir)));
   assert.ok(defaults.discoveryRoot.endsWith('Projects'));
+  assert.deepEqual(buildRelayConfig('/tmp/blibs-data', { projects: [] }).projects, [], 'an explicit empty registry is not the default');
   assert.equal(defaults.cwd, canonicalDir(path.resolve('/tmp/blibs-data', 'harness')));
   assert.equal(buildRelayConfig(process.cwd()).cwd, canonicalDir(path.join(tmpdir(), 'blibs-harness')));
   const overridden = buildRelayConfig('/tmp/blibs-data', { enabled: false, provider: 'grok', timeoutMs: 400 });

@@ -25,6 +25,7 @@ import {
   checkVendorLogin,
   closeLoginWindows,
   getLoginStatus,
+  getVendorWindow,
   openVendorLogin,
   setLoginStatusSink,
 } from './login';
@@ -311,7 +312,7 @@ function closeVendorViews(): void {
 function openLogin(vendorId: string, source?: string): void {
   const v = VENDORS.find((x) => x.id === vendorId);
   if (!v) return;
-  openVendorLogin(v, source);
+  openVendorLogin(v, source, PRELOAD);
 }
 
 /** True only for the panel renderer that this process served. */
@@ -335,7 +336,7 @@ function registerLoginIpc(): void {
     if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
     const vendor = vendorFor(vendorId);
     if (!vendor) throw new Error('Unknown vendor.');
-    return openVendorLogin(vendor);
+    return openVendorLogin(vendor, undefined, PRELOAD);
   });
   ipcMain.handle('blibs:login:cancel', (event, vendorId: unknown) => {
     if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
@@ -414,6 +415,25 @@ export function buildMenu(): void {
 
 // ---------- sync protocol ----------
 
+/**
+ * The window that blibs types into. The visible sign-in window wins while it
+ * is open and on the vendor site, so a user can chat there. The hidden view is
+ * the fallback.
+ */
+function activeView(provider: string): BrowserWindow | undefined {
+  const loginWindow = getVendorWindow(provider);
+  if (loginWindow?.isFocused()) {
+    const vendor = VENDORS.find((entry) => entry.id === provider);
+    if (vendor) {
+      try {
+        const current = new URL(loginWindow.webContents.getURL());
+        if (current.hostname === new URL(vendor.url).hostname) return loginWindow;
+      } catch { /* still on a blank page */ }
+    }
+  }
+  return _views.get(provider);
+}
+
 function askView(vendorId: string, channel: string, payload: Record<string, unknown>): Promise<CollectResult | SendResult> {
   const view = _views.get(vendorId);
   if (!view) return Promise.reject(new Error(`no view for ${vendorId}`));
@@ -469,7 +489,7 @@ export async function drainOutbox(reason: string): Promise<{ drained: number; er
   let drained = 0;
   for (const item of pending.slice(0, 5)) {
     const provider = String(item.provider || '').toLowerCase();
-    const view = _views.get(provider);
+    const view = activeView(provider);
     if (!view) {
       await ackOutbox(item.id, false, `no view for provider "${item.provider}"`);
       continue;

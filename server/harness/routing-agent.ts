@@ -1,10 +1,12 @@
-// The blibs routing agent.
+// The blibs router.
 //
-// One provider (Muse) tags a harness mention at a high level. The routing
-// agent does the low-level resolution: it reads the project registry through
-// the blibs-router MCP tools, picks one project for the task, and answers
-// with one strict line. The relay parses that line, enforces the allowlist,
-// and forwards the provider message to the coding session of that project.
+// A provider chat tags a harness mention at a high level. The router does the
+// low-level resolution: it reads the project registry through the
+// blibs-router MCP tools, picks one project for the message, and answers with
+// one strict line. The relay parses that line, enforces the allowlist, and
+// forwards the provider message unchanged to the coding session of that
+// project. The project session owns the work and its reply. The router never
+// answers the task.
 
 /** MCP server name the routing prompt tells the agent to call. */
 export const ROUTING_MCP_NAME = 'blibs-router';
@@ -22,20 +24,22 @@ export interface RoutingDecision {
 
 export function routingPrompt(task: string, threadId: string): string {
   return [
-    'You are the blibs routing agent. One Muse task must reach one coding session.',
+    'You are the blibs routing agent. One provider message must reach one project session.',
     `The ${ROUTING_MCP_NAME} MCP server holds the project registry. Call its tools to inspect it.`,
     '- list_projects lists every registered project and candidate.',
     '- get_thread_projects lists the projects this conversation already used.',
-    '- resolve_project returns a keyword guess for the task.',
+    '- resolve_project returns a keyword guess for the message.',
     '- resolve_session returns the coding session of one project, when it exists.',
     '',
-    'Pick exactly one project for the task. Do not start the task.',
+    'Pick exactly one project for the message. Your only job is to choose the project.',
+    'Do not answer the message, do not edit the message, and do not send a work response.',
+    'The project session receives the message unchanged and replies to blibs.',
     'End your reply with exactly one line:',
     `- FORWARD <absolute project path> when you picked a project.`,
-    '- ASK <one short question> when the task does not say which project.',
+    '- ASK <one short question> when the message does not say which project.',
     '',
-    `Conversation: ${threadId}`,
-    'Task:',
+    `Provider conversation: ${threadId}`,
+    'Message:',
     task.trim(),
   ].join('\n');
 }

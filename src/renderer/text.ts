@@ -7,3 +7,6 @@ export function cleanImportText(raw: string): string {
     .replace(/^(assistant message|user message|you)\s*:\s*/i, '')
     .trim();
 }
+
+/** True when an imported message is the generated blibs introduction. */
+export { startsWithIntroHeader as isIntroText } from '../../shared/intro';

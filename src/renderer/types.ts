@@ -31,6 +31,8 @@ export interface ChatMessage {
   text: string;
   ts: number;
   source: 'desktop' | 'extension' | 'mock' | 'api' | 'embed';
+  /** Sender label for a message that is not the assistant, for example `blibs`. */
+  senderName?: string;
   /** how a user message was delivered (vendor session in the app, model API, or local mock) */
   via?: 'tab' | 'model' | 'mock';
   /** proxy outbox id for session-routed messages */
