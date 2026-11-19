@@ -20,7 +20,10 @@ import type { LocalModels } from './retrieval.js';
 import type { SearchFilters } from './history.js';
 import { RelayService, buildRelayConfig } from './relay.js';
 import type { RelayConfig } from './relay.js';
+import { RELAY_MODEL_LIMIT } from './relay-state.js';
 import { OpenCodeHarness } from './harness/opencode.js';
+import { USER_ECHO_LABEL } from './harness/mention.js';
+import { PROJECT_LIMIT, PROJECT_PATH_LIMIT } from './harness/router.js';
 
 const PORT = Number(process.env.PROXY_PORT || 8787);
 const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -116,7 +119,7 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
     enqueue: (provider, text, threadId) => { enqueueOutbox(provider, text, threadId); },
     knownThreads: history.threads(relayConfig.provider),
     threadHasUser: (provider, threadId) => history.hasUserMessage(provider, threadId)
-      || (provider === 'muse' && history.hasMessagePrefix(provider, threadId, 'You:')),
+      || (provider === 'muse' && history.hasMessagePrefix(provider, threadId, USER_ECHO_LABEL)),
   });
   async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
     let body = '';
@@ -142,16 +145,16 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         let payload: Record<string, unknown>;
         try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
         const projects = payload.projects;
-        if (projects !== undefined && (!Array.isArray(projects) || projects.length > 200
-          || projects.some((entry) => typeof entry !== 'string' || !entry.trim() || entry.length > 500))) {
-          return send(res, 400, { error: 'projects must be an array of 0–200 paths' });
+        if (projects !== undefined && (!Array.isArray(projects) || projects.length > PROJECT_LIMIT
+          || projects.some((entry) => typeof entry !== 'string' || !entry.trim() || entry.length > PROJECT_PATH_LIMIT))) {
+          return send(res, 400, { error: `projects must be an array of 0–${PROJECT_LIMIT} paths` });
         }
         const discoveryRoot = payload.discoveryRoot;
-        if (discoveryRoot !== undefined && (typeof discoveryRoot !== 'string' || !discoveryRoot.trim() || discoveryRoot.length > 500)) {
+        if (discoveryRoot !== undefined && (typeof discoveryRoot !== 'string' || !discoveryRoot.trim() || discoveryRoot.length > PROJECT_PATH_LIMIT)) {
           return send(res, 400, { error: 'discoveryRoot must be a path' });
         }
         const model = payload.model;
-        if (model !== undefined && model !== null && (typeof model !== 'string' || !model.trim() || model.length > 200)) {
+        if (model !== undefined && model !== null && (typeof model !== 'string' || !model.trim() || model.length > RELAY_MODEL_LIMIT)) {
           return send(res, 400, { error: 'model must be a provider/model id' });
         }
         const current = relay.registry();

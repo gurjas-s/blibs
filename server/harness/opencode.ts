@@ -1,7 +1,10 @@
 import { spawn } from 'node:child_process';
+import { OPENCODE_MENTION } from './mention.js';
 import type { Harness, HarnessResult, HarnessRun, HarnessStartOptions } from './types.js';
 
 export const HARNESS_OUTPUT_LIMIT = 64 * 1024;
+/** Default opencode command. The relay uses it unless a config overrides it. */
+export const OPENCODE_COMMAND = 'opencode run';
 const KILL_GRACE_MS = 2000;
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
 
@@ -56,6 +59,7 @@ function killTree(child: ReturnType<typeof spawn>): void {
 
 export class OpenCodeHarness implements Harness {
   readonly id = 'opencode';
+  readonly mention = OPENCODE_MENTION;
 
   private readonly command: string;
   private readonly cwd: string;

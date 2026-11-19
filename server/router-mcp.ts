@@ -6,9 +6,9 @@
 // the backend enforces the allowlist before it launches a harness.
 //
 // Run: node build/server/router-mcp.js --data-dir <history dir>
-import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
+import { parseSessions, parseStringArray, readRelayStateFile } from './relay-state.js';
 import {
   clarificationText,
   listCandidates,
@@ -33,24 +33,13 @@ function dataDirFromArgs(argv: string[]): string {
 
 function readState(dataDir: string): { registry: ProjectRegistry; sessions: Record<string, string> } {
   const fallback: ProjectRegistry = { projects: [], discoveryRoot: path.join(dataDir, 'harness') };
-  try {
-    const raw = JSON.parse(fs.readFileSync(path.join(dataDir, 'relay-state.json'), 'utf8')) as {
-      projects?: unknown;
-      discoveryRoot?: unknown;
-      sessions?: unknown;
-    };
-    const projects = Array.isArray(raw.projects) ? raw.projects.filter((entry): entry is string => typeof entry === 'string') : [];
-    const discoveryRoot = typeof raw.discoveryRoot === 'string' && raw.discoveryRoot ? raw.discoveryRoot : fallback.discoveryRoot;
-    const sessions: Record<string, string> = {};
-    if (raw.sessions && typeof raw.sessions === 'object') {
-      for (const [key, value] of Object.entries(raw.sessions as Record<string, unknown>)) {
-        if (typeof value === 'string' && value) sessions[key] = value;
-      }
-    }
-    return { registry: { projects, discoveryRoot }, sessions };
-  } catch {
-    return { registry: fallback, sessions: {} };
-  }
+  const raw = readRelayStateFile(path.join(dataDir, 'relay-state.json'));
+  if (!raw) return { registry: fallback, sessions: {} };
+  const discoveryRoot = typeof raw.discoveryRoot === 'string' && raw.discoveryRoot ? raw.discoveryRoot : fallback.discoveryRoot;
+  return {
+    registry: { projects: parseStringArray(raw.projects), discoveryRoot },
+    sessions: parseSessions(raw.sessions),
+  };
 }
 
 function textResult(value: unknown): { content: Array<{ type: string; text: string }> } {

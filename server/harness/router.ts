@@ -18,7 +18,10 @@ export interface ProjectResolution {
   confidence: 'map-hit' | 'match' | 'single-root';
 }
 
-const PROJECT_LIMIT = 200;
+/** Registry entries per relay. */
+export const PROJECT_LIMIT = 200;
+/** Length limit for one registry path. */
+export const PROJECT_PATH_LIMIT = 500;
 const PATH_TOKEN = /(~\/[^\s:'"]+|\/[^\s:'"]+)/g;
 
 export function expandHome(value: string): string {

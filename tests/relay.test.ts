@@ -89,7 +89,8 @@ async function startRelay(options: { dataDir?: string; timeoutMs?: number; model
       discoveryRoot: path.join(harnessDir, 'no-such-root'),
       ...(options.model ? { model: options.model } : {}),
     },
-  });  server.listen(0, '127.0.0.1');
+  });
+  server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
   assert.ok(address && typeof address !== 'string');

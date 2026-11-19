@@ -19,5 +19,7 @@ export interface HarnessStartOptions {
 
 export interface Harness {
   readonly id: string;
+  /** Chat trigger that routes one task to this harness, for example `@opencode`. */
+  readonly mention: string;
   start(prompt: string, options?: HarnessStartOptions | string): HarnessRun;
 }
