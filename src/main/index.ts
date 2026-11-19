@@ -434,9 +434,8 @@ function activeView(provider: string): BrowserWindow | undefined {
   return _views.get(provider);
 }
 
-function askView(vendorId: string, channel: string, payload: Record<string, unknown>): Promise<CollectResult | SendResult> {
-  const view = _views.get(vendorId);
-  if (!view) return Promise.reject(new Error(`no view for ${vendorId}`));
+function askView(view: BrowserWindow | undefined, channel: string, payload: Record<string, unknown>): Promise<CollectResult | SendResult> {
+  if (!view) return Promise.reject(new Error('no view'));
   const reqId = `r${Date.now().toString(36)}${reqSeq++}`;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -466,7 +465,7 @@ export async function sweep(reason: string): Promise<{ added: number }> {
   let added = 0;
   for (const v of VENDORS) {
     try {
-      const r = (await askView(v.id, 'blibs:collect-now', {})) as CollectResult;
+      const r = (await askView(_views.get(v.id), 'blibs:collect-now', {})) as CollectResult;
       if (r?.items?.length) {
         const posted = await relayScrape({ ...r, reason });
         added += posted.added ?? 0;
@@ -496,7 +495,7 @@ export async function drainOutbox(reason: string): Promise<{ drained: number; er
     }
     try {
       await ensureThread(view, provider, item.threadId);
-      const r = (await askView(provider, 'blibs:send', { text: item.text })) as SendResult;
+      const r = (await askView(view, 'blibs:send', { text: item.text })) as SendResult;
       await ackOutbox(item.id, !!r?.ok, r?.ok ? undefined : r?.reason || 'view send failed');
       if (r?.ok) drained++;
     } catch (e) {
