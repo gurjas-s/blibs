@@ -3,11 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HistoryMessage } from './history.js';
-import { OPENCODE_COMMAND } from './harness/opencode.js';
-import type { Harness, HarnessMcpServer, HarnessRun } from './harness/types.js';
+import type { Harness, HarnessMcpServer, HarnessResult, HarnessRun } from './harness/types.js';
 import { extractMentionTask, sanitizeReply } from './harness/mention.js';
 import { ROUTING_MCP_NAME, ROUTING_QUESTION_LIMIT, parseRoutingReply, routingPrompt } from './harness/routing-agent.js';
 import type { RoutingDecision } from './harness/routing-agent.js';
+import { harnessKind } from './harness/registry.js';
 import {
   RELAY_PROCESSED_LIMIT,
   RELAY_SESSION_LIMIT,
@@ -30,6 +30,7 @@ import {
   resolveProject,
   resolveRegistryPaths,
   sessionKey,
+  sessionKeyPrefix,
   threadProjects,
 } from './harness/router.js';
 import type { ProjectRegistry } from './harness/router.js';
@@ -40,6 +41,8 @@ export const RELAY_PROVIDER = 'muse';
 export const DEFAULT_DISCOVERY_ROOT = path.join(os.homedir(), 'Projects');
 /** Environment override for the harness command. Tests and e2e stub the routing agent with it. */
 export const RELAY_COMMAND_ENV = 'BLIBS_RELAY_COMMAND';
+/** Length limit for one stored or env harness command. */
+const RELAY_COMMAND_LIMIT = 2000;
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROVIDER_HOSTS: Record<string, string> = { muse: 'muse.ai', dots: 'chatgpt.com', grok: 'grok.com' };
@@ -48,6 +51,8 @@ const CHECKOUT_ROOT_DEPTH = 8;
 export interface RelayConfig {
   enabled: boolean;
   provider: string;
+  /** Harness id from the registry in `server/harness/registry.ts`. */
+  harnessId: string;
   command: string;
   cwd: string;
   timeoutMs: number;
@@ -62,7 +67,7 @@ export interface RelayConfig {
 export interface RelayStatus {
   enabled: boolean;
   provider: string;
-  harness: { command: string; cwd: string; timeoutMs: number; model?: string };
+  harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
   projects: string[];
   discoveryRoot: string;
   pending: number;
@@ -116,6 +121,9 @@ function safeHarnessCwd(requested: string, dataDir: string): string {
 
 export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig> = {}): RelayConfig {
   const envCommand = process.env[RELAY_COMMAND_ENV]?.trim();
+  // The registry owns the harness default. An explicit command override wins
+  // over the environment, and an unknown harness id falls back to the default.
+  const kind = harnessKind(overrides.harnessId);
   const config: RelayConfig = {
     enabled: true,
     provider: RELAY_PROVIDER,
@@ -125,8 +133,8 @@ export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig
     projects: [],
     discoveryRoot: DEFAULT_DISCOVERY_ROOT,
     ...overrides,
-    // The relay's default harness is opencode. An explicit override wins over the environment.
-    command: overrides.command ?? (envCommand ? envCommand.slice(0, 2000) : OPENCODE_COMMAND),
+    harnessId: kind.id,
+    command: overrides.command ?? (envCommand ? envCommand.slice(0, RELAY_COMMAND_LIMIT) : kind.defaultCommand),
   };
   const registry = resolveRegistryPaths(config.discoveryRoot, config.projects);
   return {
@@ -153,26 +161,27 @@ export function buildPrompt(task: string): string {
 }
 
 // A signed-out vendor page scrapes marketing text, so its root is not a chat.
-export function isProviderThread(provider: string, threadId: string): boolean {
+// An unknown provider has no host to check, so any thread id is accepted.
+function providerThreadUrl(provider: string, threadId: string): URL | null {
   const host = PROVIDER_HOSTS[provider];
-  if (!host) return true;
+  if (!host) return null;
   try {
     const url = new URL(threadId);
-    return url.protocol === 'https:' && url.hostname === host;
+    return url.protocol === 'https:' && url.hostname === host ? url : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-export function isConversationThread(provider: string, threadId: string): boolean {
-  if (!isProviderThread(provider, threadId)) return false;
+export function isProviderThread(provider: string, threadId: string): boolean {
   if (!PROVIDER_HOSTS[provider]) return true;
-  try {
-    const url = new URL(threadId);
-    return url.pathname !== '/' && url.pathname !== '';
-  } catch {
-    return false;
-  }
+  return providerThreadUrl(provider, threadId) !== null;
+}
+
+export function isConversationThread(provider: string, threadId: string): boolean {
+  const url = providerThreadUrl(provider, threadId);
+  if (!url) return !PROVIDER_HOSTS[provider];
+  return url.pathname !== '/' && url.pathname !== '';
 }
 
 export class RelayService {
@@ -217,15 +226,7 @@ export class RelayService {
     if (loaded?.model) this.config = { ...this.config, model: loaded.model };
     this.knownThreads = new Set([...(options.knownThreads ?? []), ...this.state.threads].slice(-RELAY_THREAD_LIMIT));
     this.state.threads = [...this.knownThreads];
-    if (this.state.lastRun?.state === 'running') {
-      this.state.lastRun = {
-        state: 'error',
-        messageId: this.state.lastRun.messageId,
-        startedAt: this.state.lastRun.startedAt,
-        endedAt: Date.now(),
-        error: 'interrupted by restart',
-      };
-    }
+    this.interruptLastRun('interrupted by restart');
     // No watermark is written on a disabled start, so stored rows stay backlog.
     if (!loaded && this.config.enabled) this.save();
   }
@@ -262,6 +263,14 @@ export class RelayService {
     } catch { /* keep the in-memory state; the next write retries */ }
   }
 
+  /** Turn a running last run into an error record. True when the record changed. */
+  private interruptLastRun(error: string): boolean {
+    const last = this.state.lastRun;
+    if (last?.state !== 'running') return false;
+    this.state.lastRun = { state: 'error', messageId: last.messageId, startedAt: last.startedAt, endedAt: Date.now(), error };
+    return true;
+  }
+
   private accepts(message: HistoryMessage): boolean {
     if (!this.config.enabled || this.closed) return false;
     if (message.role !== 'agent' && message.role !== 'user') return false;
@@ -287,7 +296,7 @@ export class RelayService {
     if (threads.length > RELAY_THREAD_LIMIT) {
       const oldest = threads[0];
       this.knownThreads.delete(oldest);
-      const prefix = `${oldest}\n`;
+      const prefix = sessionKeyPrefix(oldest);
       for (const key of Object.keys(this.state.sessions)) {
         if (key.startsWith(prefix)) delete this.state.sessions[key];
       }
@@ -494,13 +503,20 @@ export class RelayService {
         mcp: [this.routerMcp()],
       },
     );
-    this.active = run;
     try {
-      const result = await run.promise;
+      const result = await this.awaitRun(run);
       if (!result.ok) return { decision: null, error: result.error };
       return { decision: parseRoutingReply(result.reply) };
     } catch (e) {
       return { decision: null, error: `routing agent failed: ${(e as Error).message}` };
+    }
+  }
+
+  /** Await one run and keep it visible as the active run while it settles. */
+  private async awaitRun(run: HarnessRun): Promise<HarnessResult> {
+    this.active = run;
+    try {
+      return await run.promise;
     } finally {
       this.active = null;
     }
@@ -512,11 +528,10 @@ export class RelayService {
       cwd: projectPath,
       model: this.config.model,
     });
-    this.active = run;
     let ok = false;
     let error: string | undefined;
     try {
-      const result = await run.promise;
+      const result = await this.awaitRun(run);
       error = result.error;
       if (result.ok) {
         ok = this.tellProvider(item, result.reply);
@@ -524,8 +539,6 @@ export class RelayService {
       }
     } catch (e) {
       error = `harness failed: ${(e as Error).message}`;
-    } finally {
-      this.active = null;
     }
     if (this.closed) return;
     this.finishRun(item.id, startedAt, ok, ok ? undefined : (error ?? 'harness failed'));
@@ -544,6 +557,7 @@ export class RelayService {
       enabled: this.config.enabled,
       provider: this.config.provider,
       harness: {
+        id: this.config.harnessId,
         command: this.config.command,
         cwd: this.config.cwd,
         timeoutMs: this.config.timeoutMs,
@@ -566,15 +580,6 @@ export class RelayService {
     this.queue.length = 0;
     this.active?.kill();
     this.active = null;
-    if (this.state.lastRun?.state === 'running') {
-      this.state.lastRun = {
-        state: 'error',
-        messageId: this.state.lastRun.messageId,
-        startedAt: this.state.lastRun.startedAt,
-        endedAt: Date.now(),
-        error: 'relay stopped before the harness finished',
-      };
-      this.save();
-    }
+    if (this.interruptLastRun('relay stopped before the harness finished')) this.save();
   }
 }

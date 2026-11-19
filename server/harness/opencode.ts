@@ -59,6 +59,11 @@ function hasSessionFlag(args: string[]): boolean {
   return args.some((arg) => arg === '--session' || arg === '-s' || arg === '--continue' || arg === '-c');
 }
 
+/** One run that fails before the harness process starts. */
+function failedRun(error: string): HarnessRun {
+  return { promise: Promise.resolve({ ok: false, reply: '', code: null, error }), kill() {} };
+}
+
 function hasModelFlag(args: string[]): boolean {
   return args.some((arg) => arg === '--model' || arg === '-m');
 }
@@ -100,9 +105,7 @@ export class OpenCodeHarness implements Harness {
     const cwd = run.cwd ?? this.cwd;
     const command = splitCommand(this.command);
     const maxOutput = this.maxOutputBytes;
-    if (!command.length) {
-      return { promise: Promise.resolve({ ok: false, reply: '', code: null, error: 'harness command is empty' }), kill() {} };
-    }
+    if (!command.length) return failedRun('harness command is empty');
     const [file, ...args] = command;
     const finalArgs = [...args];
     if (run.sessionId && !hasSessionFlag(finalArgs)) finalArgs.push('--session', run.sessionId);
@@ -123,7 +126,7 @@ export class OpenCodeHarness implements Harness {
         env: { ...process.env, PWD: cwd },
       });
     } catch (error) {
-      return { promise: Promise.resolve({ ok: false, reply: '', code: null, error: `harness could not start: ${(error as Error).message}` }), kill() {} };
+      return failedRun(`harness could not start: ${(error as Error).message}`);
     }
 
     let output = '';

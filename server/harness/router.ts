@@ -22,6 +22,8 @@ export interface ProjectResolution {
 export const PROJECT_LIMIT = 200;
 /** Length limit for one registry path. */
 export const PROJECT_PATH_LIMIT = 500;
+/** Projects named in one clarification question. */
+const CLARIFICATION_PROJECT_LIMIT = 8;
 const PATH_TOKEN = /(~\/[^\s:'"]+|\/[^\s:'"]+)/g;
 
 export function expandHome(value: string): string {
@@ -69,14 +71,19 @@ export function isAllowedProject(target: string, registry: ProjectRegistry, fall
   return registry.projects.some((root) => insideDir(resolved, root));
 }
 
+/** Storage key prefix for every coding session of one thread. */
+export function sessionKeyPrefix(threadId: string): string {
+  return `${threadId}\n`;
+}
+
 /** Storage key for one coding session. One Muse thread can own many. */
 export function sessionKey(threadId: string, projectPath: string): string {
-  return `${threadId}\n${path.resolve(projectPath)}`;
+  return `${sessionKeyPrefix(threadId)}${path.resolve(projectPath)}`;
 }
 
 /** Project paths with sessions in one Muse thread, most recent last. */
 export function threadProjects(sessions: Record<string, string>, threadId: string): string[] {
-  const prefix = `${threadId}\n`;
+  const prefix = sessionKeyPrefix(threadId);
   const found: string[] = [];
   for (const key of Object.keys(sessions)) {
     if (key.startsWith(prefix)) found.push(key.slice(prefix.length));
@@ -143,7 +150,7 @@ export function clarificationText(candidates: string[], threadKnown: string[]): 
   const names = [...new Set([...threadKnown, ...candidates])]
     .map((dir) => path.basename(dir))
     .filter(Boolean)
-    .slice(0, 8);
+    .slice(0, CLARIFICATION_PROJECT_LIMIT);
   const known = names.length ? ` Known projects: ${names.join(', ')}.` : '';
   return `Which project is this task for?${known} Name the project and repeat the task.`;
 }

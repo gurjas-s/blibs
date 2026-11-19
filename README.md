@@ -166,8 +166,8 @@ server/
                 and run state
   router-mcp.ts the router MCP server: project and session tools for the
                 routing agent
-  harness/      the Harness MCP contract, the routing agent prompt, and the
-                OpenCode adapter
+  harness/      the Harness MCP contract, the harness registry, the routing
+                agent prompt, and the OpenCode adapter
 tests/
   e2e/          real-app CDP harness (`harness.ts`) and smoke spec; run with
                 `npm run e2e`
@@ -228,9 +228,10 @@ cannot pick a project either.
 Every harness adapter follows the MCP contract in
 `server/harness/types.ts`: a run may request MCP servers, and the adapter
 must expose their tools to the agent. The OpenCode adapter writes the servers
-into `opencode.json` in the run directory. Set `BLIBS_RELAY_COMMAND` to
-override the harness command for every relay run; the tests use it to stub
-the routing agent.
+into `opencode.json` in the run directory. A new harness adds one entry to
+`server/harness/registry.ts`; no relay module changes. Set
+`BLIBS_RELAY_COMMAND` to override the harness command for every relay run;
+the tests use it to stub the routing agent.
 
 ## Backend API (internal, app ↔ panel)
 

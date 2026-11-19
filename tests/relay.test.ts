@@ -60,7 +60,7 @@ interface RelayServer {
 interface RelayStatus {
   enabled: boolean;
   provider: string;
-  harness: { command: string; cwd: string; timeoutMs: number; model?: string };
+  harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
   projects: string[];
   discoveryRoot: string;
   pending: number;
@@ -795,7 +795,9 @@ test('the harness command parser and relay defaults are bounded', () => {
   const defaults = buildRelayConfig('/tmp/blibs-data');
   assert.equal(defaults.enabled, true);
   assert.equal(defaults.provider, 'muse');
+  assert.equal(defaults.harnessId, 'opencode', 'the registry default harness is opencode');
   assert.equal(defaults.command, 'opencode run');
+  assert.equal(buildRelayConfig('/tmp/blibs-data', { harnessId: 'unknown' }).harnessId, 'opencode', 'an unknown harness id falls back');
   assert.equal(defaults.timeoutMs, 120000);
   assert.equal(defaults.model, undefined);
   assert.deepEqual(defaults.projects, []);

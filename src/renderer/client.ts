@@ -176,7 +176,7 @@ export async function fetchHistoryItem(id: string): Promise<HistoryMessage> {
 export interface RelayStatus {
   enabled: boolean;
   provider: string;
-  harness: { command: string; cwd: string; timeoutMs: number; model?: string };
+  harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
   projects: string[];
   discoveryRoot: string;
   pending: number;

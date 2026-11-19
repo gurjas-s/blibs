@@ -21,7 +21,7 @@ import type { SearchFilters } from './history.js';
 import { RelayService, buildRelayConfig } from './relay.js';
 import type { RelayConfig } from './relay.js';
 import { RELAY_MODEL_LIMIT } from './relay-state.js';
-import { OpenCodeHarness } from './harness/opencode.js';
+import { harnessKind } from './harness/registry.js';
 import { USER_ECHO_LABEL } from './harness/mention.js';
 import { PROJECT_LIMIT, PROJECT_PATH_LIMIT } from './harness/router.js';
 
@@ -114,7 +114,11 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
   const relayConfig = buildRelayConfig(dataDir, options.relay);
   const relay = new RelayService({
     config: relayConfig,
-    harness: new OpenCodeHarness(relayConfig),
+    harness: harnessKind(relayConfig.harnessId).create({
+      command: relayConfig.command,
+      cwd: relayConfig.cwd,
+      timeoutMs: relayConfig.timeoutMs,
+    }),
     stateDir: dataDir,
     enqueue: (provider, text, threadId) => { enqueueOutbox(provider, text, threadId); },
     knownThreads: history.threads(relayConfig.provider),
