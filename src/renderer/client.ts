@@ -171,3 +171,43 @@ export async function fetchHistoryItem(id: string): Promise<HistoryMessage> {
   const data = await request<{ item: HistoryMessage }>(`/api/history/${encodeURIComponent(id)}`);
   return data.item;
 }
+
+/** Harness defaults and the project registry behind a relay run. */
+export interface RelayStatus {
+  enabled: boolean;
+  provider: string;
+  harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
+  /** Harness rows that the introduction reply lists. */
+  harnesses: Array<{ id: string; name: string; enabled: boolean }>;
+  projects: string[];
+  discoveryRoot: string;
+  pending: number;
+  sessions: number;
+}
+
+/** Read the relay harness defaults and the project registry. */
+export function fetchRelayStatus(signal?: AbortSignal): Promise<RelayStatus> {
+  return request<RelayStatus>('/api/relay', { signal });
+}
+
+/** Report the harness toggles for the relay assistant. The introduction reply uses them. */
+export function updateRelayHarnesses(
+  harnesses: Array<{ id: string; name: string; enabled: boolean }>,
+): Promise<RelayStatus> {
+  return request<RelayStatus>('/api/relay/harnesses', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ harnesses }),
+  });
+}
+
+/** Replace the project registry. Omit a field to keep its value. */
+export function updateRelayProjects(
+  body: { projects?: string[]; discoveryRoot?: string; model?: string | null },
+): Promise<RelayStatus> {
+  return request<RelayStatus>('/api/relay/projects', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}

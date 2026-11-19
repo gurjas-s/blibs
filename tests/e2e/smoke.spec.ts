@@ -6,16 +6,21 @@
 // screenshots to the ignored artifact directory.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type { Page } from 'playwright-core';
 import {
+  CONNECTIONS_STORAGE_KEY,
   completeOnboarding,
   displayAvailable,
   launch,
+  mockConnections,
   NO_DISPLAY_MESSAGE,
   openSettings,
   resetOnboarding,
   seedChats,
+  seedConnections,
   selectAgent,
   selectTheme,
   setTheme,
@@ -108,6 +113,15 @@ test(
     await page.keyboard.press('Enter');
     await page.locator('.thread[aria-label="Messages with Muse"]').waitFor({ timeout: 5_000 });
 
+    // Harness work appears as an action card with a harness name and a status.
+    assert.equal(await page.locator('.action-card').count(), 1);
+    assert.equal(await page.locator('.action-name').innerText(), 'Claude Code');
+    assert.equal(await page.locator('.action-msg .ui-status-pill').innerText(), 'Completed');
+    assert.match(
+      await page.locator('.action-detail').innerText(),
+      /ran 12 tests/,
+    );
+
     await selectAgent(page, 'Grok');
     assert.equal(await page.locator('.thread').getAttribute('aria-label'), 'Messages with Grok');
 
@@ -134,6 +148,12 @@ test(
     await page.setViewportSize({ width: 1024, height: 800 });
     assert.ok(await horizontalOverflow(page) <= 1, 'The 1024 px layout must not scroll sideways.');
     assert.equal(await page.locator('.sidebar').isVisible(), true);
+    assert.equal(
+      await page.locator('.context').isVisible(),
+      false,
+      'The context column collapses at 1024 px.',
+    );
+    assert.equal(await page.locator('.context-toggle').isVisible(), true);
 
     await page.setViewportSize({ width: 800, height: 800 });
     assert.equal(await page.locator('.sidebar').isVisible(), false);
@@ -144,9 +164,29 @@ test(
     await toggle.click();
     assert.equal(await page.locator('.sidebar').isVisible(), false);
 
+    // The context controls stay reachable at a narrow width.
+    await page.locator('.context-toggle').click();
+    assert.equal(await page.locator('.context').isVisible(), true);
+    assert.equal(await page.locator('.context-toggle').getAttribute('aria-expanded'), 'true');
+    assert.equal(
+      await page.getByRole('checkbox', { name: 'Claude Code for Grok' }).isVisible(),
+      true,
+    );
+    await page.getByRole('button', { name: 'Close context' }).click();
+    assert.equal(await page.locator('.context').isVisible(), false);
+
     await page.setViewportSize({ width: 1440, height: 900 });
     assert.ok(await horizontalOverflow(page) <= 1, 'The 1440 px layout must not scroll sideways.');
     assert.equal(await page.locator('.sidebar').isVisible(), true);
+    assert.equal(await page.locator('.context').isVisible(), true);
+    assert.equal(await page.locator('.context-toggle').isVisible(), false);
+
+    // The connected chat in the dark theme keeps the action card and context.
+    await selectAgent(page, 'Muse');
+    await selectTheme(page, 'dark');
+    assert.equal(await page.locator('.action-card').isVisible(), true);
+    assertImage(await app.screenshot('chat-connected-dark.png'));
+    await selectAgent(page, 'Grok');
     assertImage(await app.screenshot('panel-selected-chat.png'));
   },
 );
@@ -434,37 +474,68 @@ test(
 );
 
 test(
-  'first run shows onboarding steps and does not reappear',
+  'first run shows the connections matrix and does not reappear',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {
     assert.ok(app, 'The E2E app must start.');
     const { page } = app;
 
+    await page.evaluate((key) => localStorage.removeItem(key), CONNECTIONS_STORAGE_KEY);
     await resetOnboarding(page);
     await setTheme(page, 'dark');
 
-    assert.match(
+    assert.equal(
       await page.locator('#onboarding-title').innerText(),
-      /One window for your personal agents/,
+      'Connect your AI assistants to this Mac',
     );
-    assert.equal(await page.getByRole('button', { name: 'Back', exact: true }).isDisabled(), true);
-    assert.equal(await page.getByRole('button', { name: 'Skip', exact: true }).isVisible(), true);
+    assert.equal(await page.locator('.sidebar').count(), 0, 'Onboarding has no chat sidebar.');
+    assert.equal(await page.locator('.connections-matrix input[type="checkbox"]').count(), 9);
+    assert.equal(
+      await page.getByRole('checkbox', { name: 'Claude Code for Muse' }).isChecked(),
+      true,
+    );
+    assert.equal(await page.locator('.connections-folder-path').innerText(), '~/Projects');
+    assert.equal(await page.getByRole('button', { name: 'Change folder' }).isVisible(), true);
+    assert.equal(
+      await page.getByRole('button', { name: 'Connect another assistant' }).isVisible(),
+      true,
+    );
+    assert.equal(await page.getByRole('button', { name: 'Start chatting' }).isVisible(), true);
     assertImage(await app.screenshot('onboarding-dark.png'));
     await setTheme(page, 'light');
     assertImage(await app.screenshot('onboarding-light.png'));
     await setTheme(page, 'dark');
 
-    await page.getByRole('button', { name: 'Next', exact: true }).click();
-    assert.equal(await page.locator('#onboarding-title').innerText(), 'Connect a vendor');
-    assert.equal(await page.getByRole('combobox', { name: 'Vendor' }).isVisible(), true);
-
-    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    // The matrix keeps a keyboard toggle and saves the choice.
+    await page.getByRole('checkbox', { name: 'Codex for Muse' }).focus();
+    await page.keyboard.press('Space');
     assert.equal(
-      await page.locator('#onboarding-title').innerText(),
-      'One window for your personal agents',
+      await page.getByRole('checkbox', { name: 'Codex for Muse' }).isChecked(),
+      false,
+    );
+    await page.waitForFunction(
+      (key) => {
+        const raw = localStorage.getItem(key);
+        if (!raw) return false;
+        const state = JSON.parse(raw) as {
+          assistants?: Record<string, { harnesses?: Record<string, boolean> }>;
+        };
+        return state.assistants?.muse?.harnesses?.codex === false;
+      },
+      CONNECTIONS_STORAGE_KEY,
     );
 
-    await page.getByRole('button', { name: 'Skip', exact: true }).click();
+    // Change folder keeps the path in the connection state.
+    await page.getByRole('button', { name: 'Change folder' }).click();
+    await page.getByLabel('Shared folder path').fill('~/Work');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    assert.equal(await page.locator('.connections-folder-path').innerText(), '~/Work');
+    await page.waitForFunction(
+      (key) => (localStorage.getItem(key) ?? '').includes('~/Work'),
+      CONNECTIONS_STORAGE_KEY,
+    );
+
+    await page.getByRole('button', { name: 'Start chatting' }).click();
     await page.locator('.shell').waitFor({ state: 'visible' });
     assert.equal(await page.locator('.onboarding-screen').count(), 0);
 
@@ -526,5 +597,349 @@ test(
     await page.getByRole('button', { name: 'Agents', exact: true }).click();
     await page.getByRole('button', { name: 'Back to chats' }).click();
     await page.locator('.login-screen').waitFor({ state: 'detached' });
+  },
+);
+
+test(
+  'an unconnected assistant shows an inline setup card and a disabled composer',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page } = app;
+
+    await seedConnections(page, mockConnections({ setup: { grok: 'setup' } }));
+    await selectTheme(page, 'light');
+    await page.locator('.agent-main', { hasText: 'Grok' }).first().click();
+    await page.locator('.setup-card').waitFor({ state: 'visible' });
+
+    // The header reports the connection state.
+    assert.match(await page.locator('.chat-identity').innerText(), /Grok/);
+    assert.match(await page.locator('.chat-identity .ui-status-pill').innerText(), /Setup/);
+
+    // The card has three numbered steps and the assistant-specific link.
+    assert.equal(await page.locator('.setup-step').count(), 3);
+    assert.equal(
+      await page.locator('.link-box__value').innerText(),
+      'https://blibs.app/c/grok',
+    );
+    assert.equal(
+      await page.getByRole('button', { name: 'Copy the Grok connect link' }).isVisible(),
+      true,
+    );
+    assert.equal(await page.getByRole('button', { name: 'Check connection' }).isVisible(), true);
+    assert.equal(await page.getByRole('button', { name: 'Open Grok' }).isVisible(), true);
+
+    // The composer is disabled and says why.
+    const composer = page.locator('.composer--disabled');
+    assert.equal(await composer.locator('input').isDisabled(), true);
+    assert.equal(await composer.getByRole('button', { name: 'Send' }).isDisabled(), true);
+    assert.match(
+      await page.locator('.composer-reason').innerText(),
+      /Connect Grok above before you send a message/,
+    );
+
+    // The left list marks the assistant as Setup.
+    assert.match(
+      await page.locator('.agent--setup .astate').first().innerText(),
+      /Setup/,
+    );
+
+    // The context column holds the harness toggles and an honest empty activity.
+    assert.equal(
+      await page.getByRole('checkbox', { name: 'Claude Code for Grok' }).isVisible(),
+      true,
+    );
+    assert.equal(await page.locator('.context-empty').isVisible(), true);
+    assertImage(await app.screenshot('chat-setup-light.png'));
+
+    // Copy writes the connect link.
+    await page.getByRole('button', { name: 'Copy the Grok connect link' }).click();
+    await page.waitForFunction(
+      () => document.querySelector('.setup-card [role="status"]')?.textContent === 'Copied',
+    );
+
+    // A harness toggle in the context column persists for this assistant.
+    await page.getByRole('checkbox', { name: 'Codex for Grok' }).uncheck();
+    await page.waitForFunction(
+      (key) => {
+        const raw = localStorage.getItem(key);
+        if (!raw) return false;
+        const state = JSON.parse(raw) as {
+          assistants?: Record<string, { harnesses?: Record<string, boolean> }>;
+        };
+        return state.assistants?.grok?.harnesses?.codex === false;
+      },
+      CONNECTIONS_STORAGE_KEY,
+    );
+
+    // Open assistant starts the in-app sign-in attempt.
+    await page.getByRole('button', { name: 'Open Grok' }).click();
+    await page.waitForTimeout(500);
+    assert.equal(await page.locator('.setup-card').isVisible(), true);
+
+    // Check connection turns the assistant into a connected chat.
+    await page.getByRole('button', { name: 'Check connection' }).click();
+    await page
+      .locator('.thread[aria-label="Messages with Grok"]')
+      .waitFor({ state: 'visible', timeout: 10_000 });
+    assert.match(await page.locator('.chat-identity .ui-status-pill').innerText(), /Connected/);
+    assert.equal(await page.getByLabel('Message Grok').isEnabled(), true);
+
+    // The Connections entry opens the same screen with a Back control.
+    await page.getByRole('button', { name: 'Connections', exact: true }).click();
+    await page.locator('.connections-screen').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('.sidebar').count(), 0);
+    assert.equal(await page.getByRole('button', { name: 'Back to chats' }).isVisible(), true);
+    await page.getByRole('button', { name: 'Back to chats' }).click();
+    await page.locator('.shell').waitFor({ state: 'visible' });
+  },
+);
+
+test(
+  'an @blibs mention shows the introduction and a harness reply says which harness sent it',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page } = app;
+
+    const project = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-intro-project-'));
+    const emptyRoot = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-intro-root-'));
+    try {
+      // The panel reports its harness toggles. Muse has Codex off, so the
+      // introduction must not list Codex as enabled.
+      await completeOnboarding(page);
+      await seedConnections(page, mockConnections({
+        harnesses: { muse: { 'claude-code': true, codex: false, opencode: true } },
+      }));
+      const harnessDeadline = Date.now() + 15_000;
+      let reported = false;
+      while (Date.now() < harnessDeadline) {
+        const status = (await (await fetch(`${app.backendUrl}/api/relay`)).json()) as {
+          harnesses?: Array<{ id: string; enabled: boolean }>;
+        };
+        if (status.harnesses?.some((entry) => entry.id === 'codex' && entry.enabled === false)) {
+          reported = true;
+          break;
+        }
+        await page.waitForTimeout(200);
+      }
+      assert.equal(reported, true, 'the panel reports the harness toggles to the relay');
+
+      const registry = await fetch(`${app.backendUrl}/api/relay/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projects: [project], discoveryRoot: emptyRoot }),
+      });
+      assert.equal(registry.status, 200);
+
+      const threadId = 'https://muse.ai/chat/e2e-intro';
+      const importMuse = async (item: Record<string, unknown>): Promise<void> => {
+        const response = await fetch(`${app.backendUrl}/api/import`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: [{ provider: 'muse', url: threadId, ...item }] }),
+        });
+        assert.equal(response.status, 200);
+      };
+
+      await importMuse({
+        role: 'user',
+        text: 'E2E introduction baseline.',
+        sourceId: 'e2e-intro-base',
+        ts: Date.now(),
+      });
+      await page.waitForTimeout(100);
+
+      // A user tags blibs. The relay answers with the generated introduction.
+      await importMuse({
+        role: 'user',
+        text: '@blibs What can you do?',
+        sourceId: 'e2e-intro-ask',
+        ts: Date.now(),
+      });
+      await page.waitForTimeout(100);
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
+      await selectAgent(page, 'Muse');
+
+      const intro = page.locator('.msg.agent', { hasText: 'blibs introduction' }).first();
+      await intro.waitFor({ state: 'visible', timeout: 20_000 });
+      const introText = await intro.locator('.msg-bubble p').innerText();
+      assert.match(introText, /Available harnesses: Claude Code, Codex, OpenCode\./);
+      assert.match(introText, /Enabled for this assistant: Claude Code, OpenCode\./);
+      assert.ok(
+        !/Enabled for this assistant:[^.]*Codex/.test(introText),
+        'a disabled harness is not listed as enabled',
+      );
+      assert.match(introText, /How tagging works:/);
+      assert.ok(introText.endsWith('To give it a try do @opencode hi.'), 'the reply ends with the first task');
+      await intro.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
+      assertImage(await app.screenshot('blibs-intro.png'));
+
+      // The relay also sends the reply into the vendor chat. Its echo must not
+      // add a second bubble or a second introduction.
+      const introOutbox = (await (await fetch(`${app.backendUrl}/api/outbox`)).json()) as {
+        items?: Array<{ text?: string }>;
+      };
+      const sentIntro = (introOutbox.items ?? []).find((item) => item.text?.startsWith('blibs introduction'));
+      assert.ok(sentIntro?.text, 'the introduction is queued for the vendor chat');
+      await importMuse({
+        role: 'user',
+        text: `You:\n\n${sentIntro.text}`,
+        sourceId: 'e2e-intro-echo',
+        ts: Date.now(),
+      });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
+      await selectAgent(page, 'Muse');
+      await page.locator('.msg.agent', { hasText: 'blibs introduction' }).first().waitFor({ timeout: 20_000 });
+      assert.equal(
+        await page.locator('.msg', { hasText: 'blibs introduction' }).count(),
+        1,
+        'the vendor echo does not add a second introduction bubble',
+      );
+
+      // Muse tags OpenCode. The one project resolves and the harness replies.
+      await importMuse({
+        role: 'agent',
+        text: '@opencode hi',
+        sourceId: 'e2e-intro-task',
+        ts: Date.now(),
+      });
+      const header = "Sent from user's harness (OpenCode).";
+      let reply = '';
+      const replyDeadline = Date.now() + 25_000;
+      while (Date.now() < replyDeadline) {
+        const outbox = (await (await fetch(`${app.backendUrl}/api/outbox`)).json()) as {
+          items?: Array<{ text?: string }>;
+        };
+        const hit = (outbox.items ?? []).find((item) => item.text?.startsWith(header));
+        if (hit?.text?.includes('harness reply: hi')) {
+          reply = hit.text;
+          break;
+        }
+        await page.waitForTimeout(250);
+      }
+      assert.ok(reply.startsWith(header), 'the harness reply starts with the harness header');
+      assert.ok(reply.includes('harness reply: hi'), 'the harness text follows the header');
+
+      // A vendor session types the reply into the chat. The panel must show
+      // the header as the first line of the message.
+      await importMuse({
+        role: 'agent',
+        text: reply,
+        sourceId: 'e2e-intro-reply',
+        ts: Date.now(),
+      });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
+      await selectAgent(page, 'Muse');
+      const harnessReply = page.locator('.msg.agent', { hasText: header }).first();
+      await harnessReply.waitFor({ state: 'visible', timeout: 20_000 });
+      const replyText = await harnessReply.locator('.msg-bubble p').innerText();
+      assert.ok(replyText.startsWith(header), 'the header is at the top of the message');
+      assert.ok(replyText.includes('harness reply: hi'));
+      await harnessReply.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
+      assertImage(await app.screenshot('harness-reply.png'));
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'an @opencode request routes through the relay and asks when unclear',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page } = app;
+
+    // Two projects make one task ambiguous, so the routing agent must ask. The
+    // stubbed routing run decides; no work run starts.
+    const projA = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-alpha-'));
+    const projB = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-beta-'));
+    const emptyRoot = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-empty-'));
+    try {
+      const registry = await fetch(`${app.backendUrl}/api/relay/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projects: [projA, projB], discoveryRoot: emptyRoot }),
+      });
+      assert.equal(registry.status, 200);
+      const status = (await registry.json()) as { projects?: string[] };
+      assert.equal(status.projects?.length, 2);
+
+      const threadId = 'https://muse.ai/chat/e2e-routing';
+      const baseline = await fetch(`${app.backendUrl}/api/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{
+            provider: 'muse',
+            role: 'user',
+            sourceId: 'e2e-routing-base',
+            threadId,
+            text: 'E2E routing baseline.',
+            ts: Date.now(),
+          }],
+        }),
+      });
+      assert.equal(baseline.status, 200);
+      await page.waitForTimeout(300);
+
+      const task = await fetch(`${app.backendUrl}/api/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{
+            provider: 'muse',
+            role: 'user',
+            sourceId: 'e2e-routing-task',
+            threadId,
+            text: '@opencode Do the e2e thing',
+            ts: Date.now(),
+          }],
+        }),
+      });
+      assert.equal(task.status, 200);
+
+      // The routing agent asks once and no work run starts.
+      let clarification = '';
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        const outbox = (await (await fetch(`${app.backendUrl}/api/outbox`)).json()) as {
+          items?: Array<{ provider?: string; text?: string; threadId?: string }>;
+        };
+        const hit = (outbox.items ?? []).find((item) => item.text?.includes('Which project'));
+        if (hit) {
+          clarification = hit.text ?? '';
+          assert.equal(hit.provider, 'muse');
+          assert.equal(hit.threadId, threadId);
+          break;
+        }
+        await page.waitForTimeout(250);
+      }
+      assert.ok(clarification.includes('Which project'), 'The relay asks for the project.');
+      assert.ok(!clarification.includes('@opencode'), 'The question never retriggers.');
+
+      // The panel shows the imported @opencode request in the Muse thread.
+      await completeOnboarding(page);
+      await seedChats(page);
+      await selectAgent(page, 'Muse');
+      const trigger = page.getByText('@opencode Do the e2e thing');
+      await trigger.first().waitFor({ timeout: 20_000 });
+      assert.ok((await trigger.count()) >= 1);
+      await trigger.first().scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
+      assertImage(await app.screenshot('relay-routing.png'));
+    } finally {
+      rmSync(projA, { recursive: true, force: true });
+      rmSync(projB, { recursive: true, force: true });
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
   },
 );

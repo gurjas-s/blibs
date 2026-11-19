@@ -18,6 +18,13 @@ import { HistoryStore, copyIfAbsent } from './history.js';
 import { RetrievalService } from './retrieval.js';
 import type { LocalModels } from './retrieval.js';
 import type { SearchFilters } from './history.js';
+import { RelayService, buildRelayConfig } from './relay.js';
+import type { RelayConfig } from './relay.js';
+import type { HarnessChoice } from './harness/intro.js';
+import { HARNESS_TEXT_LIMIT, RELAY_HARNESS_LIMIT, RELAY_MODEL_LIMIT } from './relay-state.js';
+import { harnessKind } from './harness/registry.js';
+import { USER_ECHO_LABEL } from './harness/mention.js';
+import { PROJECT_LIMIT, PROJECT_PATH_LIMIT } from './harness/router.js';
 
 const PORT = Number(process.env.PROXY_PORT || 8787);
 const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -46,6 +53,7 @@ interface OutboxItem {
   id: string;
   provider: string;
   text: string;
+  threadId?: string;
   ts: number;
   status: 'queued' | 'sent' | 'failed';
   attempts: number;
@@ -59,7 +67,11 @@ function send(res: ServerResponse, code: number, obj: unknown): void {
 }
 
 /** Each server owns its store and deduplication state. Tests use a temporary directory. */
-export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER_DIR, models: LocalModels = {}): http.Server {
+export interface ProxyOptions {
+  relay?: Partial<RelayConfig>;
+}
+
+export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER_DIR, models: LocalModels = {}, options: ProxyOptions = {}): http.Server {
   fs.mkdirSync(dataDir, { recursive: true });
   // Copy retained legacy files on first desktop startup. Originals and delivery records are preserved.
   const legacyDir = process.env.BLIBS_LEGACY_DIR;
@@ -92,6 +104,43 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
   function newOutId(): string {
     return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   }
+  function enqueueOutbox(provider: string, text: string, threadId?: string): OutboxItem {
+    const store = loadOutbox();
+    const item: OutboxItem = { id: newOutId(), provider, text, ts: Date.now(), status: 'queued', attempts: 0 };
+    if (threadId) item.threadId = threadId.slice(0, 500);
+    store.push(item);
+    saveOutbox(store);
+    return item;
+  }
+  const relayConfig = buildRelayConfig(dataDir, options.relay);
+  const relay = new RelayService({
+    config: relayConfig,
+    harness: harnessKind(relayConfig.harnessId).create({
+      command: relayConfig.command,
+      cwd: relayConfig.cwd,
+      timeoutMs: relayConfig.timeoutMs,
+    }),
+    stateDir: dataDir,
+    enqueue: (provider, text, threadId) => { enqueueOutbox(provider, text, threadId); },
+    announce: (provider, text, threadId, triggerId) => {
+      // The relay queues the vendor copy itself. This only records the panel copy.
+      const sourceId = `blibs-intro:${triggerId ?? Date.now().toString(36)}`;
+      history.import([{
+        provider,
+        role: 'agent',
+        text,
+        ts: Date.now(),
+        url: threadId ?? '',
+        threadId: threadId ?? 'unknown-thread',
+        sourceId,
+        identity: 'blibs',
+      }]);
+      retrieval.schedule();
+    },
+    knownThreads: history.threads(relayConfig.provider),
+    threadHasUser: (provider, threadId) => history.hasUserMessage(provider, threadId)
+      || (provider === 'muse' && history.hasMessagePrefix(provider, threadId, USER_ECHO_LABEL)),
+  });
   async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
     let body = '';
     for await (const chunk of req) { body += chunk; if (body.length > 4_000_000) throw new Error('Request exceeds 4 MB.'); }
@@ -111,6 +160,52 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         return res.end();
       }
       if (req.url === '/api/health') return send(res, 200, { ok: true });
+      if (req.url === '/api/relay' && req.method === 'GET') return send(res, 200, relay.status());
+      if (req.url === '/api/relay/harnesses' && req.method === 'POST') {
+        let payload: Record<string, unknown>;
+        try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+        const rows = payload.harnesses;
+        if (!Array.isArray(rows) || rows.length > RELAY_HARNESS_LIMIT) {
+          return send(res, 400, { error: `harnesses must be an array of 0–${RELAY_HARNESS_LIMIT} rows` });
+        }
+        const harnesses: HarnessChoice[] = [];
+        for (const row of rows) {
+          if (!row || typeof row !== 'object') return send(res, 400, { error: 'each harness must be an object' });
+          const entry = row as Record<string, unknown>;
+          if (typeof entry.id !== 'string' || !entry.id.trim() || entry.id.length > HARNESS_TEXT_LIMIT) {
+            return send(res, 400, { error: 'harness id must be a short string' });
+          }
+          if (typeof entry.name !== 'string' || !entry.name.trim() || entry.name.length > HARNESS_TEXT_LIMIT) {
+            return send(res, 400, { error: 'harness name must be a short string' });
+          }
+          if (typeof entry.enabled !== 'boolean') return send(res, 400, { error: 'harness enabled must be a boolean' });
+          harnesses.push({ id: entry.id.trim(), name: entry.name.trim(), enabled: entry.enabled });
+        }
+        return send(res, 200, relay.updateHarnesses(harnesses));
+      }
+      if (req.url === '/api/relay/projects' && req.method === 'POST') {
+        let payload: Record<string, unknown>;
+        try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+        const projects = payload.projects;
+        if (projects !== undefined && (!Array.isArray(projects) || projects.length > PROJECT_LIMIT
+          || projects.some((entry) => typeof entry !== 'string' || !entry.trim() || entry.length > PROJECT_PATH_LIMIT))) {
+          return send(res, 400, { error: `projects must be an array of 0–${PROJECT_LIMIT} paths` });
+        }
+        const discoveryRoot = payload.discoveryRoot;
+        if (discoveryRoot !== undefined && (typeof discoveryRoot !== 'string' || !discoveryRoot.trim() || discoveryRoot.length > PROJECT_PATH_LIMIT)) {
+          return send(res, 400, { error: 'discoveryRoot must be a path' });
+        }
+        const model = payload.model;
+        if (model !== undefined && model !== null && (typeof model !== 'string' || !model.trim() || model.length > RELAY_MODEL_LIMIT)) {
+          return send(res, 400, { error: 'model must be a provider/model id' });
+        }
+        const current = relay.registry();
+        return send(res, 200, relay.updateRegistry(
+          projects === undefined ? current.projects : projects as string[],
+          typeof discoveryRoot === 'string' ? discoveryRoot : current.discoveryRoot,
+          model === undefined ? undefined : model === null ? null : (model as string),
+        ));
+      }
       const routeUrl = new URL(req.url || '/', 'http://127.0.0.1');
       if (routeUrl.pathname === '/api/history' && req.method === 'GET') {
         const limit = Math.min(500, Math.max(1, Number(routeUrl.searchParams.get('limit')) || 100));
@@ -160,7 +255,7 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
         const items = Array.isArray(payload.items) ? payload.items : [];
         if (items.length > 2000) return send(res, 400, { error: 'Import at most 2,000 messages per request.' });
-        const report = history.import(items);
+        const report = history.import(items, false, (messages) => relay.observeBatch(messages));
         retrieval.schedule();
         return send(res, 200, { ok: true, ...report });
       }
@@ -170,12 +265,10 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         let payload: Record<string, unknown>;
         try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
         const provider = String(payload?.provider || 'custom').toLowerCase();
-        const text = String(payload?.text || '').trim().slice(0, 4000);
+        const text = String(payload?.text || '').trim();
+        const threadId = typeof payload?.threadId === 'string' ? payload.threadId.slice(0, 500) : undefined;
         if (!text) return send(res, 400, { error: 'missing text' });
-        const store = loadOutbox();
-        const item: OutboxItem = { id: newOutId(), provider, text, ts: Date.now(), status: 'queued', attempts: 0 };
-        store.push(item);
-        saveOutbox(store);
+        const item = enqueueOutbox(provider, text, threadId);
         return send(res, 200, { ok: true, id: item.id });
       }
 
@@ -257,10 +350,24 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
       try { send(res, 500, { error: String(e) }); } catch { /* already sent */ }
     });
   });
-  server.on('close', () => { void retrieval.close(); });
+  let serverClosed = false;
+  server.on('close', () => {
+    if (serverClosed) return;
+    serverClosed = true;
+    relay.close();
+    void retrieval.close().catch(() => { /* already closed */ });
+  });
   return server;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  createProxyServer().listen(PORT, '127.0.0.1', () => console.log(`blibs proxy on http://127.0.0.1:${PORT}`));
+  const server = createProxyServer();
+  const shutdown = (): void => {
+    server.close();
+    server.closeAllConnections?.();
+    setTimeout(() => process.exit(0), 500).unref();
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+  server.listen(PORT, '127.0.0.1', () => console.log(`blibs proxy on http://127.0.0.1:${PORT}`));
 }

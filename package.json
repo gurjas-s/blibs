@@ -2,7 +2,7 @@
   "name": "blibs",
   "private": true,
   "version": "0.1.0",
-  "description": "blibs desktop app: one panel for your personal agents, with persistent vendor sessions built in",
+  "description": "blibs desktop app: connect personal AI assistants to local coding harnesses, with persistent vendor sessions built in",
   "type": "module",
   "main": "build/main/index.js",
   "engines": {
@@ -12,6 +12,7 @@
     "build": "tsc -b --force && node scripts/emit-cjs-markers.mjs && vite build",
     "clean": "node scripts/clean.mjs",
     "e2e": "npm run build && node --import tsx --test tests/e2e/smoke.spec.ts",
+    "e2e:live": "npm run build && node --import tsx --test tests/e2e/live-login.spec.ts",
     "postinstall": "node scripts/check-electron.mjs",
     "prestart": "node scripts/check-electron.mjs",
     "start": "electron .",

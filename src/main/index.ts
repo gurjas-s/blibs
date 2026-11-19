@@ -7,13 +7,13 @@
 // How it works:
 // - Spawns server/proxy (import store + outbox) as a child process.
 // - Serves the built panel (dist/) over HTTP, forwarding /api/* to the proxy.
-// - Keeps one hidden BrowserView per vendor (persisted partitions, so login
+// - Keeps one hidden vendor window per vendor (persisted partitions, so login
 //   survives restarts) that scrapes chats and delivers outbox sends.
 // - The panel's agents screen and Menu > Agents open a sign-in window per
 //   vendor (shared partition, so the hidden view picks up the session).
 //
 // Run: npm install && npm run build && npm start
-import { app, BrowserWindow, BrowserView, Menu, ipcMain, nativeImage } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, nativeImage } from 'electron';
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
@@ -25,6 +25,7 @@ import {
   checkVendorLogin,
   closeLoginWindows,
   getLoginStatus,
+  getVendorWindow,
   openVendorLogin,
   setLoginStatusSink,
 } from './login';
@@ -106,8 +107,8 @@ let proxyChild: ChildProcess | null = null;
 let proxySetupError = '';
 let staticServer: http.Server | null = null;
 let mainWin: BrowserWindow | null = null;
-/** provider id -> BrowserView (hidden but alive) */
-export const _views = new Map<string, BrowserView>();
+/** provider id -> hidden BrowserWindow (alive, real layout viewport) */
+export const _views = new Map<string, BrowserWindow>();
 /** reqId -> resolve (main -> preload request/response) */
 export const _pending = new Map<string, (result: CollectResult | SendResult) => void>();
 let reqSeq = 0;
@@ -138,6 +139,7 @@ interface OutboxItem {
   id: string;
   provider: string;
   text: string;
+  threadId?: string;
 }
 
 function proxyUrl(p: string): string {
@@ -276,30 +278,41 @@ export function createMainWindow(): BrowserWindow {
     return { action: 'deny' };
   });
   mainWin.on('closed', () => {
+    closeVendorViews();
     mainWin = null;
   });
   return mainWin;
 }
 
 function attachVendorViews(): void {
-  if (!mainWin) return;
+  // A hidden window keeps a real viewport, so the outbox send can find the composer.
   for (const v of VENDORS) {
     if (_views.has(v.id)) continue;
-    const view = new BrowserView({
-      webPreferences: { preload: PRELOAD, partition: v.partition },
+    const view = new BrowserWindow({
+      show: false,
+      width: 1280,
+      height: 860,
+      webPreferences: { preload: PRELOAD, partition: v.partition, backgroundThrottling: false },
     });
-    mainWin.addBrowserView(view);
-    view.setBounds({ x: 0, y: 0, width: 0, height: 0 }); // hidden but alive
-    void view.webContents.loadURL(v.url);
+    void view.loadURL(v.url);
     _views.set(v.id, view);
   }
+}
+
+function closeVendorViews(): void {
+  for (const view of _views.values()) {
+    const candidate = view as unknown as { isDestroyed?: () => boolean; destroy?: () => void };
+    if (typeof candidate.isDestroyed === 'function' && candidate.isDestroyed()) continue;
+    candidate.destroy?.();
+  }
+  _views.clear();
 }
 
 /** Visible sign-in window sharing the hidden view's partition (same cookies). */
 function openLogin(vendorId: string, source?: string): void {
   const v = VENDORS.find((x) => x.id === vendorId);
   if (!v) return;
-  openVendorLogin(v, source);
+  openVendorLogin(v, source, PRELOAD);
 }
 
 /** True only for the panel renderer that this process served. */
@@ -323,7 +336,7 @@ function registerLoginIpc(): void {
     if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
     const vendor = vendorFor(vendorId);
     if (!vendor) throw new Error('Unknown vendor.');
-    return openVendorLogin(vendor);
+    return openVendorLogin(vendor, undefined, PRELOAD);
   });
   ipcMain.handle('blibs:login:cancel', (event, vendorId: unknown) => {
     if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
@@ -402,9 +415,27 @@ export function buildMenu(): void {
 
 // ---------- sync protocol ----------
 
-function askView(vendorId: string, channel: string, payload: Record<string, unknown>): Promise<CollectResult | SendResult> {
-  const view = _views.get(vendorId);
-  if (!view) return Promise.reject(new Error(`no view for ${vendorId}`));
+/**
+ * The window that blibs types into. The visible sign-in window wins while it
+ * is open and on the vendor site, so a user can chat there. The hidden view is
+ * the fallback.
+ */
+function activeView(provider: string): BrowserWindow | undefined {
+  const loginWindow = getVendorWindow(provider);
+  if (loginWindow?.isFocused()) {
+    const vendor = VENDORS.find((entry) => entry.id === provider);
+    if (vendor) {
+      try {
+        const current = new URL(loginWindow.webContents.getURL());
+        if (current.hostname === new URL(vendor.url).hostname) return loginWindow;
+      } catch { /* still on a blank page */ }
+    }
+  }
+  return _views.get(provider);
+}
+
+function askView(view: BrowserWindow | undefined, channel: string, payload: Record<string, unknown>): Promise<CollectResult | SendResult> {
+  if (!view) return Promise.reject(new Error('no view'));
   const reqId = `r${Date.now().toString(36)}${reqSeq++}`;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -434,7 +465,7 @@ export async function sweep(reason: string): Promise<{ added: number }> {
   let added = 0;
   for (const v of VENDORS) {
     try {
-      const r = (await askView(v.id, 'blibs:collect-now', {})) as CollectResult;
+      const r = (await askView(_views.get(v.id), 'blibs:collect-now', {})) as CollectResult;
       if (r?.items?.length) {
         const posted = await relayScrape({ ...r, reason });
         added += posted.added ?? 0;
@@ -456,12 +487,15 @@ export async function drainOutbox(reason: string): Promise<{ drained: number; er
   }
   let drained = 0;
   for (const item of pending.slice(0, 5)) {
-    if (!_views.has(String(item.provider || '').toLowerCase())) {
+    const provider = String(item.provider || '').toLowerCase();
+    const view = activeView(provider);
+    if (!view) {
       await ackOutbox(item.id, false, `no view for provider "${item.provider}"`);
       continue;
     }
     try {
-      const r = (await askView(item.provider, 'blibs:send', { text: item.text })) as SendResult;
+      await ensureThread(view, provider, item.threadId);
+      const r = (await askView(view, 'blibs:send', { text: item.text })) as SendResult;
       await ackOutbox(item.id, !!r?.ok, r?.ok ? undefined : r?.reason || 'view send failed');
       if (r?.ok) drained++;
     } catch (e) {
@@ -469,6 +503,40 @@ export async function drainOutbox(reason: string): Promise<{ drained: number; er
     }
   }
   return { drained };
+}
+
+// A reply belongs to one conversation. Move the hidden view to that thread
+// before sending, so the message lands in the chat that mentioned @opencode.
+// The vendor page mounts its composer after the load event, so the send waits.
+const THREAD_SETTLE_MS = 2000;
+
+async function ensureThread(view: BrowserWindow, provider: string, threadId?: string): Promise<void> {
+  if (!threadId) return;
+  let target: URL;
+  try {
+    target = new URL(threadId);
+  } catch {
+    return;
+  }
+  if (target.protocol !== 'https:') return;
+  const vendor = VENDORS.find((v) => v.id === provider);
+  if (!vendor) return;
+  let vendorHost: string;
+  try {
+    vendorHost = new URL(vendor.url).hostname;
+  } catch {
+    return;
+  }
+  if (target.hostname !== vendorHost) return;
+  let current: string;
+  try {
+    current = view.webContents.getURL();
+  } catch {
+    return;
+  }
+  if (current.split('#')[0] === threadId.split('#')[0]) return;
+  await view.loadURL(threadId);
+  await new Promise((resolve) => setTimeout(resolve, THREAD_SETTLE_MS));
 }
 
 async function ackOutbox(id: string, ok: boolean, error?: string): Promise<void> {
@@ -559,6 +627,7 @@ if (!process.env.BLIBS_NO_AUTOSTART) {
 // Exported for the headless test harness (BLIBS_NO_AUTOSTART=1).
 export async function shutdown(): Promise<void> {
   closeLoginWindows();
+  closeVendorViews();
   const pending: Promise<void>[] = [];
   if (proxyChild) {
     const child = proxyChild;

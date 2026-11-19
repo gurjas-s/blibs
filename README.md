@@ -4,20 +4,14 @@
 
 blibs is a desktop control panel for **personal agents** — the always-on,
 action-taking kind (Meta **Muse**, OpenAI **Dots**, xAI **Grok**), not plain chatbots.
-Chat with all three from one window, and reply from blibs straight into the real agent session.
 
-There is no public chat-history or send API for any of these consumer products
-(verified Oct 2026), and all three block iframing (`X-Frame-Options: SAMEORIGIN` /
-`DENY`). So blibs keeps three persistent vendor sessions alive inside the app
-itself — logged in, syncing — with a tiny local backend as the middleman.
+blibs connects each assistant to the local coding harnesses on your computer
+(**Claude Code**, **Codex**, **OpenCode**). You select the harnesses for each
+assistant one time. You also select the shared folder that the harnesses may
+read and write. Chat with all three assistants from one window, and reply from
+blibs straight into the real assistant session.
 
-```
-muse.ai / chatgpt.com / grok.com (persistent sessions inside the app)
-        ↕  built-in views read chats, type your replies
-http://127.0.0.1:8787  local backend  (import store + send outbox)
-        ↕  /api/imports, /api/outbox*
-blibs panel (Electron + React, served from inside the app on :5174)
-```
+blibs keeps your vendor sessions active so it can sync chats and send replies.
 
 ## First run (new developer)
 
@@ -37,26 +31,26 @@ rather than letting `npm start` fail later with `Electron failed to install
 correctly`. After changing `package-lock.json`, use `npm install` locally and
 commit the updated lockfile; everyone else and CI use `npm ci`.
 
-The first start opens a short setup flow: what blibs does, connect a vendor,
-sign in, and start. Use **Agents** in the sidebar to sign in to
-Muse, Dots, or Grok (once each). The **Agents** menu is a second path. The
-sign-in window shares cookies with the hidden sync view, so after sign-in you
-can close it — syncing continues in the background. If the vendor asks for a
-mobile code or a CAPTCHA, the agents screen shows that step. Select **Check
-again** after you complete it. **Back to chats**, **Cancel**, and **Escape**
-always return to the panel.
+The first start opens the **Connections** screen. It shows one row for each
+local harness and one column for each assistant. Turn on the harnesses that each
+assistant can use. Set the shared folder. Select **Start chatting**.
 
-> **If npm blocks Electron's install script:** approve it, then reinstall:
->
-> ```bash
-> npm install-scripts approve electron
-> npm ci
-> ```
->
-> Some Node.js and npm versions can leave `node_modules/electron/dist/`
-> with only `LICENSES.chromium.html`. Check that `node -v` prints `v24.…` and
-> that `node_modules/electron/path.txt` exists; delete `node_modules` and run
-> `npm ci` again if it does not.
+Select **Connect another assistant** on the Connections screen to sign in to
+Muse, Dots, or Grok (once each). The **Agents** item in the sidebar and the
+**Agents** menu are other paths to the same screen. The sign-in window shares
+cookies with the hidden sync view, so after sign-in you can close it — syncing
+continues in the background. If the vendor asks for a mobile code or a CAPTCHA,
+the agents screen shows that step. Select **Check again** after you complete it.
+**Back to chats**, **Cancel**, and **Escape** always return to the panel.
+The sign-in window is also a chat view while it is open. blibs reads the
+messages there and types replies into the window that has focus. Close it to
+continue in the hidden sync view.
+
+An assistant with no signed-in session shows a setup card in its chat. The card
+lists the steps, gives the connect link, and offers **Check connection** and
+**Open assistant**. The composer stays disabled until the assistant is
+connected. Select **Connections** in the sidebar to change the harnesses or the
+folder later.
 
 Chats flow in automatically: the app pushes seconds after chat content changes
 (plus a 1-minute backup sweep), and the panel auto-pulls every 15s by default.
@@ -67,24 +61,43 @@ backend, the app types it into the matching session and sends it, and the badge
 under your message flips `Sending…` → `Sent` (or `Not delivered` + Retry).
 The agent's reply syncs back on its own.
 
+**Ask blibs about itself:** tag `@blibs` in a chat. blibs sends one generated
+reply into the conversation and shows it in the panel. The reply lists the
+harnesses, the ones enabled for the assistant, the tagging rule, and a first
+task. It suggests the first enabled harness, for example
+`To give it a try do @opencode hi.` When no harness is enabled, it says to turn
+one on in Connections.
+
+**Harness replies:** a reply from a local coding harness starts with
+`Sent from user's harness (<harness name>).` The header shows where the message
+came from. A routing question from the harness uses the same header.
+
+The relay uses OpenCode. Set its model with `POST /api/relay/projects` and a
+`model` value in `provider/model` form. Set the project folders with a
+`projects` array. The relay stores both values and passes the model to every
+run. A fresh install starts with `~/Projects/LeetCode-Solutions` and
+`~/Projects/streaming-simulator`. The relay also lists the immediate
+subdirectories of `~/Projects` as candidates. A run that fails posts a short
+failure note into the chat.
+
 ## Scripts
 
 | Command | What |
 |---|---|
-| `npm run build` | Full build: `tsc` (main + preload as CJS, backend as ESM) → CJS markers → Vite bundles the panel to `dist/` |
+| `npm run build` | Build the app |
 | `npm start` | Launch the app (needs a prior `build`) |
 | `npm test` | Rebuilds, runs unit and HTTP route tests, then runs the desktop harness with temporary stores and ports |
-| `npm run e2e` | Builds, starts the real Electron app with a remote debugging port, and runs the smoke spec over CDP; needs a display |
-| `npm run test:desktop` | Tests search and citations in an isolated Electron renderer after building; needs a display, but no model downloads |
-| `npm run smoke` | Boots the real app window, prints a JSON status line, quits — needs a display |
-| `npm run lint` | ESLint flat config over `src/`, `server/`, `scripts/`, and `tests/` (fails on warnings) |
+| `npm run e2e` | Build the app and run end-to-end checks; needs a display |
+| `npm run e2e:live` | Opt-in live checks; needs `BLIBS_LIVE_LOGIN=1`. The sign-in check also needs account values in `.env` |
+| `npm run test:desktop` | Test search and citations; needs a display, but no model downloads |
+| `npm run smoke` | Check that the app starts; needs a display |
+| `npm run lint` | Check the code for lint errors |
 | `npm run icons` | Regenerate the app PNG sizes, the macOS `.icns`, and the panel favicon from `assets/icon.svg`; needs macOS |
 | `npm run clean` | Wipe `build/` + `dist/` |
 | `npm run verify:clean-build` | Delete generated output, rebuild with the existing incremental cache, and check that all required output was regenerated |
 
-CI runs on Linux and Windows for every push and pull request. To block merging
-when checks fail, a repository admin must require both **Build, lint, and test**
-checks in the default branch's protection rules. See `AGENTS.md` for contribution guidance.
+CI runs the build, lint, and test checks on Linux and Windows for every push
+and pull request.
 
 ## App icon and packaging
 
@@ -116,170 +129,58 @@ installer, add a packager and then:
 
 ## End-to-end tests
 
-`npm run e2e` builds the app and runs a smoke spec in the real Electron app. The
-harness starts Electron with `--remote-debugging-port` on a free port. It
-connects `playwright-core` over the Chrome DevTools Protocol (CDP). It uses the
-Chromium engine inside Electron, so it does not download a browser.
+`npm run e2e` builds the app and runs end-to-end checks. It uses temporary data
+and mock chats, so it needs no vendor account.
 
-The harness starts the app with a temporary profile and history directory. It
-uses free ports for the panel and the backend. It needs no vendor login.
+The check needs a display. On Linux without `DISPLAY` or `WAYLAND_DISPLAY`, the
+check skips with a message; use `xvfb-run -a npm run e2e` on a headless machine.
+`npm test` does not run the e2e check.
 
-The smoke spec verifies these items:
+### Live checks
 
-- The panel window loads.
-- The backend answers `/api/health` through the panel proxy and directly.
-- The panel reports a successful import pull.
-- The sidebar shows a selected chat and the narrow layout collapses.
-- Settings holds the Auto-sync toggle and interval, and the sidebar footer
-  keeps only the Agents entry.
-- The topbar search runs one global search, a provider tag limits it, and
-  Settings holds the index controls and the theme.
-- The message thread shows roles, timestamps, and wrapped long text.
-- The theme control follows the system preference and saves the choice.
-- The layout has no horizontal scroll at 1024 and 1440 pixels.
-- The first-run flow shows its steps, supports Back and Skip, and stays
-  complete after a reload.
-- The agents screen is the in-app sign-in entry point.
-- A mocked sign-in shows progress, a mobile verification step, and Cancel.
-- Escape and Back return to the home screen after a mocked sign-in.
+`npm run e2e:live` runs two opt-in checks. Set `BLIBS_LIVE_LOGIN=1` to enable
+them. Do not run these checks in CI.
 
-The spec writes light and dark screenshots to
-`tests/e2e/artifacts/panel-dark.png` and
-`tests/e2e/artifacts/panel-light.png`. It also writes onboarding, sign-in, and
-post-sign-in home screenshots. The repository ignores this directory. The
-screenshots use mock chats and mocked sign-in steps, not a vendor login.
+1. **Sign-in check.** It uses a real Muse account and the Proton inbox that
+   receives the verification code. Put `EMAIL_MUSE`, `PASSWORD_MUSE`, and
+   `PROTON_URL` in the ignored `.env` file. The check reads the newest code,
+   signs in, sends `@blibs`, and sends `@opencode hi` to the deterministic
+   harness stub. It keeps its Electron profile in
+   `tests/e2e/artifacts/live-profile`, so a remembered device works on the next
+   run.
+2. **Popout relay check.** It opens the authenticated Muse popout, sends
+   `/clear`, `@blibs`, a task without a project, and one LeetCode task. It uses
+   the installed app profile and runs the real OpenCode model. Set
+   `BLIBS_LIVE_PROFILE` to use another profile. The check reads the model and
+   project registry from the app state. Set `BLIBS_LIVE_MODEL` to override the
+   model.
 
-The reusable module is `tests/e2e/harness.ts`. It exports `launch`,
-`waitForPanel`, `screenshot`, `selectAgent`, `selectTheme`, `setTheme`,
-`seedChats`, `resetOnboarding`, and `completeOnboarding`. The harness starts the
-app with `BLIBS_MOCK_LOGIN=1`, so a sign-in attempt uses fixed mock steps. Add a
-new spec in `tests/e2e/` to test another feature.
-
-The check needs a display. macOS and Windows use the desktop session. On Linux
-without `DISPLAY` or `WAYLAND_DISPLAY`, the spec skips with a clear message. Use
-`xvfb-run -a npm run e2e` on a headless Linux machine. `npm test` does not run
-the e2e check.
-
-## Contributing
-
-Read `AGENTS.md` before you change code. The repository skills in
-`.agents/skills/` hold the repeatable steps:
-
-- `onboarding` — set up a fresh checkout and start the app.
-- `design` — add UI with the component layer and design tokens.
-- `validate` — run the build, lint, unit tests, one manual test, and add a
-  screenshot when the change is visible.
-
-Write PR titles, PR descriptions, review comments, and user-facing docs in
-English. Use ASD-STE100 Simplified Technical English.
-
-## Repo layout
-
-Standard Electron + Vite structure — one process per directory:
-
-```
-src/
-  main/         main process (Node + Electron APIs, no DOM)
-    index.ts        app lifecycle, backend + panel servers, vendor views,
-                    menu, outbox loop, 60s sweep / 30s drain timers
-    login.ts        vendor sign-in windows and inline step events
-    test-harness.ts headless tests (npm test)
-  preload/      bridge scripts (DOM + limited Electron IPC, no Node UI code)
-    agent.ts        scrape + send; injected into every vendor session
-    panel.ts        narrow sign-in bridge for the panel
-  renderer/     React UI (DOM only — bundled by Vite into dist/)
-    App.tsx         app state, thread, composer, auto-pull, view switch
-    main.tsx        React entry (loaded by index.html)
-    client.ts       the only typed data client for backend routes
-    desktop.ts      typed access to the panel preload bridge
-    Onboarding.tsx  first-run steps
-    LoginScreen.tsx agents screen and inline sign-in steps
-    components/     reusable UI components with typed props
-    styles/         design tokens (light + dark) and base styles
-    SearchPanel.tsx results for the global search
-    SettingsPanel.tsx sync, search defaults, index, answers, and theme
-    search.ts       search parsing and persistent defaults
-    providers.ts    the three vendors — the seam for future native APIs
-    types.ts        Agent / ChatMessage
-    *.css, assets/  layout, theme entry, static assets
-server/
-  proxy.ts      local backend (plain Node HTTP, zero deps): chat fan-out,
-                import store, send outbox. Spawned by the main process.
-tests/
-  e2e/          real-app CDP harness (`harness.ts`) and smoke spec; run with
-                `npm run e2e`
-scripts/
-  emit-cjs-markers.mjs  build step — see "Modules" below
-assets/
-  icon.svg       icon source (flat, one accent color)
-  icons/         generated PNG sizes, 16 px to 1024 px
-  blibs.icns     generated macOS bundle icon
-  build-icons.mjs  generates the PNG sizes and the .icns (`npm run icons`)
-.agents/
-  skills/       repo skills for design, onboarding, and validation
-```
-
-Generated, never edited or committed: `build/` (compiled main/preload/backend),
-`dist/` (bundled panel), `node_modules/`. Retained chats and the send outbox live
-in `<Electron userData>/history`; `BLIBS_DATA_DIR` overrides that directory. See
-[conversation search storage](docs/conversation-search.md) for migration details.
-Panel state lives in `localStorage` (`blibs-messages-v2`, `blibs-agents-v2`,
-`blibs-theme-v1`, …) — swap for a DB + OAuth in production.
-
-## Modules (read this before touching the build)
-
-The root is `"type": "module"`, but Electron's main process and preload scripts
-must load as **CommonJS**, while the backend stays **ESM**. This is handled by
-tiny marker files the build regenerates — `build/main/package.json` and
-`build/preload/package.json`, each containing `{"type":"commonjs"}`:
-
-- `tsc -b --force` compiles `src/main` + `src/preload` (CJS) and `server` (ESM).
-  `--force` matters: without it, `tsc -b` trusts stale incremental state and can
-  silently skip emitting after `build/` is deleted.
-- `scripts/emit-cjs-markers.mjs` writes the markers.
-- `vite build` bundles `src/renderer` to `dist/`.
-
-Symptoms if you get this wrong: `exports is not defined in ES module scope`
-at `build/main/index.js` on `npm start` means the markers are missing — just
-re-run `npm run build`.
-
-## Backend API (internal, app ↔ panel)
-
-| Endpoint | Who | What |
-|---|---|---|
-| `GET /api/health` | anyone | `{"ok":true}` — is the backend up? |
-| `POST /api/import` | views | push scraped chats `{items:[{provider,role,text,ts?,url?,sourceId?,threadId?,identity?}]}` (repeatable source identity) |
-| `GET /api/imports` | panel | last 500 stored chats |
-| `GET /api/history?limit=100&offset=0` | panel | paginated retained SQLite history |
-| `GET /api/history/:id` | panel | exact retained citation source |
-| `POST /api/search` | panel | keyword/hybrid search with provider, thread, and date filters |
-| `POST /api/ask` | panel | experimental local extractive answers with validated evidence quotes |
-| `GET/POST /api/index` | panel | model/index status; resume, cancel, or rebuild vectors |
-| `POST /api/outbox` | panel | enqueue a reply `{provider,text}` → `{id}` |
-| `GET /api/outbox/pending` | main | oldest queued sends |
-| `POST /api/outbox/ack` | main | confirm delivery `{id,ok,error?}` |
-| `POST /api/outbox/retry` | panel | requeue a failed send |
-| `GET /api/outbox` | panel | delivery statuses (drives the Sent/failed badges) |
-| `POST /api/chat` | panel | BYOK model fan-out (legacy route, kept for API use) |
-
-Ports: backend `:8787` (`PROXY_PORT`), panel `:5174` (`BLIBS_UI_PORT`). The panel
-server forwards `/api/*` to the backend — the same mapping `vite.config.ts`
-declares for reference.
+Do not commit the profile, a screenshot of a signed-in session, or a
+credential. The popout check writes `tests/e2e/artifacts/live-popout-relay.png`;
+Git ignores that directory.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `Cannot find module '…/build/main/index.js'` on `npm start` | You skipped the build — run `npm run build` first (`build/` is generated) |
-| `exports is not defined in ES module scope` | CJS markers missing — re-run `npm run build` |
-| `Electron failed to install correctly` | Use Node.js 24.x, approve Electron's install script if npm asks, then run `npm ci` (see First run) |
+| `Electron failed to install correctly` | Use Node.js 24.x. If npm blocked the install script, run `npm install-scripts approve electron`, then `npm ci` again |
 | Weird behavior right after `npm start` | Make sure `ELECTRON_RUN_AS_NODE` is **not** exported in your shell (`unset` it and remove it from `~/.zshrc` — it makes Electron act as plain Node) |
 | Blibs: `Backend unreachable` pill | Backend didn't boot with the app — restart; check the terminal for `[blibs] proxy exited` |
 | `EADDRINUSE` on `:5174`/`:8787` in `npm test` | A previous app instance is still running — quit it first |
 | Send stuck on `Sending…` | Session not signed in or page still loading — use Agents, then Retry |
+| Harness run shows `harness exited with code 1` | Use an OpenCode model with credits. Set it with `POST /api/relay/projects` and `{"model":"provider/model"}`. |
 | Login lost after restart | Partitions persist per OS user; check you didn't clear app data |
 
 ## Limits (honest POC notes)
+
+**Connections:** The harness choice, the shared folder, and the setup state are
+local to this window. The app saves them in `localStorage`. The app does not
+start a harness run, open the shared folder, or resolve the connect link yet.
+The activity list and the chat action card appear only when a backend reports
+work. Until then, the context column shows an honest empty state. The setup card
+uses the saved login status for Muse, Dots, and Grok. A status change updates
+the card and the assistant list.
 
 **Conversation search:** Use the search bar in the topbar. It searches all
 retained conversations after a short pause, and Enter runs the search at once.

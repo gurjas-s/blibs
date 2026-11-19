@@ -59,10 +59,12 @@ Make every control accessible:
 - Keep full keyboard access.
 - Keep text contrast at WCAG AA or better in both themes.
 
-Tests and screenshots must use mocked data. Do not use a live vendor login, a
-real chat, a cookie, or a credential. Use `tests/e2e/harness.ts` to start the
-app with a temporary profile. The harness sets `BLIBS_MOCK_LOGIN=1`, so a
-sign-in attempt uses fixed steps and needs no account or verification code. Add
+Tests and screenshots use mocked data by default. Use `tests/e2e/harness.ts`
+to start the app with a temporary profile. The harness sets
+`BLIBS_MOCK_LOGIN=1`, so a sign-in attempt uses fixed steps and needs no
+account or verification code. A live vendor login is allowed only when the
+user explicitly authorizes it for that run. Never write a credential, a
+cookie, or session data to the repo, a log, or an artifact. Add
 the onboarding, sign-in, and post-sign-in screenshots when the change is
 visible. Attach a screenshot for a visible change to the PR body with
 `gh pr edit <number> --attach <path>`. Never commit a screenshot, an evidence
@@ -98,6 +100,7 @@ Keep `--force` in the TypeScript build command.
 
 - Use one branch and a focused commit for each issue. Explain the behavior and the validation in the PR.
 - Keep new logic typed. Test changes that affect delivery, storage, or session state.
+- Write a code comment only when the behavior is not clear from the code itself.
 - Use plain, task-oriented language. Follow the Google developer documentation style guide when project usage does not answer a writing question.
 - Use the repository skills in `.agents/skills/` for onboarding and validation.
 - Keep the flat slate theme with one accent color.

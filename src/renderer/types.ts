@@ -1,5 +1,18 @@
 export type ProviderId = 'muse' | 'dots' | 'grok' | 'custom';
 
+/** A local coding harness that an assistant can use. */
+export type HarnessId = 'claude-code' | 'codex' | 'opencode';
+
+/** State of one harness run. */
+export type HarnessActionStatus = 'completed' | 'running' | 'failed';
+
+/** One harness action that a message reports. */
+export interface HarnessAction {
+  harness: HarnessId;
+  status: HarnessActionStatus;
+  detail: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -18,6 +31,8 @@ export interface ChatMessage {
   text: string;
   ts: number;
   source: 'desktop' | 'extension' | 'mock' | 'api' | 'embed';
+  /** Sender label for a message that is not the assistant, for example `blibs`. */
+  senderName?: string;
   /** how a user message was delivered (vendor session in the app, model API, or local mock) */
   via?: 'tab' | 'model' | 'mock';
   /** proxy outbox id for session-routed messages */
@@ -25,6 +40,8 @@ export interface ChatMessage {
   /** delivery state of a session-routed message */
   outStatus?: 'queued' | 'sent' | 'failed';
   historyId?: string;
+  /** Present when the message reports harness work instead of chat text. */
+  action?: HarnessAction;
 }
 
 export interface ProviderMeta {

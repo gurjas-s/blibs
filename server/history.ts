@@ -78,8 +78,9 @@ export class HistoryStore {
       if (report.rejected) this.migrationWarning = `${report.rejected} invalid legacy rows skipped; original and backup preserved.`;
     } catch (error) { this.migrationWarning = `Legacy migration pending: ${String(error)}. Original JSON preserved; fix it and restart.`; }
   }
-  import(items: unknown[], legacy = false): { added: number; updated: number; rejected: number; total: number } {
+  import(items: unknown[], legacy = false, onAdded?: (messages: HistoryMessage[]) => void): { added: number; updated: number; rejected: number; total: number } {
     let added = 0, updated = 0, rejected = 0;
+    const inserted: HistoryMessage[] = [];
     const occurrences = new Map<string, number>();
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -111,14 +112,27 @@ export class HistoryStore {
           this.db.prepare('DELETE FROM chunks WHERE messageId=?').run(id); updated++;
         } else {
           this.db.prepare('INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?)').run(id, provider, threadId, sourceId, identity, role, text, ts, url); added++;
+          inserted.push({ id, provider, threadId, sourceId, identity, role, text, ts, url });
         }
         chunks(text).forEach((snippet, ordinal) => this.db.prepare('INSERT INTO chunks(messageId,ordinal,snippet,contentHash) VALUES(?,?,?,?)').run(id, ordinal, snippet, hash(snippet)));
       }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    // After COMMIT: the relay must not act on a row that was rolled back.
+    if (inserted.length) onAdded?.(inserted);
     return { added, updated, rejected, total: this.count() };
   }
   count(): number { return Number(this.db.prepare('SELECT count(*) AS n FROM messages').get()!.n); }
+  threads(provider: string): string[] {
+    return (this.db.prepare('SELECT DISTINCT threadId FROM messages WHERE provider=? ORDER BY threadId LIMIT 2000').all(provider) as unknown as { threadId: string }[])
+      .map((row) => row.threadId);
+  }
+  hasUserMessage(provider: string, threadId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM messages WHERE provider=? AND threadId=? AND role='user' LIMIT 1").get(provider, threadId));
+  }
+  hasMessagePrefix(provider: string, threadId: string, prefix: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM messages WHERE provider=? AND threadId=? AND substr(text,1,?)=? LIMIT 1').get(provider, threadId, prefix.length, prefix));
+  }
   list(limit = 500, offset = 0): HistoryMessage[] { return this.db.prepare('SELECT * FROM messages ORDER BY ts,id LIMIT ? OFFSET ?').all(limit, offset) as unknown as HistoryMessage[]; }
   recent(): HistoryMessage[] { return (this.db.prepare('SELECT * FROM messages ORDER BY ts DESC,id DESC LIMIT 500').all() as unknown as HistoryMessage[]).reverse(); }
   message(id: string): HistoryMessage | undefined { return this.db.prepare('SELECT * FROM messages WHERE id=?').get(id) as unknown as HistoryMessage | undefined; }

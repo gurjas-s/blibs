@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { PROVIDERS, SEED_AGENTS, providerFor } from './providers';
 import type { Agent, ChatMessage, LoginStatus } from './types';
-import { cleanImportText } from './text';
+import { cleanImportText, isIntroText } from './text';
 import {
   applyTheme,
   readThemePreference,
@@ -19,7 +19,7 @@ import {
   type SearchCommand,
   type SearchDefaults,
 } from './search';
-import Onboarding, { type OnboardingResult } from './Onboarding';
+import Onboarding from './Onboarding';
 import LoginScreen from './LoginScreen';
 import {
   cancelVendorLogin,
@@ -34,15 +34,36 @@ import {
   fetchOutboxStatuses,
   queueOutbox,
   retryOutbox as retryOutboxItem,
+  updateRelayHarnesses,
 } from './client';
+import {
+  HARNESSES,
+  actionsFor,
+  connectionFor,
+  connectLinkFor,
+  harnessName,
+  latestAction,
+  readConnectionState,
+  resolveSetupStatus,
+  setAssistantSetup,
+  setHarnessEnabled,
+  setSharedFolder,
+  writeConnectionState,
+} from './connections';
+import type { ConnectionState } from './connections';
 import { AgentListItem } from './components/AgentListItem';
+import { Avatar } from './components/Avatar';
 import { Button } from './components/Button';
+import { Card } from './components/Card';
+import { CheckboxField } from './components/CheckboxField';
 import { EmptyState } from './components/EmptyState';
 import { MessageBubble } from './components/MessageBubble';
 import { SectionLabel } from './components/SectionLabel';
+import { SetupCard } from './components/SetupCard';
 import { StatusPill } from './components/StatusPill';
 import type { StatusTone } from './components/StatusPill';
 import { TextField } from './components/TextField';
+import { cx } from './components/cx';
 
 const LS_MSGS = 'blibs-messages-v2';
 const LS_AGENTS = 'blibs-agents-v2';
@@ -55,8 +76,11 @@ const ONBOARDING_DONE = 'done';
 /** Search debounce in milliseconds. */
 const SEARCH_DEBOUNCE_MS = 250;
 
+/** The assistant whose chat the relay reads and answers. */
+const RELAY_ASSISTANT_PROVIDER = 'muse';
+
 /** The main pane that the shell shows. */
-type View = 'chat' | 'results' | 'settings' | 'login';
+type View = 'chat' | 'results' | 'settings' | 'login' | 'connections';
 
 function onboardingComplete(): boolean {
   try {
@@ -116,6 +140,9 @@ export default function App() {
   const [searchCommand, setSearchCommand] = useState<SearchCommand | null>(null);
   const [settingsReturn, setSettingsReturn] = useState<View>('chat');
   const [onboarded, setOnboarded] = useState(onboardingComplete);
+  const [connections, setConnections] = useState<ConnectionState>(
+    () => readConnectionState(agents.map((agent) => agent.id)),
+  );
   const [loginStatuses, setLoginStatuses] = useState<Record<string, LoginStatus>>({});
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -125,15 +152,24 @@ export default function App() {
   const [pullSecs, setPullSecs] = useState<number>(() => load(LS_PULLSECS, 15));
   const [theme, setTheme] = useState<ThemePreference>(readThemePreference);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const searchId = useRef(0);
   const debounceTimer = useRef<number | null>(null);
   const pendingCaret = useRef(false);
+  const lastHarnessReport = useRef('');
 
   const active = agents.find((a) => a.id === activeId) ?? agents[0];
   const meta = providerFor(active);
   const parsedQuery = parseSearchQuery(query);
+  const desktopAvailable = desktopLoginAvailable();
+  const activeConnection = connectionFor(connections, active.id);
+  const activeSetup = resolveSetupStatus(activeConnection, loginStatuses[active.id]);
+  const activeActivity = actionsFor(connections, active.id);
+  const lastActivity = activeActivity[0];
+  const activeStatus = loginStatuses[active.id];
+  const checking = activeStatus?.phase === 'loading' || activeStatus?.phase === 'opening';
 
   const messagesRef = useRef(messages);
   const agentsRef = useRef(agents);
@@ -149,6 +185,27 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(LS_AGENTS, JSON.stringify(agents));
   }, [agents]);
+  useEffect(() => {
+    writeConnectionState(connections);
+  }, [connections]);
+
+  useEffect(() => {
+    const relayAgent = agents.find((agent) => agent.provider === RELAY_ASSISTANT_PROVIDER);
+    if (!relayAgent) return;
+    const connection = connectionFor(connections, relayAgent.id);
+    const report = HARNESSES.map((harness) => ({
+      id: harness.id,
+      name: harness.name,
+      enabled: connection.harnesses[harness.id],
+    }));
+    const signature = JSON.stringify(report);
+    if (signature === lastHarnessReport.current) return;
+    lastHarnessReport.current = signature;
+    void updateRelayHarnesses(report).catch(() => {
+      // The next connection change reports again.
+      lastHarnessReport.current = '';
+    });
+  }, [connections, agents]);
   useEffect(() => {
     localStorage.setItem(LS_AUTOPULL, JSON.stringify(autoPull));
   }, [autoPull]);
@@ -187,6 +244,19 @@ export default function App() {
     }
   }, []);
 
+  // A signed-in desktop session is the source of truth for the setup state.
+  useEffect(() => {
+    setConnections((current) => {
+      let next = current;
+      for (const agent of agents) {
+        if (loginStatuses[agent.id]?.phase === 'signed-in') {
+          next = setAssistantSetup(next, agent.id, 'connected');
+        }
+      }
+      return next;
+    });
+  }, [loginStatuses, agents]);
+
   useEffect(() => {
     if (view !== 'login') return;
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -195,6 +265,15 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [view]);
+
+  useEffect(() => {
+    if (!contextOpen) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setContextOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [contextOpen]);
 
   const thread = useMemo(() => {
     return [...(messages[active.id] ?? [])].sort((a, b) => a.ts - b.ts);
@@ -221,13 +300,18 @@ export default function App() {
         const target = ags.find((a) => a.provider === prov)?.id;
         if (!target) continue;
         const role = it.role === 'agent' ? 'agent' : 'user';
+        const intro = isIntroText(text);
         const list = next[target] ?? [];
         const existing = list.find(m => m.historyId === it.id) ?? list.find(m => {
+          // An introduction is also delivered to the vendor chat. Its echo
+          // must not add a second bubble.
+          if (intro && isIntroText(cleanImportText(m.text)) && cleanImportText(m.text) === text) return true;
           if (m.historyId || m.role !== role || cleanImportText(m.text) !== text) return false;
           // Imports use first-observed times. Delivery may occur long after a send or retry.
           return m.ts === it.ts || (m.via === 'tab' && it.ts >= m.ts);
         });
         if (existing) {
+          if (intro && isIntroText(cleanImportText(existing.text))) continue;
           if (existing.historyId !== it.id || existing.text !== text || existing.role !== role) {
             next[target] = list.map(m => m.id === existing.id ? { ...m, historyId: it.id, text, role } : m);
             merged++;
@@ -240,10 +324,11 @@ export default function App() {
             id: `history:${it.id}`,
             historyId: it.id,
             agentId: target,
-            role: it.role === 'agent' ? 'agent' : 'user',
+            role: intro ? 'agent' : role,
             text,
             ts: Number(it.ts) || Date.now(),
             source: 'desktop',
+            ...(intro ? { senderName: 'blibs' } : {}),
           },
         ];
         merged++;
@@ -366,6 +451,7 @@ export default function App() {
       ask,
     });
     setView('results');
+    setContextOpen(false);
   }
 
   function submitSearch(): void {
@@ -383,6 +469,7 @@ export default function App() {
     if (view !== 'settings') setSettingsReturn(view);
     setView('settings');
     setSidebarOpen(false);
+    setContextOpen(false);
   }
 
   function closeSettings(): void {
@@ -394,7 +481,7 @@ export default function App() {
       setView('chat');
       return;
     }
-    setView(settingsReturn === 'settings' ? 'chat' : settingsReturn);
+    setView(settingsReturn === 'settings' || settingsReturn === 'connections' ? 'chat' : settingsReturn);
   }
 
   const startSearchRef = useRef(startSearch);
@@ -445,17 +532,38 @@ export default function App() {
     field?.setSelectionRange(field.value.length, field.value.length);
   }, [query]);
 
-  function finishOnboarding(result: OnboardingResult): void {
+  function markOnboarded(): void {
     try {
       localStorage.setItem(LS_ONBOARDING, ONBOARDING_DONE);
     } catch {
       // The choice still applies for this window.
     }
     setOnboarded(true);
-    if (result.openLogin) {
-      setView('login');
-      if (result.vendorId) startLogin(result.vendorId);
-    }
+  }
+
+  function startChat(): void {
+    markOnboarded();
+    setView('chat');
+  }
+
+  function connectAnother(): void {
+    markOnboarded();
+    setView('login');
+  }
+
+  function openConnections(): void {
+    cancelPendingSearch();
+    setSidebarOpen(false);
+    setContextOpen(false);
+    setView('connections');
+  }
+
+  function toggleHarness(assistantId: string, harnessId: (typeof HARNESSES)[number]['id'], enabled: boolean): void {
+    setConnections((current) => setHarnessEnabled(current, assistantId, harnessId, enabled));
+  }
+
+  function changeFolder(folder: string): void {
+    setConnections((current) => setSharedFolder(current, folder));
   }
 
   function reportLoginError(vendorId: string, error: unknown): void {
@@ -473,7 +581,7 @@ export default function App() {
   function startLogin(vendorId: string): void {
     openVendorLogin(vendorId)
       .then((status) => {
-        setLoginStatuses((current) => ({ ...current, [status.vendorId]: status }));
+        setLoginStatuses((current) => ({ ...current, [vendorId]: status }));
       })
       .catch((error: unknown) => reportLoginError(vendorId, error));
   }
@@ -481,7 +589,7 @@ export default function App() {
   function cancelLogin(vendorId: string): void {
     cancelVendorLogin(vendorId)
       .then((status) => {
-        setLoginStatuses((current) => ({ ...current, [status.vendorId]: status }));
+        setLoginStatuses((current) => ({ ...current, [vendorId]: status }));
       })
       .catch((error: unknown) => reportLoginError(vendorId, error));
   }
@@ -489,7 +597,7 @@ export default function App() {
   function checkLogin(vendorId: string): void {
     checkVendorLogin(vendorId)
       .then((status) => {
-        setLoginStatuses((current) => ({ ...current, [status.vendorId]: status }));
+        setLoginStatuses((current) => ({ ...current, [vendorId]: status }));
       })
       .catch((error: unknown) => reportLoginError(vendorId, error));
   }
@@ -500,7 +608,29 @@ export default function App() {
       ? { tone: 'live', label: `Synced ${clock(lastPull.at)}` }
       : { tone: 'down', label: 'Backend unreachable' };
 
-  if (!onboarded) return <Onboarding onFinish={finishOnboarding} />;
+  if (!onboarded || view === 'connections') {
+    return (
+      <Onboarding
+        assistants={PROVIDERS}
+        harnesses={HARNESSES}
+        state={connections}
+        onToggleHarness={toggleHarness}
+        onChangeFolder={changeFolder}
+        onConnectAnother={connectAnother}
+        onStart={startChat}
+        onBack={view === 'connections' ? () => setView('chat') : undefined}
+      />
+    );
+  }
+
+  const connected = activeSetup === 'connected';
+  const setupError = activeStatus?.phase === 'error' ? activeStatus.message : undefined;
+  const layoutClass = cx(
+    'layout',
+    sidebarOpen && 'sidebar-open',
+    view === 'chat' && contextOpen && 'context-open',
+    view !== 'chat' && 'layout--wide',
+  );
 
   return (
     <div className="shell">
@@ -553,10 +683,10 @@ export default function App() {
         </div>
       </header>
 
-      <div className={sidebarOpen ? 'layout sidebar-open' : 'layout'}>
-        <aside className="sidebar" id="agent-sidebar" aria-label="Chats">
+      <div className={layoutClass}>
+        <aside className="sidebar" id="agent-sidebar" aria-label="Assistants">
           <div className="side-head">
-            <SectionLabel>Chats</SectionLabel>
+            <SectionLabel>Assistants</SectionLabel>
             <Button
               variant="ghost"
               size="sm"
@@ -568,22 +698,41 @@ export default function App() {
               <span aria-hidden="true">⚙</span>
             </Button>
           </div>
-          {agents.map((a) => (
-            <AgentListItem
-              key={a.id}
-              agent={a}
-              active={a.id === activeId}
-              syncLabel={a.lastSyncAt ? `Synced ${timeAgo(a.lastSyncAt)}` : 'Not synced'}
-              onSelect={(id) => {
-                cancelPendingSearch();
-                setActiveId(id);
-                setQuery('');
-                setView('chat');
-                setSidebarOpen(false);
-              }}
-            />
-          ))}
+          {agents.map((a) => {
+            const setup = resolveSetupStatus(connectionFor(connections, a.id), loginStatuses[a.id]);
+            const latest = latestAction(connections, a.id);
+            return (
+              <AgentListItem
+                key={a.id}
+                agent={a}
+                active={a.id === activeId}
+                setup={setup}
+                stateLabel={setup === 'setup'
+                  ? 'Setup'
+                  : a.lastSyncAt ? timeAgo(a.lastSyncAt) : 'Connected'}
+                detail={setup === 'setup'
+                  ? 'Not connected yet'
+                  : latest ? latest.title : 'No harness activity yet'}
+                onSelect={(id) => {
+                  cancelPendingSearch();
+                  setActiveId(id);
+                  setQuery('');
+                  setView('chat');
+                  setSidebarOpen(false);
+                  setContextOpen(false);
+                }}
+              />
+            );
+          })}
           <div className="side-foot">
+            <Button
+              variant="secondary"
+              size="lg"
+              className="side-nav"
+              onClick={openConnections}
+            >
+              Connections
+            </Button>
             <Button
               variant="secondary"
               size="lg"
@@ -592,6 +741,7 @@ export default function App() {
                 cancelPendingSearch();
                 setView('login');
                 setSidebarOpen(false);
+                setContextOpen(false);
               }}
             >
               Agents
@@ -604,7 +754,7 @@ export default function App() {
             <LoginScreen
               vendors={PROVIDERS}
               statuses={loginStatuses}
-              desktopAvailable={desktopLoginAvailable()}
+              desktopAvailable={desktopAvailable}
               onBack={() => setView('chat')}
               onSignIn={startLogin}
               onCancel={cancelLogin}
@@ -627,49 +777,186 @@ export default function App() {
           ) : view === 'results' && searchCommand ? (
             <SearchPanel command={searchCommand} />
           ) : <>
-          <div
-            className="thread"
-            role="log"
-            aria-label={`Messages with ${active.name}`}
-            tabIndex={0}
-          >
-            <div className="thread-content">
-              {thread.length === 0 && (
-                <EmptyState
-                  title={`No messages with ${active.name} yet`}
-                  steps={['Use Agents to sync chats.']}
-                />
-              )}
-              {thread.map((m) => (
-                <MessageBubble key={m.id} message={m} agentName={active.name} onRetry={retryDelivery} />
-              ))}
-              <div ref={bottomRef} />
+            <div className="chat-head">
+              <div className="chat-identity">
+                <Avatar name={active.name} active={connected} />
+                <h1>{active.name}</h1>
+                <StatusPill tone={connected ? 'live' : 'idle'}>
+                  {connected ? 'Connected' : 'Setup'}
+                </StatusPill>
+              </div>
+              <div className="chat-actions">
+                <Button variant="secondary" size="sm" onClick={openConnections}>
+                  Edit tools
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="context-toggle"
+                  aria-expanded={contextOpen}
+                  aria-controls="assistant-context"
+                  onClick={() => setContextOpen((open) => !open)}
+                >
+                  Context
+                </Button>
+              </div>
             </div>
-          </div>
 
-          <div className="composer">
-            <TextField
-              hideLabel
-              label={`Message ${active.name}`}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') send();
-              }}
-              placeholder={`Message ${active.name}…`}
-            />
-            <Button
-              variant="primary"
-              size="lg"
-              onClick={send}
-              disabled={sending || !input.trim()}
-            >
-              Send
-            </Button>
-          </div>
-          <p className="sr-only" role="status">{statusLine}</p>
+            {connected ? (
+              <>
+                <div
+                  className="thread"
+                  role="log"
+                  aria-label={`Messages with ${active.name}`}
+                  tabIndex={0}
+                >
+                  <div className="thread-content">
+                    {thread.length === 0 && (
+                      <EmptyState
+                        title={`No messages with ${active.name} yet`}
+                        steps={['Use Agents to sync chats.', 'Send a message to start a new turn.']}
+                      />
+                    )}
+                    {thread.map((m) => (
+                      <MessageBubble key={m.id} message={m} agentName={active.name} onRetry={retryDelivery} />
+                    ))}
+                    <div ref={bottomRef} />
+                  </div>
+                </div>
+
+                <div className="composer">
+                  <TextField
+                    hideLabel
+                    label={`Message ${active.name}`}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') send();
+                    }}
+                    placeholder={`Message ${active.name}…`}
+                  />
+                  <Button
+                    variant="primary"
+                    size="lg"
+                    onClick={send}
+                    disabled={sending || !input.trim()}
+                  >
+                    Send
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="setup-wrap">
+                  <SetupCard
+                    key={active.id}
+                    assistantName={active.name}
+                    connectLink={connectLinkFor(active.id)}
+                    desktopAvailable={desktopAvailable}
+                    checking={checking}
+                    error={setupError}
+                    onCheck={() => checkLogin(active.id)}
+                    onOpen={() => startLogin(active.id)}
+                  />
+                </div>
+                <div className="composer composer--disabled">
+                  <TextField
+                    hideLabel
+                    label={`Message ${active.name}`}
+                    value=""
+                    disabled
+                    readOnly
+                    aria-describedby="composer-reason"
+                    placeholder={`Connect ${active.name} to send messages`}
+                  />
+                  <Button variant="primary" size="lg" disabled>
+                    Send
+                  </Button>
+                </div>
+                <p className="composer-reason" id="composer-reason">
+                  Connect {active.name} above before you send a message.
+                </p>
+              </>
+            )}
+            <p className="sr-only" role="status">{statusLine}</p>
           </>}
         </main>
+
+        {view === 'chat' && (
+          <aside
+            className={cx('context', contextOpen && 'context--open')}
+            id="assistant-context"
+            aria-label={`Context for ${active.name}`}
+          >
+            <div className="context-head">
+              <SectionLabel>Context</SectionLabel>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="context-close"
+                aria-label="Close context"
+                onClick={() => setContextOpen(false)}
+              >
+                Close
+              </Button>
+            </div>
+
+            <Card className="harness-preview">
+              <div className={cx('preview-screen', !lastActivity && 'preview-screen--empty')}>
+                {lastActivity ? (
+                  <>
+                    <span className="preview-title">{lastActivity.title}</span>
+                    <span className="preview-detail">{lastActivity.detail}</span>
+                  </>
+                ) : (
+                  <span>No harness run yet</span>
+                )}
+              </div>
+              <p className="preview-caption">
+                {lastActivity
+                  ? `${harnessName(lastActivity.harness)} · ${connections.folder}`
+                  : `Shared folder · ${connections.folder}`}
+              </p>
+            </Card>
+
+            <div className="context-section">
+              <SectionLabel>Harnesses {active.name} can use</SectionLabel>
+              {HARNESSES.map((harness) => (
+                <div className="context-row" key={harness.id}>
+                  <span>{harness.name}</span>
+                  <CheckboxField
+                    variant="switch"
+                    checked={activeConnection.harnesses[harness.id]}
+                    label={`${harness.name} for ${active.name}`}
+                    onChange={(event) => toggleHarness(active.id, harness.id, event.target.checked)}
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="context-section">
+              <SectionLabel>Recent activity</SectionLabel>
+              {activeActivity.length === 0 ? (
+                <p className="context-empty">No harness activity yet.</p>
+              ) : (
+                <ul className="activity-list">
+                  {activeActivity.slice(0, 5).map((action) => (
+                    <li className="context-row" key={action.id}>
+                      <span className="activity-title">{action.title}</span>
+                      <time
+                        className="activity-time"
+                        dateTime={new Date(action.at).toISOString()}
+                        title={new Date(action.at).toLocaleString()}
+                      >
+                        {timeAgo(action.at)}
+                      </time>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </aside>
+        )}
       </div>
     </div>
   );

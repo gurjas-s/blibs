@@ -8,7 +8,7 @@
 // Run it with `npm run e2e`. The command builds the app first.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -30,6 +30,21 @@ export const NO_DISPLAY_MESSAGE =
 export interface LaunchOptions {
   /** Maximum time to wait for the panel, in milliseconds. */
   timeoutMs?: number;
+  /**
+   * Use the deterministic in-app sign-in steps. Defaults to true. A live
+   * vendor login test sets this to false and loads the real vendor pages.
+   */
+  mockLogin?: boolean;
+  /**
+   * Keep the Electron profile in this directory. A live sign-in check uses a
+   * stable ignored directory so a remembered device survives a second run.
+   */
+  profileDir?: string;
+  /**
+   * Harness command for the relay. Defaults to the fake harness. A live relay
+   * check sets null to use the configured harness, for example OpenCode.
+   */
+  relayCommand?: string | null;
 }
 
 export interface E2EApp {
@@ -79,9 +94,12 @@ async function freePorts(count: number): Promise<number[]> {
 
 function collectOutput(child: ChildProcess): string[] {
   const lines: string[] = [];
+  const debug = process.env.BLIBS_E2E_DEBUG === '1';
   const record = (chunk: Buffer): void => {
     for (const line of chunk.toString().split('\n')) {
-      if (line.trim()) lines.push(line);
+      if (!line.trim()) continue;
+      lines.push(line);
+      if (debug) process.stderr.write(`[electron] ${line}\n`);
     }
     if (lines.length > 40) lines.splice(0, lines.length - 40);
   };
@@ -191,6 +209,9 @@ export const MESSAGES_STORAGE_KEY = 'blibs-messages-v2';
 /** Storage key that marks the first-run flow as complete. */
 export const ONBOARDING_STORAGE_KEY = 'blibs-onboarding-v1';
 
+/** Storage key that the panel uses for the connection state. */
+export const CONNECTIONS_STORAGE_KEY = 'blibs-connections-v1';
+
 /** Remove the saved onboarding result and load the first-run screen. */
 export async function resetOnboarding(page: Page): Promise<void> {
   await page.evaluate((key) => localStorage.removeItem(key), ONBOARDING_STORAGE_KEY);
@@ -198,11 +219,11 @@ export async function resetOnboarding(page: Page): Promise<void> {
   await page.locator('.onboarding-screen').waitFor({ state: 'visible', timeout: 15_000 });
 }
 
-/** Skip the first-run flow when it is visible, then wait for the chat shell. */
+/** Open the chat shell from the connections screen. */
 export async function completeOnboarding(page: Page): Promise<void> {
   const screen = page.locator('.onboarding-screen');
   if (await screen.isVisible().catch(() => false)) {
-    await page.getByRole('button', { name: 'Skip', exact: true }).click();
+    await page.getByRole('button', { name: 'Start chatting', exact: true }).click();
   }
   await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
 }
@@ -214,6 +235,11 @@ export interface MockChatMessage {
   text: string;
   ts: number;
   source: 'mock';
+  action?: {
+    harness: 'claude-code' | 'codex' | 'opencode';
+    status: 'completed' | 'running' | 'failed';
+    detail: string;
+  };
 }
 
 export type MockChats = Record<string, MockChatMessage[]>;
@@ -246,6 +272,19 @@ export function mockChats(now = Date.now()): MockChats {
         text: 'Added oat milk. The total is $42.18 and the order stays on the same delivery window.',
         ts: now - 47 * minute,
         source: 'mock',
+      },
+      {
+        id: 'mock-muse-4',
+        agentId: 'muse',
+        role: 'agent',
+        text: '',
+        ts: now - 46 * minute,
+        source: 'mock',
+        action: {
+          harness: 'claude-code',
+          status: 'completed',
+          detail: 'Updated the login handler and ran 12 tests in ~/Projects/blibs.',
+        },
       },
     ],
     dots: [
@@ -296,16 +335,111 @@ export function mockChats(now = Date.now()): MockChats {
 }
 
 /** Write mock chats into the panel store and reload the window. */
-export async function seedChats(page: Page, chats: MockChats = mockChats()): Promise<void> {
+export async function seedChats(
+  page: Page,
+  chats: MockChats = mockChats(),
+  connections: MockConnections = mockConnections(),
+): Promise<void> {
   await page.evaluate(
-    ({ key, value }) => {
-      localStorage.setItem(key, JSON.stringify(value));
+    ({ messageKey, messages, connectionKey, connectionState }) => {
+      localStorage.setItem(messageKey, JSON.stringify(messages));
+      localStorage.setItem(connectionKey, JSON.stringify(connectionState));
     },
-    { key: MESSAGES_STORAGE_KEY, value: chats },
+    {
+      messageKey: MESSAGES_STORAGE_KEY,
+      messages: chats,
+      connectionKey: CONNECTIONS_STORAGE_KEY,
+      connectionState: connections,
+    },
   );
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
   await page.locator('.msg').first().waitFor({ state: 'visible', timeout: 15_000 });
+}
+
+export type MockAssistantId = 'muse' | 'dots' | 'grok';
+export type MockHarnessId = 'claude-code' | 'codex' | 'opencode';
+export type MockSetup = 'connected' | 'setup';
+
+export interface MockAction {
+  id: string;
+  assistantId: MockAssistantId;
+  harness: MockHarnessId;
+  title: string;
+  detail: string;
+  status: 'completed' | 'running' | 'failed';
+  at: number;
+}
+
+export interface MockConnections {
+  folder: string;
+  assistants: Record<MockAssistantId, {
+    setup: MockSetup;
+    harnesses: Record<MockHarnessId, boolean>;
+  }>;
+  activity: MockAction[];
+}
+
+export interface MockConnectionsOptions {
+  folder?: string;
+  /** Connection state per assistant. Defaults to connected. */
+  setup?: Partial<Record<MockAssistantId, MockSetup>>;
+  /** Harness enablement per assistant. */
+  harnesses?: Partial<Record<MockAssistantId, Partial<Record<MockHarnessId, boolean>>>>;
+  activity?: MockAction[];
+}
+
+/** Deterministic connection state for screenshots and UI checks. */
+export function mockConnections(options: MockConnectionsOptions = {}): MockConnections {
+  const now = Date.now();
+  const harnesses: MockConnections['assistants'] = {
+    muse: { setup: 'connected', harnesses: { 'claude-code': true, codex: false, opencode: true } },
+    dots: { setup: 'connected', harnesses: { 'claude-code': false, codex: true, opencode: true } },
+    grok: { setup: 'connected', harnesses: { 'claude-code': true, codex: true, opencode: false } },
+  };
+  for (const id of Object.keys(harnesses) as MockAssistantId[]) {
+    const setup = options.setup?.[id];
+    if (setup) harnesses[id].setup = setup;
+    const enabled = options.harnesses?.[id];
+    if (enabled) Object.assign(harnesses[id].harnesses, enabled);
+  }
+  return {
+    folder: options.folder ?? '~/Projects',
+    assistants: harnesses,
+    activity: options.activity ?? [
+      {
+        id: 'mock-action-1',
+        assistantId: 'muse',
+        harness: 'claude-code',
+        title: 'Fixed login button',
+        detail: 'Updated the login handler and ran 12 tests in ~/Projects/blibs.',
+        status: 'completed',
+        at: now - 10 * 60_000,
+      },
+      {
+        id: 'mock-action-2',
+        assistantId: 'muse',
+        harness: 'codex',
+        title: 'Reviewed README',
+        detail: 'Checked the setup steps in ~/Projects/blibs/README.md.',
+        status: 'completed',
+        at: now - 120 * 60_000,
+      },
+    ],
+  };
+}
+
+/** Write mock connection state into the panel store and reload the window. */
+export async function seedConnections(
+  page: Page,
+  connections: MockConnections = mockConnections(),
+): Promise<void> {
+  await page.evaluate(
+    ({ key, value }) => localStorage.setItem(key, JSON.stringify(value)),
+    { key: CONNECTIONS_STORAGE_KEY, value: connections },
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
 }
 
 /** Click an agent in the sidebar and wait until its thread shows it. */
@@ -340,21 +474,41 @@ export async function launch(options: LaunchOptions = {}): Promise<E2EApp> {
   const backendUrl = `http://127.0.0.1:${backendPort}`;
 
   const tempDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-'));
-  const profileDir = path.join(tempDir, 'profile');
+  const profileDir = options.profileDir ?? path.join(tempDir, 'profile');
   const dataDir = path.join(tempDir, 'history');
   mkdirSync(profileDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
+
+  // The relay routes every @opencode mention through a harness run first.
+  // The e2e check stubs that harness so no run needs a real model.
+  const fakeHarness = path.join(tempDir, 'fake-harness.mjs');
+  writeFileSync(fakeHarness, `const prompt = process.argv.at(-1) || '';
+if (prompt.includes('blibs routing agent')) {
+  // The routing spec sends "Do the e2e thing" and needs one clarifying
+  // question. Every other task uses the keyword fallback and one project.
+  if (prompt.includes('Do the e2e thing')) {
+    process.stdout.write('ASK Which project is this task for?\\n');
+  } else {
+    process.stdout.write('harness reply: no routing decision\\n');
+  }
+} else {
+  process.stdout.write('harness reply: ' + (prompt.split('\\n').at(-1) || '') + '\\n');
+}
+`);
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     BLIBS_DATA_DIR: dataDir,
     BLIBS_LEGACY_DIR: tempDir,
     BLIBS_NODE_PATH: process.execPath,
+    BLIBS_RELAY_COMMAND: JSON.stringify([process.execPath, fakeHarness]),
     BLIBS_UI_PORT: String(panelPort),
     PROXY_PORT: String(backendPort),
-    // Deterministic sign-in steps without a vendor page or a real account.
-    BLIBS_MOCK_LOGIN: '1',
   };
+  if (options.relayCommand === null) delete env.BLIBS_RELAY_COMMAND;
+  else if (options.relayCommand !== undefined) env.BLIBS_RELAY_COMMAND = options.relayCommand;
+  if (options.mockLogin === false) delete env.BLIBS_MOCK_LOGIN;
+  else env.BLIBS_MOCK_LOGIN = '1';
   delete env.BLIBS_NO_AUTOSTART;
   delete env.ELECTRON_RUN_AS_NODE;
 
