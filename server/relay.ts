@@ -366,8 +366,7 @@ export class RelayService {
   /** Record and send one introduction reply. It is not a harness run. */
   private announceIntro(message: HistoryMessage): void {
     const text = introMessage(this.harnesses());
-    // The reply must reach the conversation that asked. Keep the example tag,
-    // because `isIntroMessage` stops the echo from starting a run.
+    // sanitizeReply would strip the example tag from the suggested first task.
     this.tellProvider(message, text, false);
     try {
       this.announceReply(message.provider, text, message.threadId, message.id);

@@ -123,8 +123,7 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
     stateDir: dataDir,
     enqueue: (provider, text, threadId) => { enqueueOutbox(provider, text, threadId); },
     announce: (provider, text, threadId, triggerId) => {
-      // An introduction is a blibs reply, not a vendor message. Record it in
-      // the chat history so the panel shows it. Do not type it into the vendor.
+      // The relay queues the vendor copy itself. This only records the panel copy.
       const sourceId = `blibs-intro:${triggerId ?? Date.now().toString(36)}`;
       history.import([{
         provider,
