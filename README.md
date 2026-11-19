@@ -42,6 +42,9 @@ cookies with the hidden sync view, so after sign-in you can close it — syncing
 continues in the background. If the vendor asks for a mobile code or a CAPTCHA,
 the agents screen shows that step. Select **Check again** after you complete it.
 **Back to chats**, **Cancel**, and **Escape** always return to the panel.
+The sign-in window is also a chat view while it is open. blibs reads the
+messages there and types replies into the window that has focus. Close it to
+continue in the hidden sync view.
 
 An assistant with no signed-in session shows a setup card in its chat. The card
 lists the steps, gives the connect link, and offers **Check connection** and
@@ -58,6 +61,25 @@ backend, the app types it into the matching session and sends it, and the badge
 under your message flips `Sending…` → `Sent` (or `Not delivered` + Retry).
 The agent's reply syncs back on its own.
 
+**Ask blibs about itself:** tag `@blibs` in a chat. blibs sends one generated
+reply into the conversation and shows it in the panel. The reply lists the
+harnesses, the ones enabled for the assistant, the tagging rule, and a first
+task. It suggests the first enabled harness, for example
+`To give it a try do @opencode hi.` When no harness is enabled, it says to turn
+one on in Connections.
+
+**Harness replies:** a reply from a local coding harness starts with
+`Sent from user's harness (<harness name>).` The header shows where the message
+came from. A routing question from the harness uses the same header.
+
+The relay uses OpenCode. Set its model with `POST /api/relay/projects` and a
+`model` value in `provider/model` form. Set the project folders with a
+`projects` array. The relay stores both values and passes the model to every
+run. A fresh install starts with `~/Projects/LeetCode-Solutions` and
+`~/Projects/streaming-simulator`. The relay also lists the immediate
+subdirectories of `~/Projects` as candidates. A run that fails posts a short
+failure note into the chat.
+
 ## Scripts
 
 | Command | What |
@@ -66,6 +88,7 @@ The agent's reply syncs back on its own.
 | `npm start` | Launch the app (needs a prior `build`) |
 | `npm test` | Rebuilds, runs unit and HTTP route tests, then runs the desktop harness with temporary stores and ports |
 | `npm run e2e` | Build the app and run end-to-end checks; needs a display |
+| `npm run e2e:live` | Opt-in live checks; needs `BLIBS_LIVE_LOGIN=1`. The sign-in check also needs account values in `.env` |
 | `npm run test:desktop` | Test search and citations; needs a display, but no model downloads |
 | `npm run smoke` | Check that the app starts; needs a display |
 | `npm run lint` | Check the code for lint errors |
@@ -113,6 +136,29 @@ The check needs a display. On Linux without `DISPLAY` or `WAYLAND_DISPLAY`, the
 check skips with a message; use `xvfb-run -a npm run e2e` on a headless machine.
 `npm test` does not run the e2e check.
 
+### Live checks
+
+`npm run e2e:live` runs two opt-in checks. Set `BLIBS_LIVE_LOGIN=1` to enable
+them. Do not run these checks in CI.
+
+1. **Sign-in check.** It uses a real Muse account and the Proton inbox that
+   receives the verification code. Put `EMAIL_MUSE`, `PASSWORD_MUSE`, and
+   `PROTON_URL` in the ignored `.env` file. The check reads the newest code,
+   signs in, sends `@blibs`, and sends `@opencode hi` to the deterministic
+   harness stub. It keeps its Electron profile in
+   `tests/e2e/artifacts/live-profile`, so a remembered device works on the next
+   run.
+2. **Popout relay check.** It opens the authenticated Muse popout, sends
+   `/clear`, `@blibs`, a task without a project, and one LeetCode task. It uses
+   the installed app profile and runs the real OpenCode model. Set
+   `BLIBS_LIVE_PROFILE` to use another profile. The check reads the model and
+   project registry from the app state. Set `BLIBS_LIVE_MODEL` to override the
+   model.
+
+Do not commit the profile, a screenshot of a signed-in session, or a
+credential. The popout check writes `tests/e2e/artifacts/live-popout-relay.png`;
+Git ignores that directory.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -123,6 +169,7 @@ check skips with a message; use `xvfb-run -a npm run e2e` on a headless machine.
 | Blibs: `Backend unreachable` pill | Backend didn't boot with the app — restart; check the terminal for `[blibs] proxy exited` |
 | `EADDRINUSE` on `:5174`/`:8787` in `npm test` | A previous app instance is still running — quit it first |
 | Send stuck on `Sending…` | Session not signed in or page still loading — use Agents, then Retry |
+| Harness run shows `harness exited with code 1` | Use an OpenCode model with credits. Set it with `POST /api/relay/projects` and `{"model":"provider/model"}`. |
 | Login lost after restart | Partitions persist per OS user; check you didn't clear app data |
 
 ## Limits (honest POC notes)

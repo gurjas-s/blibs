@@ -696,6 +696,162 @@ test(
 );
 
 test(
+  'an @blibs mention shows the introduction and a harness reply says which harness sent it',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page } = app;
+
+    const project = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-intro-project-'));
+    const emptyRoot = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-intro-root-'));
+    try {
+      // The panel reports its harness toggles. Muse has Codex off, so the
+      // introduction must not list Codex as enabled.
+      await completeOnboarding(page);
+      await seedConnections(page, mockConnections({
+        harnesses: { muse: { 'claude-code': true, codex: false, opencode: true } },
+      }));
+      const harnessDeadline = Date.now() + 15_000;
+      let reported = false;
+      while (Date.now() < harnessDeadline) {
+        const status = (await (await fetch(`${app.backendUrl}/api/relay`)).json()) as {
+          harnesses?: Array<{ id: string; enabled: boolean }>;
+        };
+        if (status.harnesses?.some((entry) => entry.id === 'codex' && entry.enabled === false)) {
+          reported = true;
+          break;
+        }
+        await page.waitForTimeout(200);
+      }
+      assert.equal(reported, true, 'the panel reports the harness toggles to the relay');
+
+      const registry = await fetch(`${app.backendUrl}/api/relay/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projects: [project], discoveryRoot: emptyRoot }),
+      });
+      assert.equal(registry.status, 200);
+
+      const threadId = 'https://muse.ai/chat/e2e-intro';
+      const importMuse = async (item: Record<string, unknown>): Promise<void> => {
+        const response = await fetch(`${app.backendUrl}/api/import`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: [{ provider: 'muse', url: threadId, ...item }] }),
+        });
+        assert.equal(response.status, 200);
+      };
+
+      await importMuse({
+        role: 'user',
+        text: 'E2E introduction baseline.',
+        sourceId: 'e2e-intro-base',
+        ts: Date.now(),
+      });
+      await page.waitForTimeout(100);
+
+      // A user tags blibs. The relay answers with the generated introduction.
+      await importMuse({
+        role: 'user',
+        text: '@blibs What can you do?',
+        sourceId: 'e2e-intro-ask',
+        ts: Date.now(),
+      });
+      await page.waitForTimeout(100);
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
+      await selectAgent(page, 'Muse');
+
+      const intro = page.locator('.msg.agent', { hasText: 'blibs introduction' }).first();
+      await intro.waitFor({ state: 'visible', timeout: 20_000 });
+      const introText = await intro.locator('.msg-bubble p').innerText();
+      assert.match(introText, /Available harnesses: Claude Code, Codex, OpenCode\./);
+      assert.match(introText, /Enabled for this assistant: Claude Code, OpenCode\./);
+      assert.ok(
+        !/Enabled for this assistant:[^.]*Codex/.test(introText),
+        'a disabled harness is not listed as enabled',
+      );
+      assert.match(introText, /How tagging works:/);
+      assert.ok(introText.endsWith('To give it a try do @opencode hi.'), 'the reply ends with the first task');
+      await intro.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
+      assertImage(await app.screenshot('blibs-intro.png'));
+
+      // The relay also sends the reply into the vendor chat. Its echo must not
+      // add a second bubble or a second introduction.
+      const introOutbox = (await (await fetch(`${app.backendUrl}/api/outbox`)).json()) as {
+        items?: Array<{ text?: string }>;
+      };
+      const sentIntro = (introOutbox.items ?? []).find((item) => item.text?.startsWith('blibs introduction'));
+      assert.ok(sentIntro?.text, 'the introduction is queued for the vendor chat');
+      await importMuse({
+        role: 'user',
+        text: `You:\n\n${sentIntro.text}`,
+        sourceId: 'e2e-intro-echo',
+        ts: Date.now(),
+      });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
+      await selectAgent(page, 'Muse');
+      await page.locator('.msg.agent', { hasText: 'blibs introduction' }).first().waitFor({ timeout: 20_000 });
+      assert.equal(
+        await page.locator('.msg', { hasText: 'blibs introduction' }).count(),
+        1,
+        'the vendor echo does not add a second introduction bubble',
+      );
+
+      // Muse tags OpenCode. The one project resolves and the harness replies.
+      await importMuse({
+        role: 'agent',
+        text: '@opencode hi',
+        sourceId: 'e2e-intro-task',
+        ts: Date.now(),
+      });
+      const header = "Sent from user's harness (OpenCode).";
+      let reply = '';
+      const replyDeadline = Date.now() + 25_000;
+      while (Date.now() < replyDeadline) {
+        const outbox = (await (await fetch(`${app.backendUrl}/api/outbox`)).json()) as {
+          items?: Array<{ text?: string }>;
+        };
+        const hit = (outbox.items ?? []).find((item) => item.text?.startsWith(header));
+        if (hit?.text?.includes('harness reply: hi')) {
+          reply = hit.text;
+          break;
+        }
+        await page.waitForTimeout(250);
+      }
+      assert.ok(reply.startsWith(header), 'the harness reply starts with the harness header');
+      assert.ok(reply.includes('harness reply: hi'), 'the harness text follows the header');
+
+      // A vendor session types the reply into the chat. The panel must show
+      // the header as the first line of the message.
+      await importMuse({
+        role: 'agent',
+        text: reply,
+        sourceId: 'e2e-intro-reply',
+        ts: Date.now(),
+      });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
+      await selectAgent(page, 'Muse');
+      const harnessReply = page.locator('.msg.agent', { hasText: header }).first();
+      await harnessReply.waitFor({ state: 'visible', timeout: 20_000 });
+      const replyText = await harnessReply.locator('.msg-bubble p').innerText();
+      assert.ok(replyText.startsWith(header), 'the header is at the top of the message');
+      assert.ok(replyText.includes('harness reply: hi'));
+      await harnessReply.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
+      assertImage(await app.screenshot('harness-reply.png'));
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   'an @opencode request routes through the relay and asks when unclear',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {

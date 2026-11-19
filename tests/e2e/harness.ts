@@ -30,6 +30,21 @@ export const NO_DISPLAY_MESSAGE =
 export interface LaunchOptions {
   /** Maximum time to wait for the panel, in milliseconds. */
   timeoutMs?: number;
+  /**
+   * Use the deterministic in-app sign-in steps. Defaults to true. A live
+   * vendor login test sets this to false and loads the real vendor pages.
+   */
+  mockLogin?: boolean;
+  /**
+   * Keep the Electron profile in this directory. A live sign-in check uses a
+   * stable ignored directory so a remembered device survives a second run.
+   */
+  profileDir?: string;
+  /**
+   * Harness command for the relay. Defaults to the fake harness. A live relay
+   * check sets null to use the configured harness, for example OpenCode.
+   */
+  relayCommand?: string | null;
 }
 
 export interface E2EApp {
@@ -79,9 +94,12 @@ async function freePorts(count: number): Promise<number[]> {
 
 function collectOutput(child: ChildProcess): string[] {
   const lines: string[] = [];
+  const debug = process.env.BLIBS_E2E_DEBUG === '1';
   const record = (chunk: Buffer): void => {
     for (const line of chunk.toString().split('\n')) {
-      if (line.trim()) lines.push(line);
+      if (!line.trim()) continue;
+      lines.push(line);
+      if (debug) process.stderr.write(`[electron] ${line}\n`);
     }
     if (lines.length > 40) lines.splice(0, lines.length - 40);
   };
@@ -456,7 +474,7 @@ export async function launch(options: LaunchOptions = {}): Promise<E2EApp> {
   const backendUrl = `http://127.0.0.1:${backendPort}`;
 
   const tempDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-'));
-  const profileDir = path.join(tempDir, 'profile');
+  const profileDir = options.profileDir ?? path.join(tempDir, 'profile');
   const dataDir = path.join(tempDir, 'history');
   mkdirSync(profileDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
@@ -466,9 +484,15 @@ export async function launch(options: LaunchOptions = {}): Promise<E2EApp> {
   const fakeHarness = path.join(tempDir, 'fake-harness.mjs');
   writeFileSync(fakeHarness, `const prompt = process.argv.at(-1) || '';
 if (prompt.includes('blibs routing agent')) {
-  process.stdout.write('ASK Which project is this task for?\\n');
+  // The routing spec sends "Do the e2e thing" and needs one clarifying
+  // question. Every other task uses the keyword fallback and one project.
+  if (prompt.includes('Do the e2e thing')) {
+    process.stdout.write('ASK Which project is this task for?\\n');
+  } else {
+    process.stdout.write('harness reply: no routing decision\\n');
+  }
 } else {
-  process.stdout.write('harness reply: done\\n');
+  process.stdout.write('harness reply: ' + (prompt.split('\\n').at(-1) || '') + '\\n');
 }
 `);
 
@@ -480,9 +504,11 @@ if (prompt.includes('blibs routing agent')) {
     BLIBS_RELAY_COMMAND: JSON.stringify([process.execPath, fakeHarness]),
     BLIBS_UI_PORT: String(panelPort),
     PROXY_PORT: String(backendPort),
-    // Deterministic sign-in steps without a vendor page or a real account.
-    BLIBS_MOCK_LOGIN: '1',
   };
+  if (options.relayCommand === null) delete env.BLIBS_RELAY_COMMAND;
+  else if (options.relayCommand !== undefined) env.BLIBS_RELAY_COMMAND = options.relayCommand;
+  if (options.mockLogin === false) delete env.BLIBS_MOCK_LOGIN;
+  else env.BLIBS_MOCK_LOGIN = '1';
   delete env.BLIBS_NO_AUTOSTART;
   delete env.ELECTRON_RUN_AS_NODE;
 

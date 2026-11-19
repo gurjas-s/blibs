@@ -1,8 +1,8 @@
 // blibs router MCP server: project and session tools for the routing agent.
 //
 // The relay attaches this server to every routing run. The agent calls the
-// tools to resolve the project for one task and the coding session that
-// project owns. The tools only read the relay state; the relay stays the
+// tools to resolve the project for one provider message and the coding session
+// that project owns. The tools only read the relay state; the relay stays the
 // single writer and enforces the project allowlist before a harness launch.
 //
 // Run: node build/server/router-mcp.js --data-dir <history dir>
@@ -50,10 +50,10 @@ function textResult(value: unknown): { content: Array<{ type: string; text: stri
 const TOOLS = [
   {
     name: 'get_thread_projects',
-    description: 'List project paths with coding sessions in one Muse thread, most recent last.',
+    description: 'List project paths with coding sessions in one provider conversation, most recent last.',
     inputSchema: {
       type: 'object',
-      properties: { threadId: { type: 'string', description: 'Muse conversation URL' } },
+      properties: { threadId: { type: 'string', description: 'Provider conversation URL' } },
       required: ['threadId'],
     },
   },
@@ -64,23 +64,23 @@ const TOOLS = [
   },
   {
     name: 'resolve_project',
-    description: 'Pick the project for one task. A null projectPath means ask the user, using clarification.',
+    description: 'Pick the project for one provider message. A null projectPath means ask the user, using clarification.',
     inputSchema: {
       type: 'object',
       properties: {
-        task: { type: 'string', description: 'Task text behind the harness mention' },
-        threadId: { type: 'string', description: 'Muse conversation URL' },
+        task: { type: 'string', description: 'Provider message text behind the harness mention' },
+        threadId: { type: 'string', description: 'Provider conversation URL' },
       },
       required: ['task', 'threadId'],
     },
   },
   {
     name: 'resolve_session',
-    description: 'Return the coding session of one project in one Muse thread. A null session means the project has no session yet.',
+    description: 'Return the coding session of one project in one provider conversation. A null session means the project has no session yet.',
     inputSchema: {
       type: 'object',
       properties: {
-        threadId: { type: 'string', description: 'Muse conversation URL' },
+        threadId: { type: 'string', description: 'Provider conversation URL' },
         projectPath: { type: 'string', description: 'Absolute project path' },
       },
       required: ['threadId', 'projectPath'],

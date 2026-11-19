@@ -177,6 +177,8 @@ export interface RelayStatus {
   enabled: boolean;
   provider: string;
   harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
+  /** Harness rows that the introduction reply lists. */
+  harnesses: Array<{ id: string; name: string; enabled: boolean }>;
   projects: string[];
   discoveryRoot: string;
   pending: number;
@@ -186,6 +188,17 @@ export interface RelayStatus {
 /** Read the relay harness defaults and the project registry. */
 export function fetchRelayStatus(signal?: AbortSignal): Promise<RelayStatus> {
   return request<RelayStatus>('/api/relay', { signal });
+}
+
+/** Report the harness toggles for the relay assistant. The introduction reply uses them. */
+export function updateRelayHarnesses(
+  harnesses: Array<{ id: string; name: string; enabled: boolean }>,
+): Promise<RelayStatus> {
+  return request<RelayStatus>('/api/relay/harnesses', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ harnesses }),
+  });
 }
 
 /** Replace the project registry. Omit a field to keep its value. */

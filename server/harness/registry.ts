@@ -18,6 +18,8 @@ export interface HarnessOptions {
 export interface HarnessKind {
   /** Harness id, for example `opencode`. */
   readonly id: string;
+  /** Display name, for example `OpenCode`. */
+  readonly name: string;
   /** Chat trigger that routes one task to this harness. */
   readonly mention: string;
   /** Default harness command when no override is set. */
@@ -28,6 +30,7 @@ export interface HarnessKind {
 
 const OPENCODE_KIND: HarnessKind = {
   id: 'opencode',
+  name: 'OpenCode',
   mention: OPENCODE_MENTION,
   defaultCommand: OPENCODE_COMMAND,
   create: (options) => new OpenCodeHarness(options),

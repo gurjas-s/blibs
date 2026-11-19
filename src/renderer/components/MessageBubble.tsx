@@ -30,7 +30,7 @@ export function MessageBubble({ message, agentName, onRetry }: MessageBubbleProp
   const showPending = message.role === 'user' && message.via === 'tab'
     && message.outStatus !== undefined && message.outStatus !== 'sent';
   const showSent = message.role === 'user' && message.via === 'tab' && message.outStatus === 'sent';
-  const roleLabel = message.role === 'user' ? 'You' : agentName;
+  const roleLabel = message.role === 'user' ? 'You' : (message.senderName ?? agentName);
   const time = new Date(message.ts);
   const fullTime = time.toLocaleString();
 

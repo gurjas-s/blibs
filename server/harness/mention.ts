@@ -3,6 +3,8 @@
 // Only this module knows the trigger syntax. The relay asks it for the task
 // behind a mention and for reply text that cannot retrigger. A syntax change
 // or a new harness mention stays here.
+import { stripVendorLabel } from '../../shared/vendor-label.js';
+
 export const OPENCODE_MENTION = '@opencode';
 
 /** Muse reports the user turn with role agent and this label. */
@@ -26,7 +28,7 @@ export function stripUserEcho(text: string): string {
 }
 
 export function extractMentionTask(text: string, mention: string = OPENCODE_MENTION): string | null {
-  const body = stripUserEcho(text);
+  const body = stripVendorLabel(text);
   if (!mentionPattern(mention).test(body)) return null;
   const task = body.replace(mentionPattern(mention), '').trim().replace(/\n{3,}/g, '\n\n');
   if (task.length < 2) return null;

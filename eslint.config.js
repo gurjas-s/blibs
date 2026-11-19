@@ -95,6 +95,7 @@ export default tseslint.config(
     files: [
       'src/main/**/*.{js,cjs,mjs,ts,tsx}',
       'server/**/*.{js,cjs,mjs,ts}',
+      'shared/**/*.{js,cjs,mjs,ts}',
       'tests/**/*.{js,cjs,mjs,ts}',
       'scripts/**/*.{js,cjs,mjs}',
       'eslint.config.js',

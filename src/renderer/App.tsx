@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { PROVIDERS, SEED_AGENTS, providerFor } from './providers';
 import type { Agent, ChatMessage, LoginStatus } from './types';
-import { cleanImportText } from './text';
+import { cleanImportText, isIntroText } from './text';
 import {
   applyTheme,
   readThemePreference,
@@ -34,6 +34,7 @@ import {
   fetchOutboxStatuses,
   queueOutbox,
   retryOutbox as retryOutboxItem,
+  updateRelayHarnesses,
 } from './client';
 import {
   HARNESSES,
@@ -74,6 +75,9 @@ const ONBOARDING_DONE = 'done';
 
 /** Search debounce in milliseconds. */
 const SEARCH_DEBOUNCE_MS = 250;
+
+/** The assistant whose chat the relay reads and answers. */
+const RELAY_ASSISTANT_PROVIDER = 'muse';
 
 /** The main pane that the shell shows. */
 type View = 'chat' | 'results' | 'settings' | 'login' | 'connections';
@@ -154,6 +158,7 @@ export default function App() {
   const searchId = useRef(0);
   const debounceTimer = useRef<number | null>(null);
   const pendingCaret = useRef(false);
+  const lastHarnessReport = useRef('');
 
   const active = agents.find((a) => a.id === activeId) ?? agents[0];
   const meta = providerFor(active);
@@ -183,6 +188,24 @@ export default function App() {
   useEffect(() => {
     writeConnectionState(connections);
   }, [connections]);
+
+  useEffect(() => {
+    const relayAgent = agents.find((agent) => agent.provider === RELAY_ASSISTANT_PROVIDER);
+    if (!relayAgent) return;
+    const connection = connectionFor(connections, relayAgent.id);
+    const report = HARNESSES.map((harness) => ({
+      id: harness.id,
+      name: harness.name,
+      enabled: connection.harnesses[harness.id],
+    }));
+    const signature = JSON.stringify(report);
+    if (signature === lastHarnessReport.current) return;
+    lastHarnessReport.current = signature;
+    void updateRelayHarnesses(report).catch(() => {
+      // The next connection change reports again.
+      lastHarnessReport.current = '';
+    });
+  }, [connections, agents]);
   useEffect(() => {
     localStorage.setItem(LS_AUTOPULL, JSON.stringify(autoPull));
   }, [autoPull]);
@@ -277,13 +300,18 @@ export default function App() {
         const target = ags.find((a) => a.provider === prov)?.id;
         if (!target) continue;
         const role = it.role === 'agent' ? 'agent' : 'user';
+        const intro = isIntroText(text);
         const list = next[target] ?? [];
         const existing = list.find(m => m.historyId === it.id) ?? list.find(m => {
+          // An introduction is also delivered to the vendor chat. Its echo
+          // must not add a second bubble.
+          if (intro && isIntroText(cleanImportText(m.text)) && cleanImportText(m.text) === text) return true;
           if (m.historyId || m.role !== role || cleanImportText(m.text) !== text) return false;
           // Imports use first-observed times. Delivery may occur long after a send or retry.
           return m.ts === it.ts || (m.via === 'tab' && it.ts >= m.ts);
         });
         if (existing) {
+          if (intro && isIntroText(cleanImportText(existing.text))) continue;
           if (existing.historyId !== it.id || existing.text !== text || existing.role !== role) {
             next[target] = list.map(m => m.id === existing.id ? { ...m, historyId: it.id, text, role } : m);
             merged++;
@@ -296,10 +324,11 @@ export default function App() {
             id: `history:${it.id}`,
             historyId: it.id,
             agentId: target,
-            role: it.role === 'agent' ? 'agent' : 'user',
+            role: intro ? 'agent' : role,
             text,
             ts: Number(it.ts) || Date.now(),
             source: 'desktop',
+            ...(intro ? { senderName: 'blibs' } : {}),
           },
         ];
         merged++;
