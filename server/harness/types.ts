@@ -5,6 +5,13 @@ export interface HarnessResult {
   error?: string;
 }
 
+/** One coding session that a harness reports for a project. */
+export interface HarnessSession {
+  id: string;
+  title?: string;
+  updated?: number;
+}
+
 export interface HarnessRun {
   promise: Promise<HarnessResult>;
   kill(): void;
@@ -35,4 +42,6 @@ export interface Harness {
   /** Chat trigger that routes one task to this harness, for example `@opencode`. */
   readonly mention: string;
   start(prompt: string, options?: HarnessStartOptions | string): HarnessRun;
+  /** List the sessions of one project. A harness without this method has no session list. */
+  listSessions?(cwd: string): Promise<HarnessSession[]>;
 }

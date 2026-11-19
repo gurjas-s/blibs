@@ -773,7 +773,9 @@ test(
         'a disabled harness is not listed as enabled',
       );
       assert.match(introText, /How tagging works:/);
-      assert.ok(introText.endsWith('To give it a try do @opencode hi.'), 'the reply ends with the first task');
+      assert.match(introText, /How to choose a project and session:/);
+      assert.match(introText, /\$find-project <task>/);
+      assert.ok(introText.endsWith('To give it a try do @opencode.'), 'the reply ends with the project list request');
       await intro.scrollIntoViewIfNeeded();
       await page.waitForTimeout(300);
       assertImage(await app.screenshot('blibs-intro.png'));
@@ -852,6 +854,86 @@ test(
 );
 
 test(
+  'the relay lists projects and sessions and runs a chosen session',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page } = app;
+
+    const project = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-choice-project-'));
+    const emptyRoot = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-choice-root-'));
+    try {
+      const registry = await fetch(`${app.backendUrl}/api/relay/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projects: [project], discoveryRoot: emptyRoot }),
+      });
+      assert.equal(registry.status, 200);
+
+      const threadId = 'https://muse.ai/chat/e2e-choices';
+      const importMuse = async (item: Record<string, unknown>): Promise<void> => {
+        const response = await fetch(`${app.backendUrl}/api/import`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: [{ provider: 'muse', url: threadId, ...item }] }),
+        });
+        assert.equal(response.status, 200);
+      };
+      const waitForOutbox = async (match: (text: string) => boolean): Promise<string> => {
+        const deadline = Date.now() + 20_000;
+        while (Date.now() < deadline) {
+          const data = (await (await fetch(`${app.backendUrl}/api/outbox`)).json()) as {
+            items?: Array<{ text?: string; threadId?: string }>;
+          };
+          const hit = (data.items ?? []).find((item) => item.threadId === threadId && item.text && match(item.text));
+          if (hit?.text) return hit.text;
+          await page.waitForTimeout(250);
+        }
+        throw new Error('The relay did not queue the expected choice reply.');
+      };
+
+      await importMuse({ role: 'user', text: 'E2E choices baseline.', sourceId: 'e2e-choice-base', ts: Date.now() });
+      await page.waitForTimeout(200);
+
+      await importMuse({ role: 'agent', text: '@opencode', sourceId: 'e2e-choice-projects', ts: Date.now() });
+      const projectChoices = await waitForOutbox((text) => text.startsWith('blibs choices') && text.includes('OpenCode projects:'));
+      assert.match(projectChoices, /OpenCode projects:/);
+      assert.ok(!projectChoices.includes(project), 'The project list omits the path.');
+      const tokenMatch = /- \$([^\s]+)/.exec(projectChoices);
+      assert.ok(tokenMatch, 'The project choice has one token.');
+      const token = tokenMatch[1];
+
+      await importMuse({ role: 'agent', text: `@opencode $sessions $${token}`, sourceId: 'e2e-choice-sessions', ts: Date.now() });
+      const sessionChoices = await waitForOutbox((text) => text.startsWith('blibs choices') && text.includes(`$${token}-ses_e2e`));
+      assert.match(sessionChoices, /Sessions for/);
+      assert.match(sessionChoices, /E2E session/);
+
+      await importMuse({
+        role: 'agent',
+        text: `@opencode $${token}-ses_e2e Do the chosen work`,
+        sourceId: 'e2e-choice-run',
+        ts: Date.now(),
+      });
+      const header = "Sent from user's harness (OpenCode).";
+      const reply = await waitForOutbox((text) => text.startsWith(header) && text.includes('harness reply: Do the chosen work'));
+      assert.ok(reply.includes('harness reply: Do the chosen work'));
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
+      await selectAgent(page, 'Muse');
+      const choiceBubble = page.locator('.msg.agent', { hasText: 'blibs choices' }).first();
+      await choiceBubble.waitFor({ state: 'visible', timeout: 20_000 });
+      await choiceBubble.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
+      assertImage(await app.screenshot('project-session-choices.png'));
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   'an @opencode request routes through the relay and asks when unclear',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {
@@ -897,7 +979,7 @@ test(
         body: JSON.stringify({
           items: [{
             provider: 'muse',
-            role: 'user',
+            role: 'agent',
             sourceId: 'e2e-routing-task',
             threadId,
             text: '@opencode Do the e2e thing',

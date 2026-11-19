@@ -2,13 +2,16 @@
 //
 // The relay attaches this server to every routing run. The agent calls the
 // tools to resolve the project for one provider message and the coding session
-// that project owns. The tools only read the relay state; the relay stays the
-// single writer and enforces the project allowlist before a harness launch.
+// that project owns. The tools only read the relay state and the home folder.
+// The relay stays the single writer and enforces the project allowlist before
+// a harness launch.
 //
 // Run: node build/server/router-mcp.js --data-dir <history dir>
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { parseSessions, parseStringArray, readRelayStateFile } from './relay-state.js';
+import { searchHomeProjects } from './harness/discovery.js';
 import {
   clarificationText,
   listCandidates,
@@ -30,6 +33,13 @@ function dataDirFromArgs(argv: string[]): string {
   if (flag !== -1 && argv[flag + 1]) return argv[flag + 1];
   if (process.env.BLIBS_DATA_DIR) return process.env.BLIBS_DATA_DIR;
   return process.cwd();
+}
+
+function searchRootFromArgs(argv: string[]): string {
+  const flag = argv.indexOf('--search-root');
+  if (flag !== -1 && argv[flag + 1]) return path.resolve(argv[flag + 1]);
+  if (process.env.BLIBS_RELAY_SEARCH_ROOT) return path.resolve(process.env.BLIBS_RELAY_SEARCH_ROOT);
+  return os.homedir();
 }
 
 function readState(dataDir: string): { registry: ProjectRegistry; sessions: Record<string, string> } {
@@ -86,9 +96,19 @@ const TOOLS = [
       required: ['threadId', 'projectPath'],
     },
   },
+  {
+    name: 'search_projects',
+    description: 'Search the user home folder for project folders outside the blibs registry. Use this only for a $find-project request.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        maxResults: { type: 'number', description: 'Maximum projects to return, 1 to 80' },
+      },
+    },
+  },
 ];
 
-function callTool(name: string, args: Record<string, unknown>, dataDir: string): unknown {
+function callTool(name: string, args: Record<string, unknown>, dataDir: string, searchRoot: string): unknown {
   const { registry, sessions } = readState(dataDir);
   if (name === 'get_thread_projects') {
     if (typeof args.threadId !== 'string' || !args.threadId) throw new Error('threadId must be a string');
@@ -115,6 +135,12 @@ function callTool(name: string, args: Record<string, unknown>, dataDir: string):
     const session = sessions[sessionKey(args.threadId, args.projectPath)];
     return { projectPath: path.resolve(args.projectPath), session: session ?? null };
   }
+  if (name === 'search_projects') {
+    const maxResults = typeof args.maxResults === 'number' && Number.isFinite(args.maxResults)
+      ? Math.min(80, Math.max(1, Math.floor(args.maxResults)))
+      : 80;
+    return searchHomeProjects({ root: searchRoot, maxProjects: maxResults });
+  }
   throw new Error(`unknown tool: ${name}`);
 }
 
@@ -126,7 +152,9 @@ function respondError(id: string | number | null, code: number, message: string)
   process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })}\n`);
 }
 
-const dataDir = dataDirFromArgs(process.argv.slice(2));
+const argv = process.argv.slice(2);
+const dataDir = dataDirFromArgs(argv);
+const searchRoot = searchRootFromArgs(argv);
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 input.on('line', (line) => {
   if (!line.trim()) return;
@@ -150,7 +178,7 @@ input.on('line', (line) => {
     } else if (request.method === 'tools/call') {
       const name = request.params?.name ?? '';
       const args = request.params?.arguments ?? {};
-      respond(id, textResult(callTool(name, args, dataDir)));
+      respond(id, textResult(callTool(name, args, dataDir, searchRoot)));
     } else if (request.method === 'ping') {
       respond(id, {});
     } else if (request.method === undefined || request.method.startsWith('notifications/')) {

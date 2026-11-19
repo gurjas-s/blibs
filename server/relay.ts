@@ -4,12 +4,26 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HistoryMessage } from './history.js';
 import { DEFAULT_DISCOVERY_ROOT, DEFAULT_PROJECTS } from './relay-defaults.js';
-import type { Harness, HarnessMcpServer, HarnessResult, HarnessRun } from './harness/types.js';
-import { extractMentionTask, sanitizeReply } from './harness/mention.js';
+import type { Harness, HarnessMcpServer, HarnessResult, HarnessRun, HarnessSession } from './harness/types.js';
+import { extractMentionBody, isUserTurn, sanitizeReply, startsWithMention } from './harness/mention.js';
 import { stripVendorLabel } from '../shared/vendor-label.js';
-import { isBlibsMention, isIntroMessage, introMessage } from './harness/intro.js';
+import { BLIBS_MENTION, isBlibsMention, isIntroMessage, introMessage } from './harness/intro.js';
 import type { HarnessChoice } from './harness/intro.js';
 import { harnessMessage } from './harness/message.js';
+import {
+  buildProjectChoices,
+  formatFoundChoices,
+  formatHelp,
+  formatNoFoundProjects,
+  formatProjectChoices,
+  formatSessionChoices,
+  formatSessionNote,
+  isChoicesMessage,
+  parseCommandBody,
+  PROJECT_CHOICE_LIMIT,
+} from './harness/commands.js';
+import type { ChoiceOptions, CommandProject, ParsedCommand } from './harness/commands.js';
+import { DISCOVERY_PROJECT_LIMIT, searchHomeProjects } from './harness/discovery.js';
 import { ROUTING_MCP_NAME, ROUTING_QUESTION_LIMIT, parseRoutingReply, routingPrompt } from './harness/routing-agent.js';
 import type { RoutingDecision } from './harness/routing-agent.js';
 import { HARNESS_KINDS, harnessKind } from './harness/registry.js';
@@ -31,8 +45,10 @@ import {
   canonicalDir,
   clarificationText,
   expandHome,
+  insideDir,
   isAllowedProject,
   listCandidates,
+  PROJECT_LIMIT,
   resolveProject,
   resolveRegistryPaths,
   sessionKey,
@@ -46,9 +62,13 @@ export const DEFAULT_RELAY_TIMEOUT_MS = 120_000;
 export const RELAY_PROVIDER = 'muse';
 /** Environment override for the harness command. Tests and e2e stub the routing agent with it. */
 export const RELAY_COMMAND_ENV = 'BLIBS_RELAY_COMMAND';
+/** Environment override for the harness session list command. Tests and e2e stub it. */
+export const RELAY_SESSION_COMMAND_ENV = 'BLIBS_RELAY_SESSION_COMMAND';
+/** Environment override for the `$find-project` search root. Tests use a temporary home. */
+export const RELAY_SEARCH_ROOT_ENV = 'BLIBS_RELAY_SEARCH_ROOT';
 /** Length limit for one stored or env harness command. */
 const RELAY_COMMAND_LIMIT = 2000;
-/** Window that treats the same trigger text in one thread as a re-scrape. */
+/** Window that treats the same introduction text in one thread as a re-scrape. */
 const TRIGGER_DEDUPE_MS = 2 * 60_000;
 const TRIGGER_DEDUPE_LIMIT = 500;
 
@@ -70,12 +90,16 @@ export interface RelayConfig {
   projects: string[];
   /** Directory whose subdirectories are project candidates. */
   discoveryRoot: string;
+  /** Command that lists the sessions of one project. Empty disables the list. */
+  sessionListCommand?: string;
+  /** Root folder for the `$find-project` search. Defaults to the user home. */
+  searchRoot: string;
 }
 
 export interface RelayStatus {
   enabled: boolean;
   provider: string;
-  harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
+  harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string; sessionListCommand?: string };
   /** Harness rows the panel reported for the introduction reply. */
   harnesses: HarnessChoice[];
   projects: string[];
@@ -92,7 +116,8 @@ interface RelayItem {
   id: string;
   provider: string;
   threadId: string;
-  task: string;
+  /** Text behind the harness mention. Empty means the project list. */
+  body: string;
 }
 
 export interface RelayServiceOptions {
@@ -133,6 +158,7 @@ function safeHarnessCwd(requested: string, dataDir: string): string {
 
 export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig> = {}): RelayConfig {
   const envCommand = process.env[RELAY_COMMAND_ENV]?.trim();
+  const envSessionCommand = process.env[RELAY_SESSION_COMMAND_ENV]?.trim();
   // The registry owns the harness default. An explicit command override wins
   // over the environment, and an unknown harness id falls back to the default.
   const kind = harnessKind(overrides.harnessId);
@@ -147,6 +173,11 @@ export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig
     discoveryRoot: overrides.discoveryRoot ?? DEFAULT_DISCOVERY_ROOT,
     harnessId: kind.id,
     command: overrides.command ?? (envCommand ? envCommand.slice(0, RELAY_COMMAND_LIMIT) : kind.defaultCommand),
+    sessionListCommand: overrides.sessionListCommand
+      ?? (envSessionCommand ? envSessionCommand.slice(0, RELAY_COMMAND_LIMIT) : kind.defaultSessionListCommand),
+    searchRoot: path.resolve(expandHome(
+      overrides.searchRoot ?? process.env[RELAY_SEARCH_ROOT_ENV] ?? os.homedir(),
+    )),
   };
   const registry = resolveRegistryPaths(config.discoveryRoot, config.projects);
   return {
@@ -209,6 +240,8 @@ export class RelayService {
   private readonly queue: RelayItem[] = [];
   /** Trigger text per thread. A re-scraped message gets a new message id. */
   private readonly recentTriggers = new Map<string, number>();
+  /** Projects that `$find-project` found for one thread. */
+  private readonly discoveredByThread = new Map<string, string[]>();
   private active: HarnessRun | null = null;
   private closed = false;
   private draining = false;
@@ -299,7 +332,9 @@ export class RelayService {
     if (!isConversationThread(this.config.provider, message.threadId)
       && !this.threadHasUser(this.config.provider, message.threadId)) return false;
     if (this.state.processed.includes(message.id)) return false;
-    return message.ts > this.state.watermark;
+    // Muse can stamp several rows in one scrape with the same time. Allow the
+    // equal stamp so a /clear and the next trigger in one batch both run.
+    return message.ts >= this.state.watermark;
   }
 
   private remember(message: HistoryMessage): void {
@@ -314,6 +349,7 @@ export class RelayService {
     if (threads.length > RELAY_THREAD_LIMIT) {
       const oldest = threads[0];
       this.knownThreads.delete(oldest);
+      this.discoveredByThread.delete(oldest);
       const prefix = sessionKeyPrefix(oldest);
       for (const key of Object.keys(this.state.sessions)) {
         if (key.startsWith(prefix)) delete this.state.sessions[key];
@@ -322,20 +358,54 @@ export class RelayService {
     this.state.threads = [...this.knownThreads].slice(-RELAY_THREAD_LIMIT);
   }
 
-  private sessionFor(threadId: string, projectPath: string): string {
-    const key = sessionKey(threadId, projectPath);
-    const existing = this.state.sessions[key];
-    if (existing) return existing;
-    const created = newSessionId();
-    this.state.sessions[key] = created;
+  private storedSession(threadId: string, projectPath: string): string | undefined {
+    return this.state.sessions[sessionKey(threadId, projectPath)];
+  }
+
+  private storeSession(threadId: string, projectPath: string, sessionId: string): string {
+    this.state.sessions[sessionKey(threadId, projectPath)] = sessionId;
     const keys = Object.keys(this.state.sessions);
     if (keys.length > RELAY_SESSION_LIMIT) delete this.state.sessions[keys[0]];
-    return created;
+    return sessionId;
+  }
+
+  private sessionFor(threadId: string, projectPath: string): string {
+    return this.storedSession(threadId, projectPath) ?? this.storeSession(threadId, projectPath, newSessionId());
+  }
+
+  private newSessionFor(threadId: string, projectPath: string): string {
+    return this.storeSession(threadId, projectPath, newSessionId());
   }
 
   /** Project paths with sessions in one provider conversation, most recent last. */
   projectsFor(threadId: string): string[] {
     return threadProjects(this.state.sessions, threadId);
+  }
+
+  private rememberDiscovered(threadId: string, projects: string[]): void {
+    const seen = new Set(this.discoveredByThread.get(threadId) ?? []);
+    for (const entry of projects) seen.add(canonicalDir(entry));
+    const merged = [...seen];
+    if (merged.length > DISCOVERY_PROJECT_LIMIT) merged.splice(0, merged.length - DISCOVERY_PROJECT_LIMIT);
+    this.discoveredByThread.set(threadId, merged);
+  }
+
+  private discoveredFor(threadId: string): string[] {
+    return [...(this.discoveredByThread.get(threadId) ?? [])];
+  }
+
+  /** Projects the provider can choose in one conversation. */
+  private commandProjects(threadId: string): CommandProject[] {
+    const recent = [...this.projectsFor(threadId)].reverse()
+      .filter((dir) => this.allowedProject(dir, threadId) !== null);
+    return buildProjectChoices(
+      [...recent, ...this.discoveredFor(threadId), ...this.candidates()],
+      PROJECT_LIMIT,
+    );
+  }
+
+  private choiceOptions(): ChoiceOptions {
+    return { mention: this.harness.mention, harnessName: harnessKind(this.config.harnessId).name };
   }
 
   /** Approved projects and the discovery root. The registry persists in state. */
@@ -404,7 +474,14 @@ export class RelayService {
   private routerMcp(): HarnessMcpServer {
     return {
       name: ROUTING_MCP_NAME,
-      command: [process.execPath, path.join(MODULE_DIR, 'router-mcp.js'), '--data-dir', this.stateDir],
+      command: [
+        process.execPath,
+        path.join(MODULE_DIR, 'router-mcp.js'),
+        '--data-dir',
+        this.stateDir,
+        '--search-root',
+        this.config.searchRoot,
+      ],
     };
   }
 
@@ -412,26 +489,32 @@ export class RelayService {
    * Canonicalize one project the routing agent picked and check it against
    * the allowlist. Null means the path is not an approved project.
    */
-  private allowedProject(target: string): string | null {
+  private allowedProject(target: string, threadId?: string, create = false): string | null {
     const projectPath = canonicalDir(path.resolve(expandHome(target)));
-    if (!isAllowedProject(projectPath, this.registry(), this.config.cwd)) return null;
-    try { fs.mkdirSync(projectPath, { recursive: true }); } catch { /* the run records the failure */ }
+    let allowed = isAllowedProject(projectPath, this.registry(), this.config.cwd);
+    if (!allowed && threadId) {
+      allowed = this.discoveredFor(threadId).some((root) => insideDir(projectPath, root));
+    }
+    if (!allowed) return null;
+    if (create) {
+      try { fs.mkdirSync(projectPath, { recursive: true }); } catch { /* the run records the failure */ }
+    }
     return projectPath;
   }
 
   /** Keyword fallback for a decision the routing agent did not make. */
-  private heuristicProject(item: RelayItem): string | null {
+  private heuristicProject(item: RelayItem, task: string, discovered: string[] = []): string | null {
     // A stored session can outlive its project entry. Only an allowed project
     // can win, or one stale session would hide the current registry.
     const known = this.projectsFor(item.threadId)
-      .filter((dir) => isAllowedProject(dir, this.registry(), this.config.cwd));
-    const candidates = this.candidates();
+      .filter((dir) => this.allowedProject(dir, item.threadId) !== null);
+    const candidates = [...new Set([...this.candidates(), ...discovered])];
     if (known.length === 0 && candidates.length === 0) {
       return this.config.cwd;
     }
-    const resolved = resolveProject(item.task, known, candidates);
+    const resolved = resolveProject(task, known, candidates);
     if (!resolved) return null;
-    return this.allowedProject(resolved.projectPath);
+    return this.allowedProject(resolved.projectPath, item.threadId, true);
   }
 
   /** One short provider-facing note. */
@@ -449,18 +532,27 @@ export class RelayService {
     }
   }
 
+  /** Send one choice reply and record its panel copy. */
+  private tellChoices(item: RelayItem, text: string): boolean {
+    try {
+      this.enqueueReply(item.provider, text, item.threadId);
+    } catch {
+      return false;
+    }
+    try {
+      this.announceReply(item.provider, text, item.threadId, item.id);
+    } catch { /* the vendor copy still reaches the chat */ }
+    return true;
+  }
+
   /** Send one short failure note so a silent run is visible in the chat. */
   private tellFailure(item: RelayItem, text: string): void {
     this.tellProvider(item, text.trim().slice(0, 300));
   }
 
-  /**
-   * True when the same trigger text already ran in this thread. A vendor page
-   * can re-scrape one bubble with a new position, which gives it a new message
-   * id. The text and the thread are the stable part.
-   */
-  private seenTrigger(threadId: string, kind: 'intro' | 'task', text: string): boolean {
-    const key = `${threadId}\n${kind}\n${text.replace(/\s+/g, ' ').trim()}`;
+  /** True when the same introduction already answered in this thread. */
+  private seenTrigger(threadId: string, text: string): boolean {
+    const key = `${threadId}\nintro\n${text.replace(/\s+/g, ' ').trim()}`;
     const now = Date.now();
     const last = this.recentTriggers.get(key);
     if (last !== undefined && now - last < TRIGGER_DEDUPE_MS) return true;
@@ -474,7 +566,7 @@ export class RelayService {
     return false;
   }
 
-  /** Drop the recent triggers of one thread. A `/clear` resets the chat context. */
+  /** Drop the recent introduction triggers of one thread. A `/clear` resets the chat context. */
   private clearTriggers(threadId: string): void {
     const prefix = `${threadId}\n`;
     for (const key of [...this.recentTriggers.keys()]) {
@@ -484,6 +576,42 @@ export class RelayService {
 
   private isClearCommand(text: string): boolean {
     return stripVendorLabel(text).trim().toLowerCase() === '/clear';
+  }
+
+  /** The introduction answers a user turn or a leading assistant tag. */
+  private isBlibsTrigger(message: HistoryMessage): boolean {
+    return isBlibsMention(message.text)
+      && (startsWithMention(message.text, BLIBS_MENTION) || message.role === 'user' || isUserTurn(message.text));
+  }
+
+  /** Only the provider assistant can send a harness tag. A user tag is ignored. */
+  private isHarnessTrigger(message: HistoryMessage): boolean {
+    return message.role !== 'user'
+      && !isUserTurn(message.text)
+      && startsWithMention(message.text, this.harness.mention);
+  }
+
+  /** True when the body only asks for a list. These commands never start work. */
+  private isDiscoveryBody(threadId: string, body: string): boolean {
+    const trimmed = body.trim();
+    if (trimmed && !trimmed.startsWith('$')) return false;
+    const command = parseCommandBody(body, this.commandProjects(threadId));
+    return command.kind === 'projects' || command.kind === 'sessions' || command.kind === 'find-projects';
+  }
+
+  private queueItem(message: HistoryMessage, body: string): boolean {
+    if (this.queue.length >= RELAY_QUEUE_LIMIT) {
+      const now = Date.now();
+      this.state.lastRun = { state: 'skipped', messageId: message.id, startedAt: now, endedAt: now, error: 'relay queue is full; message dropped' };
+      return false;
+    }
+    this.queue.push({
+      id: message.id,
+      provider: message.provider,
+      threadId: message.threadId,
+      body,
+    });
+    return true;
   }
 
   // The first batch of a conversation is baseline: a sign-in sync is not work.
@@ -504,55 +632,49 @@ export class RelayService {
         for (const row of rows) {
           this.remember(row);
           // An introduction is safe to answer once, even on a baseline batch.
-          if (!isIntroMessage(row.text) && isBlibsMention(row.text)
-            && !this.seenTrigger(threadId, 'intro', stripVendorLabel(row.text))) {
+          if (!isIntroMessage(row.text) && this.isBlibsTrigger(row)
+            && !this.seenTrigger(threadId, stripVendorLabel(row.text))) {
             this.announceIntro(row);
           }
-          // A baseline task must not run when a later scrape re-renders it.
-          const task = extractMentionTask(row.text, this.harness.mention);
-          if (task !== null) this.seenTrigger(threadId, 'task', task);
+          // A bare list request is safe to answer on the baseline batch.
+          const body = extractMentionBody(row.text, this.harness.mention);
+          if (body === null || !this.isHarnessTrigger(row)) continue;
+          if (this.isDiscoveryBody(threadId, body) && this.queueItem(row, body)) {
+            queued = true;
+          }
         }
         changed = true;
         continue;
       }
       for (const message of rows) {
-        if (isIntroMessage(message.text)) continue;
+        if (isIntroMessage(message.text) || isChoicesMessage(message.text)) continue;
         if (this.isClearCommand(message.text)) {
           if (!this.accepts(message)) continue;
           this.remember(message);
           changed = true;
           this.clearTriggers(threadId);
+          this.discoveredByThread.delete(threadId);
           continue;
         }
         if (isBlibsMention(message.text)) {
           if (!this.accepts(message)) continue;
+          if (!this.isBlibsTrigger(message)) continue;
           this.remember(message);
           changed = true;
-          if (!this.seenTrigger(threadId, 'intro', stripVendorLabel(message.text))) {
+          if (!this.seenTrigger(threadId, stripVendorLabel(message.text))) {
             this.announceIntro(message);
           }
           continue;
         }
-        const task = extractMentionTask(message.text, this.harness.mention);
-        if (task === null) continue;
+        const body = extractMentionBody(message.text, this.harness.mention);
+        if (body === null) continue;
         if (!this.accepts(message)) continue;
-        // The routing agent resolves the project when the queue drains, so
-        // the queue only carries the provider task.
+        if (!this.isHarnessTrigger(message)) continue;
+        // The queue only carries the text behind the mention. The relay reads
+        // it when the queue drains, so a choice uses the current project list.
         this.remember(message);
         changed = true;
-        if (this.seenTrigger(threadId, 'task', task)) continue;
-        if (this.queue.length >= RELAY_QUEUE_LIMIT) {
-          const now = Date.now();
-          this.state.lastRun = { state: 'skipped', messageId: message.id, startedAt: now, endedAt: now, error: 'relay queue is full; message dropped' };
-          continue;
-        }
-        this.queue.push({
-          id: message.id,
-          provider: message.provider,
-          threadId: message.threadId,
-          task,
-        });
-        queued = true;
+        if (this.queueItem(message, body)) queued = true;
       }
     }
     if (changed) this.save();
@@ -579,8 +701,138 @@ export class RelayService {
     this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
     this.save();
 
+    const trimmed = item.body.trim();
+    const projects = trimmed && !trimmed.startsWith('$') ? [] : this.commandProjects(item.threadId);
+    const command = parseCommandBody(item.body, projects);
+    if (command.kind === 'projects') {
+      const listed = projects.slice(0, PROJECT_CHOICE_LIMIT);
+      const text = formatProjectChoices(listed, {
+        ...this.choiceOptions(),
+        ...(projects.length > listed.length ? { note: `Showing the first ${listed.length} of ${projects.length} projects.` } : {}),
+      });
+      this.tellChoices(item, text);
+      return this.finishRun(item.id, startedAt, true);
+    }
+    if (command.kind === 'sessions') return this.showSessions(item, command.project, startedAt);
+    if (command.kind === 'run-session' || command.kind === 'run-new') {
+      return this.runSelected(item, command, startedAt);
+    }
+    if (command.kind === 'find-projects') return this.findProjects(item, startedAt);
+    if (command.kind === 'find-run') return this.findAndRun(item, command.task, startedAt);
+    if (command.kind === 'help') {
+      this.tellChoices(item, formatHelp(command.reason, this.choiceOptions()));
+      return this.finishRun(item.id, startedAt, true);
+    }
+    return this.runLegacy(item, command.task, startedAt);
+  }
+
+  private async showSessions(item: RelayItem, project: CommandProject, startedAt: number): Promise<void> {
+    const projectPath = this.allowedProject(project.path, item.threadId);
+    if (!projectPath) {
+      this.tellChoices(item, formatHelp(`The project $${project.token} is not available.`, this.choiceOptions()));
+      return this.finishRun(item.id, startedAt, false, 'project is not allowed');
+    }
+    let sessions: HarnessSession[] = [];
+    let error: string | undefined;
+    try {
+      if (!this.harness.listSessions) throw new Error('session listing is not available for this harness');
+      sessions = await this.harness.listSessions(projectPath);
+    } catch (e) {
+      error = (e as Error).message;
+    }
+    if (this.closed) return;
+    let note: string | undefined;
+    if (error) {
+      const stored = this.storedSession(item.threadId, projectPath);
+      if (!stored) {
+        this.tellChoices(item, formatHelp(`Could not list sessions for $${project.token}: ${error}`, this.choiceOptions()));
+        return this.finishRun(item.id, startedAt, false, error);
+      }
+      sessions = [{ id: stored }];
+      note = formatSessionNote(`The live session list failed: ${error}. This is the stored session for this chat.`);
+    }
+    this.tellChoices(item, formatSessionChoices(project, sessions, { ...this.choiceOptions(), ...(note ? { note } : {}) }));
+    this.finishRun(item.id, startedAt, true);
+  }
+
+  private async runSelected(item: RelayItem, command: Extract<ParsedCommand, { kind: 'run-session' | 'run-new' }>, startedAt: number): Promise<void> {
+    const projectPath = this.allowedProject(command.project.path, item.threadId, true);
+    if (!projectPath) {
+      this.tellChoices(item, formatHelp(`The project $${command.project.token} is not available.`, this.choiceOptions()));
+      return this.finishRun(item.id, startedAt, false, 'project is not allowed');
+    }
+    const task = command.task.trim();
+    if (!task) {
+      this.tellChoices(item, formatHelp(`Add a task after $${command.project.token}.`, this.choiceOptions()));
+      return this.finishRun(item.id, startedAt, true);
+    }
+    const sessionId = command.kind === 'run-new'
+      ? this.newSessionFor(item.threadId, projectPath)
+      : this.storeSession(item.threadId, projectPath, command.sessionId);
+    await this.runWork(item, task, projectPath, startedAt, sessionId);
+  }
+
+  private foundChoices(threadId: string): CommandProject[] {
+    const found = new Set(this.discoveredFor(threadId));
+    return this.commandProjects(threadId)
+      .filter((project) => found.has(project.path))
+      .slice(0, PROJECT_CHOICE_LIMIT);
+  }
+
+  private foundNote(truncated: boolean, capped: boolean): string {
+    const lines = ['These projects come from the home-folder search.'];
+    if (truncated) lines.push('The search stopped at the time or folder limit. Some projects may be missing.');
+    if (capped) lines.push(`Showing the first ${PROJECT_CHOICE_LIMIT} found projects.`);
+    return lines.join(' ');
+  }
+
+  private findProjects(item: RelayItem, startedAt: number): void {
+    const result = searchHomeProjects({ root: this.config.searchRoot });
+    this.rememberDiscovered(item.threadId, result.projects.map((entry) => canonicalDir(entry.path)));
+    const choices = this.foundChoices(item.threadId);
+    if (!choices.length) {
+      this.tellChoices(item, formatNoFoundProjects(this.choiceOptions()));
+      return this.finishRun(item.id, startedAt, true);
+    }
+    this.tellChoices(item, formatFoundChoices(choices, {
+      ...this.choiceOptions(),
+      note: this.foundNote(result.truncated, this.discoveredFor(item.threadId).length > choices.length),
+    }));
+    this.finishRun(item.id, startedAt, true);
+  }
+
+  private async findAndRun(item: RelayItem, task: string, startedAt: number): Promise<void> {
+    const result = searchHomeProjects({ root: this.config.searchRoot });
+    const discovered = result.projects.map((entry) => canonicalDir(entry.path));
+    this.rememberDiscovered(item.threadId, discovered);
+    if (!discovered.length) {
+      this.tellChoices(item, formatNoFoundProjects(this.choiceOptions()));
+      return this.finishRun(item.id, startedAt, true);
+    }
+    const routing = await this.runRoutingAgent(item, task, { discovered });
+    if (this.closed) return;
+    if (routing.error) {
+      this.tellFailure(
+        item,
+        `The ${harnessKind(this.config.harnessId).name} routing agent failed: ${routing.error}. Check the ${harnessKind(this.config.harnessId).name} model and command.`,
+      );
+      return this.finishRun(item.id, startedAt, false, routing.error);
+    }
+    if (routing.decision?.kind === 'forward' && routing.decision.projectPath) {
+      const projectPath = this.allowedProject(routing.decision.projectPath, item.threadId, true);
+      if (projectPath) return this.runWork(item, task, projectPath, startedAt);
+    }
+    const choices = this.foundChoices(item.threadId);
+    this.tellChoices(item, formatFoundChoices(choices, {
+      ...this.choiceOptions(),
+      note: this.foundNote(result.truncated, this.discoveredFor(item.threadId).length > choices.length),
+    }));
+    this.finishRun(item.id, startedAt, true);
+  }
+
+  private async runLegacy(item: RelayItem, task: string, startedAt: number): Promise<void> {
     // Phase 1: the routing agent resolves the project through the MCP tools.
-    const routing = await this.runRoutingAgent(item);
+    const routing = await this.runRoutingAgent(item, task, { discovered: this.discoveredFor(item.threadId) });
     if (this.closed) return;
     if (routing.error) {
       // A failed routing run forwards nothing, so send the reason instead.
@@ -605,24 +857,31 @@ export class RelayService {
     }
     let projectPath: string | null = null;
     if (routing.decision?.kind === 'forward' && routing.decision.projectPath) {
-      projectPath = this.allowedProject(routing.decision.projectPath);
+      projectPath = this.allowedProject(routing.decision.projectPath, item.threadId, true);
     }
     // No agent decision, or a rejected path: the keyword resolver takes over.
-    if (projectPath === null) projectPath = this.heuristicProject(item);
+    if (projectPath === null) projectPath = this.heuristicProject(item, task, this.discoveredFor(item.threadId));
     if (!projectPath) {
       const question = harnessMessage(
-        clarificationText(this.candidates(), this.projectsFor(item.threadId)),
+        clarificationText(
+          [...this.candidates(), ...this.discoveredFor(item.threadId)],
+          this.projectsFor(item.threadId),
+        ),
         harnessKind(this.config.harnessId).name,
       );
       this.tellProvider(item, question);
       return this.finishRun(item.id, startedAt, true);
     }
-    await this.runWork(item, projectPath, startedAt);
+    await this.runWork(item, task, projectPath, startedAt);
   }
 
-  private async runRoutingAgent(item: RelayItem): Promise<{ decision: RoutingDecision | null; error?: string }> {
+  private async runRoutingAgent(
+    item: RelayItem,
+    task: string,
+    options: { discovered?: string[] } = {},
+  ): Promise<{ decision: RoutingDecision | null; error?: string }> {
     const run = this.harness.start(
-      routingPrompt(item.task, item.threadId),
+      routingPrompt(task, item.threadId, options),
       {
         sessionId: this.routerSession(),
         cwd: this.config.cwd,
@@ -649,9 +908,15 @@ export class RelayService {
     }
   }
 
-  private async runWork(item: RelayItem, projectPath: string, startedAt: number): Promise<void> {
-    const run = this.harness.start(buildPrompt(item.task), {
-      sessionId: this.sessionFor(item.threadId, projectPath),
+  private async runWork(
+    item: RelayItem,
+    task: string,
+    projectPath: string,
+    startedAt: number,
+    sessionId?: string,
+  ): Promise<void> {
+    const run = this.harness.start(buildPrompt(task), {
+      sessionId: sessionId ?? this.sessionFor(item.threadId, projectPath),
       cwd: projectPath,
       model: this.config.model,
     });
@@ -696,6 +961,7 @@ export class RelayService {
         cwd: this.config.cwd,
         timeoutMs: this.config.timeoutMs,
         ...(this.config.model ? { model: this.config.model } : {}),
+        ...(this.config.sessionListCommand ? { sessionListCommand: this.config.sessionListCommand } : {}),
       },
       harnesses: this.harnesses(),
       projects: [...this.state.projects],
@@ -713,6 +979,7 @@ export class RelayService {
     if (this.closed) return;
     this.closed = true;
     this.queue.length = 0;
+    this.discoveredByThread.clear();
     this.active?.kill();
     this.active = null;
     if (this.interruptLastRun('relay stopped before the harness finished')) this.save();

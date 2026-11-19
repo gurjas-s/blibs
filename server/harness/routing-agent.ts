@@ -22,26 +22,42 @@ export interface RoutingDecision {
   question?: string;
 }
 
-export function routingPrompt(task: string, threadId: string): string {
-  return [
+export interface RoutingPromptOptions {
+  /** Projects found by the home-folder search for a `$find-project` request. */
+  discovered?: string[];
+}
+
+export function routingPrompt(task: string, threadId: string, options: RoutingPromptOptions = {}): string {
+  const lines = [
     'You are the blibs routing agent. One provider message must reach one project session.',
     `The ${ROUTING_MCP_NAME} MCP server holds the project registry. Call its tools to inspect it.`,
     '- list_projects lists every registered project and candidate.',
     '- get_thread_projects lists the projects this conversation already used.',
     '- resolve_project returns a keyword guess for the message.',
     '- resolve_session returns the coding session of one project, when it exists.',
+    '- search_projects searches the user home folder for projects outside the registry.',
     '',
+  ];
+  if (options.discovered?.length) {
+    lines.push(
+      'The relay searched the user home folder for this request. These projects are allowed for this message:',
+      ...options.discovered.map((dir) => `- ${dir}`),
+      '',
+    );
+  }
+  lines.push(
     'Pick exactly one project for the message. Your only job is to choose the project.',
     'Do not answer the message, do not edit the message, and do not send a work response.',
     'The project session receives the message unchanged and replies to blibs.',
     'End your reply with exactly one line:',
-    `- FORWARD <absolute project path> when you picked a project.`,
+    '- FORWARD <absolute project path> when you picked a project.',
     '- ASK <one short question> when the message does not say which project.',
     '',
     `Provider conversation: ${threadId}`,
     'Message:',
     task.trim(),
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 const FORWARD_LINE = /^forward\s+(\S.*)$/i;

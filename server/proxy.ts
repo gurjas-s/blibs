@@ -119,12 +119,13 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
       command: relayConfig.command,
       cwd: relayConfig.cwd,
       timeoutMs: relayConfig.timeoutMs,
+      sessionListCommand: relayConfig.sessionListCommand,
     }),
     stateDir: dataDir,
     enqueue: (provider, text, threadId) => { enqueueOutbox(provider, text, threadId); },
     announce: (provider, text, threadId, triggerId) => {
       // The relay queues the vendor copy itself. This only records the panel copy.
-      const sourceId = `blibs-intro:${triggerId ?? Date.now().toString(36)}`;
+      const sourceId = `blibs-reply:${triggerId ?? Date.now().toString(36)}`;
       history.import([{
         provider,
         role: 'agent',

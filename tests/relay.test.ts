@@ -21,7 +21,17 @@ import {
   sessionKey,
   threadProjects,
 } from '../server/harness/router.ts';
-import { extractMentionTask, sanitizeReply } from '../server/harness/mention.ts';
+import {
+  buildProjectChoices,
+  CHOICES_HEADER,
+  formatHelp,
+  formatProjectChoices,
+  formatSessionChoices,
+  isChoicesMessage,
+  parseCommandBody,
+} from '../server/harness/commands.ts';
+import { searchHomeProjects } from '../server/harness/discovery.ts';
+import { extractMentionBody, extractMentionTask, isUserTurn, sanitizeReply, startsWithMention } from '../server/harness/mention.ts';
 import {
   BLIBS_MENTION,
   INTRO_HEADER,
@@ -38,6 +48,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
+if (args[0] === '--session-list') {
+  let map = {};
+  try { map = JSON.parse(fs.readFileSync(path.join(dir, 'sessions.json'), 'utf8')); } catch {}
+  process.stdout.write(JSON.stringify(map[process.cwd()] || []));
+  process.exit(0);
+}
 const prompt = args.at(-1) || '';
 fs.appendFileSync(path.join(dir, 'runs.jsonl'), JSON.stringify({ pid: process.pid, prompt, args, cwd: process.cwd(), pwd: process.env.PWD || '' }) + '\\n');
 if (prompt.includes('FAIL_HARNESS')) {
@@ -89,11 +105,19 @@ afterEach(async () => {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function startRelay(options: { dataDir?: string; timeoutMs?: number; model?: string; removeDataOnClose?: boolean } = {}): Promise<RelayServer> {
+async function startRelay(options: {
+  dataDir?: string;
+  timeoutMs?: number;
+  model?: string;
+  removeDataOnClose?: boolean;
+  searchRoot?: string;
+  sessions?: Record<string, Array<{ id: string; title?: string; updated?: number }>>;
+} = {}): Promise<RelayServer> {
   const dataDir = options.dataDir ?? mkdtempSync(path.join(tmpdir(), 'blibs-relay-'));
   const harnessDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-harness-'));
   const fake = path.join(harnessDir, 'fake-harness.mjs');
   writeFileSync(fake, FAKE_HARNESS);
+  if (options.sessions) writeFileSync(path.join(harnessDir, 'sessions.json'), JSON.stringify(options.sessions));
   // A real conversation already has rows, so seed one before the relay starts.
   const seed = new HistoryStore(dataDir);
   seed.import([{ provider: 'muse', role: 'user', text: 'Earlier user message.', ts: 1, url: 'https://muse.ai/chat/relay-test', sourceId: 'seed-user', identity: 'source-id' }]);
@@ -108,6 +132,8 @@ async function startRelay(options: { dataDir?: string; timeoutMs?: number; model
       // Tests isolate routing from the real home directory.
       projects: [],
       discoveryRoot: path.join(harnessDir, 'no-such-root'),
+      sessionListCommand: JSON.stringify([process.execPath, fake, '--session-list']),
+      searchRoot: options.searchRoot ?? path.join(harnessDir, 'no-such-home'),
       ...(options.model ? { model: options.model } : {}),
     },
   });
@@ -190,10 +216,20 @@ function museMessage(overrides: Record<string, unknown> = {}): Record<string, un
   };
 }
 
-test('a user @opencode message starts one run and queues one Muse outbox item', async () => {
+test('a user @opencode tag is ignored', async () => {
+  const server = await startRelay();
+  await importItems(server, [museMessage({ role: 'user', text: '@opencode Fix the build.', ts: Date.now() + 5000, sourceId: 'user-tag-1' })]);
+  await sleep(400);
+  assert.equal(readRuns(server).length, 0, 'the user tag starts no harness run');
+  assert.equal((await outboxOf(server)).items.length, 0, 'the user tag sends no reply');
+  assert.equal((await statusOf(server)).lastRun, null);
+});
+
+
+test('a provider @opencode message starts one run and queues one Muse outbox item', async () => {
   const server = await startRelay();
   const ts = Date.now() + 5000;
-  const report = await importItems(server, [museMessage({ role: 'user', text: '@opencode Summarize the release notes.', ts, sourceId: 'user-1' })]);
+  const report = await importItems(server, [museMessage({ text: '@opencode Summarize the release notes.', ts, sourceId: 'user-1' })]);
   assert.equal(report.added, 1);
 
   const status = await waitFor(async () => {
@@ -282,14 +318,16 @@ test('an @blibs mention returns one introduction reply in the chat', async () =>
   assert.match(intro.text, /Available harnesses: OpenCode\./);
   assert.match(intro.text, /Enabled for this assistant: OpenCode\./);
   assert.match(intro.text, /How tagging works:/);
-  assert.ok(intro.text.endsWith('To give it a try do @opencode hi.'), 'the reply ends with the test task');
+  assert.match(intro.text, /How to choose a project and session:/);
+  assert.match(intro.text, /\$find-project <task>/);
+  assert.ok(intro.text.endsWith('To give it a try do @opencode.'), 'the reply ends with the project list request');
   assert.equal(readRuns(server).length, 0, 'the introduction starts no harness run');
   const introOutbox = await outboxOf(server);
   assert.equal(introOutbox.items.length, 1, 'the introduction is sent into the chat');
   assert.equal(introOutbox.items[0].provider, 'muse');
   assert.equal(introOutbox.items[0].threadId, url);
   assert.ok(introOutbox.items[0].text.startsWith(INTRO_HEADER));
-  assert.ok(introOutbox.items[0].text.endsWith('To give it a try do @opencode hi.'), 'the sent reply keeps the example tag');
+  assert.ok(introOutbox.items[0].text.endsWith('To give it a try do @opencode.'), 'the sent reply keeps the example tag');
 
   // An echo of the reply never answers itself.
   await importItems(server, [
@@ -327,6 +365,222 @@ test('an @blibs mention returns one introduction reply in the chat', async () =>
   );
   assert.equal((await outboxOf(server)).items.length, 2);
   assert.equal(readRuns(server).length, 0);
+});
+
+test('a bare @opencode lists the known projects and starts no run', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-projects-'));
+  const emptyRoot = path.join(dataDir, 'empty-root');
+  mkdirSync(emptyRoot);
+  const server = await startRelay({ dataDir });
+  const projA = path.join(dataDir, 'proj-alpha');
+  const projB = path.join(dataDir, 'proj-beta');
+  const post = await fetch(`${server.base}/api/relay/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projects: [projA, projB], discoveryRoot: emptyRoot }),
+  });
+  assert.equal(post.status, 200);
+
+  const url = 'https://muse.ai/chat/project-choices';
+  await importItems(server, [museMessage({ role: 'user', text: 'Baseline.', url, sourceId: 'pc-base', ts: Date.now() + 5000 })]);
+  await sleep(300);
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode', url, sourceId: 'pc-1', ts: Date.now() + 5100 })]);
+  await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
+
+  const outbox = await outboxOf(server);
+  const text = outbox.items[0].text;
+  assert.ok(text.startsWith(CHOICES_HEADER), 'the reply is a choice list');
+  assert.ok(text.includes('$proj-alpha'), 'the first project has a token');
+  assert.ok(text.includes('$proj-beta'), 'the second project has a token');
+  assert.ok(!text.includes(realpathSync(projA)), 'the reply omits the project path');
+  assert.equal(readRuns(server).length, 0, 'the list starts no harness run');
+  assert.equal((await statusOf(server)).lastRun?.state, 'ok');
+
+  const imported = await importsOf(server);
+  assert.ok(imported.imports.some((message) => message.threadId === url && message.text.startsWith(CHOICES_HEADER)), 'the panel gets the choice list');
+
+  // A vendor echo of the reply must not retrigger.
+  await importItems(server, [museMessage({ role: 'agent', text: `You:\n\n${text}`, url, sourceId: 'pc-echo', ts: Date.now() + 5200 })]);
+  await sleep(300);
+  assert.equal(readRuns(server).length, 0, 'the echo starts no run');
+  assert.equal((await outboxOf(server)).items.length, 1, 'the echo sends no second list');
+});
+
+test('a session choice continues one OpenCode session without the routing agent', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-sessions-'));
+  const emptyRoot = path.join(dataDir, 'empty-root');
+  mkdirSync(emptyRoot);
+  const projA = path.join(dataDir, 'proj-alpha');
+  mkdirSync(projA, { recursive: true });
+  const projectPath = realpathSync(projA);
+  const server = await startRelay({
+    dataDir,
+    sessions: { [projectPath]: [{ id: 'ses_alpha', title: 'Alpha work', updated: Date.now() }] },
+  });
+  const post = await fetch(`${server.base}/api/relay/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projects: [projA], discoveryRoot: emptyRoot }),
+  });
+  assert.equal(post.status, 200);
+
+  const url = 'https://muse.ai/chat/session-choices';
+  await importItems(server, [museMessage({ role: 'user', text: 'Baseline.', url, sourceId: 'sc-base', ts: Date.now() + 5000 })]);
+  await sleep(300);
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode $proj-alpha', url, sourceId: 'sc-1', ts: Date.now() + 5100 })]);
+  await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
+  const sessionList = (await outboxOf(server)).items[0].text;
+  assert.ok(sessionList.startsWith(CHOICES_HEADER));
+  assert.ok(sessionList.includes('$proj-alpha-ses_alpha'), 'the real session id becomes a choice');
+  assert.ok(sessionList.includes('Alpha work'), 'the session title is shown');
+  assert.equal(readRuns(server).length, 0, 'listing sessions starts no harness run');
+
+  await importItems(server, [museMessage({
+    role: 'agent',
+    text: '@opencode $proj-alpha-ses_alpha Fix the build',
+    url,
+    sourceId: 'sc-2',
+    ts: Date.now() + 5200,
+  })]);
+  await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
+  const runs = readRuns(server);
+  assert.equal(runs.length, 1, 'the direct choice starts one work run and no routing run');
+  assert.equal(runs[0].prompt, 'Fix the build');
+  assert.equal(sessionOf(runs[0]), 'ses_alpha');
+  assert.equal(runs[0].cwd, projectPath);
+  const state = JSON.parse(readFileSync(path.join(dataDir, 'relay-state.json'), 'utf8')) as { sessions: Record<string, string> };
+  assert.equal(state.sessions[sessionKey(url, projectPath)], 'ses_alpha', 'the chosen session sticks to the thread');
+});
+
+test('a new session choice creates one session and runs the task', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-new-session-'));
+  const emptyRoot = path.join(dataDir, 'empty-root');
+  mkdirSync(emptyRoot);
+  const server = await startRelay({ dataDir });
+  const projA = path.join(dataDir, 'proj-alpha');
+  const post = await fetch(`${server.base}/api/relay/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projects: [projA], discoveryRoot: emptyRoot }),
+  });
+  assert.equal(post.status, 200);
+
+  const url = 'https://muse.ai/chat/new-session';
+  await importItems(server, [museMessage({ role: 'user', text: 'Baseline.', url, sourceId: 'ns-base', ts: Date.now() + 5000 })]);
+  await sleep(300);
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode $proj-alpha-new Start fresh', url, sourceId: 'ns-1', ts: Date.now() + 5100 })]);
+  await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
+  const runs = readRuns(server);
+  assert.equal(runs.length, 1);
+  const created = sessionOf(runs[0]);
+  assert.match(created ?? '', /^ses_[A-Za-z0-9]{24}$/);
+  const state = JSON.parse(readFileSync(path.join(dataDir, 'relay-state.json'), 'utf8')) as { sessions: Record<string, string> };
+  assert.equal(state.sessions[sessionKey(url, realpathSync(projA))], created);
+});
+
+test('find-project lists the home search and routes a task to a found project', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-find-'));
+  const emptyRoot = path.join(dataDir, 'empty-root');
+  mkdirSync(emptyRoot);
+  const home = mkdtempSync(path.join(tmpdir(), 'blibs-relay-home-'));
+  const alpha = path.join(home, 'alpha');
+  const beta = path.join(home, 'beta');
+  mkdirSync(path.join(alpha, '.git'), { recursive: true });
+  mkdirSync(beta);
+  writeFileSync(path.join(beta, 'package.json'), '{}');
+  const server = await startRelay({ dataDir, searchRoot: home });
+  try {
+    const url = 'https://muse.ai/chat/find-project';
+    await importItems(server, [museMessage({ role: 'user', text: 'Baseline.', url, sourceId: 'fp-base', ts: Date.now() + 5000 })]);
+    await sleep(300);
+
+    await importItems(server, [museMessage({ role: 'agent', text: '@opencode $find-project', url, sourceId: 'fp-list', ts: Date.now() + 5100 })]);
+    await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
+    const list = (await outboxOf(server)).items[0].text;
+    assert.ok(list.startsWith(CHOICES_HEADER));
+    assert.ok(list.includes('Projects found in your home folder:'));
+    assert.ok(list.includes('$alpha'));
+    assert.ok(list.includes('$beta'));
+    assert.equal(readRuns(server).length, 0, 'the bare search starts no routing run');
+
+    writeFileSync(path.join(server.harnessDir, 'route.json'), realpathSync(alpha));
+    await importItems(server, [museMessage({
+      role: 'agent',
+      text: '@opencode $find-project Fix the alpha build',
+      url,
+      sourceId: 'fp-run',
+      ts: Date.now() + 5200,
+    })]);
+    await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
+    const runs = readRuns(server);
+    assert.equal(runs.length, 2, 'the agent route and the work run start');
+    assert.ok(runs[0].prompt.includes(realpathSync(alpha)), 'the routing prompt carries the discovered project');
+    assert.equal(runs[1].cwd, realpathSync(alpha), 'the task runs in the discovered project');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a found project keeps its token when the registry has the same folder name', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-found-token-'));
+  const emptyRoot = path.join(dataDir, 'empty-root');
+  mkdirSync(emptyRoot);
+  const home = mkdtempSync(path.join(tmpdir(), 'blibs-relay-found-home-'));
+  const homeProject = path.join(home, 'app');
+  mkdirSync(path.join(homeProject, '.git'), { recursive: true });
+  const registryProject = path.join(dataDir, 'registry', 'app');
+  const server = await startRelay({
+    dataDir,
+    searchRoot: home,
+    sessions: { [realpathSync(homeProject)]: [{ id: 'ses_home', title: 'Home session', updated: Date.now() }] },
+  });
+  try {
+    const post = await fetch(`${server.base}/api/relay/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projects: [registryProject], discoveryRoot: emptyRoot }),
+    });
+    assert.equal(post.status, 200);
+
+    const url = 'https://muse.ai/chat/found-token';
+    await importItems(server, [museMessage({ role: 'user', text: 'Baseline.', url, sourceId: 'ft-base', ts: Date.now() + 5000 })]);
+    await sleep(300);
+    await importItems(server, [museMessage({ role: 'agent', text: '@opencode $find-project', url, sourceId: 'ft-list', ts: Date.now() + 5100 })]);
+    await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
+    const list = (await outboxOf(server)).items[0].text;
+    assert.ok(!list.includes(realpathSync(homeProject)), 'the found list omits the project path');
+    const token = /^- \$([^\s]+)/m.exec(list)?.[1];
+    assert.ok(token, 'the found project has a token');
+    assert.match(token, /^app-[0-9a-f]{4}$/, 'the duplicate basename gets a stable suffix');
+
+    await importItems(server, [museMessage({ role: 'agent', text: `@opencode $${token}`, url, sourceId: 'ft-sessions', ts: Date.now() + 5200 })]);
+    await waitFor(async () => ((await outboxOf(server)).items.length >= 2 ? true : undefined));
+    const sessions = (await outboxOf(server)).items[1].text;
+    assert.ok(sessions.includes(`$${token}-ses_home`), 'the found token resolves to the found project');
+    assert.ok(!sessions.includes('No sessions yet.'), 'the found project is not replaced by the registry project');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a bare @opencode in the first batch lists projects without running work', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-baseline-choice-'));
+  const emptyRoot = path.join(dataDir, 'empty-root');
+  mkdirSync(emptyRoot);
+  const server = await startRelay({ dataDir });
+  const projA = path.join(dataDir, 'proj-alpha');
+  const post = await fetch(`${server.base}/api/relay/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projects: [projA], discoveryRoot: emptyRoot }),
+  });
+  assert.equal(post.status, 200);
+
+  const url = 'https://muse.ai/chat/baseline-choice';
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode', url, sourceId: 'bc-1', ts: Date.now() + 5000 })]);
+  await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
+  assert.ok((await outboxOf(server)).items[0].text.includes('$proj-alpha'));
+  assert.equal(readRuns(server).length, 0, 'the baseline list request starts no work');
 });
 
 test('the panel report controls the harness list in the introduction', async () => {
@@ -371,11 +625,11 @@ test('the panel report controls the harness list in the introduction', async () 
   assert.ok(!/Enabled for this assistant:.*Codex/.test(intro.text), 'a disabled harness is not listed as enabled');
 });
 
-test('a cleared chat can ask blibs again without replaying old tasks', async () => {
+test('a cleared chat can ask blibs again and later tasks run', async () => {
   const server = await startRelay();
   const url = 'https://muse.ai/chat/clear-reset';
   await importItems(server, [
-    museMessage({ role: 'user', text: '@opencode Old baseline task.', url, sourceId: 'clear-base-task', ts: Date.now() + 5000 }),
+    museMessage({ role: 'agent', text: '@opencode Old baseline task.', url, sourceId: 'clear-base-task', ts: Date.now() + 5000 }),
     museMessage({ role: 'user', text: '@blibs', url, sourceId: 'clear-base-intro', ts: Date.now() + 5001 }),
   ]);
   await sleep(300);
@@ -388,10 +642,10 @@ test('a cleared chat can ask blibs again without replaying old tasks', async () 
 
   // A new scrape can re-render an old bubble with a new position and message id.
   await importItems(server, [
-    museMessage({ role: 'agent', text: 'You:\n\n@opencode Old baseline task.', url, sourceId: 'clear-replay', ts: Date.now() + 5100 }),
+    museMessage({ role: 'agent', text: '@opencode Old baseline task.', url, sourceId: 'clear-replay', ts: Date.now() + 5100 }),
   ]);
-  await sleep(300);
-  assert.equal(readRuns(server).length, 0, 'a re-rendered baseline task does not run');
+  await waitFor(async () => (readRuns(server).length >= 2 ? true : undefined));
+  assert.equal(readRuns(server).length, 2, 'a re-rendered provider task runs');
 
   // `/clear` resets the vendor context, so the next identical @blibs mention answers again.
   await importItems(server, [
@@ -407,14 +661,60 @@ test('a cleared chat can ask blibs again without replaying old tasks', async () 
     2,
     'the cleared chat gets a new introduction',
   );
-  assert.equal(readRuns(server).length, 0, 'the introduction still starts no harness run');
+  assert.equal(readRuns(server).length, 2, 'the introduction still starts no harness run');
 
   // The same task text after a clear is a new request, not a re-scrape.
   await importItems(server, [
-    museMessage({ role: 'user', text: '@opencode Old baseline task.', url, sourceId: 'clear-task-again', ts: Date.now() + 5400 }),
+    museMessage({ role: 'agent', text: '@opencode Old baseline task.', url, sourceId: 'clear-task-again', ts: Date.now() + 5400 }),
   ]);
-  await waitFor(async () => (readRuns(server).length >= 2 ? true : undefined));
-  assert.equal(readRuns(server)[1].prompt, 'Old baseline task.');
+  await waitFor(async () => (readRuns(server).length >= 4 ? true : undefined));
+  assert.equal(readRuns(server)[3].prompt, 'Old baseline task.');
+});
+
+test('a /clear and @blibs in one batch send the introduction', async () => {
+  const server = await startRelay();
+  const url = 'https://muse.ai/chat/same-batch-clear';
+  await importItems(server, [museMessage({ role: 'user', text: 'Baseline.', url, sourceId: 'sb-base', ts: Date.now() + 5000 })]);
+  await sleep(200);
+
+  // Muse stamps both rows with the same time. The clear must not hide the next trigger.
+  const ts = Date.now() + 5100;
+  await importItems(server, [
+    museMessage({ role: 'agent', text: 'You:\n\n/clear', url, sourceId: 'sb-clear', ts }),
+    museMessage({ role: 'agent', text: 'You:\n\n@blibs', url, sourceId: 'sb-intro', ts }),
+  ]);
+  await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
+  const outbox = await outboxOf(server);
+  assert.ok(outbox.items[0].text.startsWith(INTRO_HEADER), 'the same batch still sends the introduction');
+  assert.equal(readRuns(server).length, 0, 'the introduction starts no harness run');
+});
+
+test('an assistant explanation with a mention in the middle starts no work', async () => {
+  const server = await startRelay();
+  const url = 'https://muse.ai/chat/explanation-mention';
+  await importItems(server, [museMessage({ role: 'user', text: 'Baseline.', url, sourceId: 'em-base', ts: Date.now() + 5000 })]);
+  await sleep(200);
+  await importItems(server, [museMessage({
+    role: 'agent',
+    text: 'what do you want to send through it? need a harness + task, like @opencode $project',
+    url,
+    sourceId: 'em-1',
+    ts: Date.now() + 5100,
+  })]);
+  await sleep(400);
+  assert.equal(readRuns(server).length, 0, 'the explanation starts no routing run');
+  assert.equal((await outboxOf(server)).items.length, 0, 'the explanation sends no reply');
+
+  // A leading delegation from the same assistant still starts work.
+  await importItems(server, [museMessage({
+    role: 'agent',
+    text: '@opencode A real delegation.',
+    url,
+    sourceId: 'em-2',
+    ts: Date.now() + 5200,
+  })]);
+  await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
+  assert.equal(readRuns(server).length, 2, 'a leading delegation still runs');
 });
 
 test('a user message without a mention does not start a run', async () => {
@@ -447,7 +747,7 @@ test('a root-path conversation with a user turn can relay', async () => {
   assert.equal(readRuns(server).length, 0, 'the user turn without a mention does not start a run');
   await importItems(server, [
     museMessage({ role: 'agent', text: '9:57 PM', url, sourceId: 'time-label', ts: echoTs + 1000 }),
-    museMessage({ text: 'You:\n\n@opencode What is on my plate today?', url, sourceId: 'user-mention', ts: echoTs + 1000 }),
+    museMessage({ role: 'agent', text: '@opencode What is on my plate today?', url, sourceId: 'user-mention', ts: echoTs + 1000 }),
   ]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   assert.equal(readRuns(server).length, 2);
@@ -461,7 +761,7 @@ test('a root-path conversation with a user turn can relay', async () => {
 
 test('a configured model reaches every harness command', async () => {
   const server = await startRelay({ model: 'test-provider/test-model' });
-  await importItems(server, [museMessage({ role: 'user', text: '@opencode Summarize the model run.', ts: Date.now() + 5000, sourceId: 'model-1' })]);
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode Summarize the model run.', ts: Date.now() + 5000, sourceId: 'model-1' })]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   const runs = readRuns(server);
   assert.equal(runs.length, 2);
@@ -516,11 +816,11 @@ test('one Muse thread routes two projects to two sessions', async () => {
   const url = 'https://muse.ai/chat/multi-project';
   await importItems(server, [museMessage({ text: 'Baseline.', url, sourceId: 'mp-base', ts: Date.now() + 5000 })]);
   await sleep(300);
-  await importItems(server, [museMessage({ role: 'user', text: `@opencode Fix the build in ${projA}`, url, sourceId: 'mp-a1', ts: Date.now() + 5100 })]);
+  await importItems(server, [museMessage({ role: 'agent', text: `@opencode Fix the build in ${projA}`, url, sourceId: 'mp-a1', ts: Date.now() + 5100 })]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
-  await importItems(server, [museMessage({ role: 'user', text: '@opencode Fix the proj-beta flake', url, sourceId: 'mp-b1', ts: Date.now() + 5200 })]);
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode Fix the proj-beta flake', url, sourceId: 'mp-b1', ts: Date.now() + 5200 })]);
   await waitFor(async () => (readRuns(server).length >= 4 ? true : undefined));
-  await importItems(server, [museMessage({ role: 'user', text: '@opencode Polish the proj-alpha UI', url, sourceId: 'mp-a2', ts: Date.now() + 5300 })]);
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode Polish the proj-alpha UI', url, sourceId: 'mp-a2', ts: Date.now() + 5300 })]);
   await waitFor(async () => (readRuns(server).length >= 6 ? true : undefined));
 
   const runs = readRuns(server);
@@ -555,7 +855,7 @@ test('an unclear task runs the routing agent once and asks', async () => {
   const url = 'https://muse.ai/chat/unclear-project';
   await importItems(server, [museMessage({ text: 'Baseline.', url, sourceId: 'up-base', ts: Date.now() + 5000 })]);
   await sleep(300);
-  const item = museMessage({ role: 'user', text: '@opencode Do the thing', url, sourceId: 'up-1', ts: Date.now() + 5100 });
+  const item = museMessage({ role: 'agent', text: '@opencode Do the thing', url, sourceId: 'up-1', ts: Date.now() + 5100 });
   await importItems(server, [item]);
   await waitFor(async () => (await outboxOf(server)).items.length >= 1 ? true : undefined);
   const runs = readRuns(server);
@@ -594,7 +894,7 @@ test('the routing agent forwards a task to the project it picks', async () => {
   const url = 'https://muse.ai/chat/agent-forward';
   await importItems(server, [museMessage({ text: 'Baseline.', url, sourceId: 'af-base', ts: Date.now() + 5000 })]);
   await sleep(300);
-  await importItems(server, [museMessage({ role: 'user', text: '@opencode Fix the build', url, sourceId: 'af-1', ts: Date.now() + 5100 })]);
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode Fix the build', url, sourceId: 'af-1', ts: Date.now() + 5100 })]);
   await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
 
   const runs = readRuns(server);
@@ -642,7 +942,7 @@ test('a routing answer outside the allowlist falls back and asks', async () => {
   const url = 'https://muse.ai/chat/agent-outside';
   await importItems(server, [museMessage({ text: 'Baseline.', url, sourceId: 'ao-base', ts: Date.now() + 5000 })]);
   await sleep(300);
-  await importItems(server, [museMessage({ role: 'user', text: '@opencode Fix the build', url, sourceId: 'ao-1', ts: Date.now() + 5100 })]);
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode Fix the build', url, sourceId: 'ao-1', ts: Date.now() + 5100 })]);
   await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
 
   assert.equal(readRuns(server).length, 1, 'no work run starts for a rejected project');
@@ -810,6 +1110,7 @@ test('the router MCP answers tool calls', async () => {
     const listed = JSON.parse(lines[1]) as { result: { tools: Array<{ name: string }> } };
     assert.ok(listed.result.tools.some((tool) => tool.name === 'resolve_project'));
     assert.ok(listed.result.tools.some((tool) => tool.name === 'resolve_session'), 'the MCP resolves the session of a project');
+    assert.ok(listed.result.tools.some((tool) => tool.name === 'search_projects'), 'the MCP can search the home folder');
     const called = JSON.parse(lines[2]) as { result: { content: Array<{ text: string }> } };
     const answer = JSON.parse(called.result.content[0].text) as { projectPath: string; confidence: string };
     assert.equal(answer.projectPath, projB);
@@ -834,11 +1135,11 @@ test('each Muse chat keeps its own harness session', async () => {
   await sleep(300);
   assert.equal(readRuns(server).length, 0);
 
-  await importItems(server, [museMessage({ role: 'user', text: '@opencode Task for A.', url: urlA, sourceId: 'a-1', ts: Date.now() + 5100 })]);
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode Task for A.', url: urlA, sourceId: 'a-1', ts: Date.now() + 5100 })]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
-  await importItems(server, [museMessage({ role: 'user', text: '@opencode Task for B.', url: urlB, sourceId: 'b-1', ts: Date.now() + 5200 })]);
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode Task for B.', url: urlB, sourceId: 'b-1', ts: Date.now() + 5200 })]);
   await waitFor(async () => (readRuns(server).length >= 4 ? true : undefined));
-  await importItems(server, [museMessage({ role: 'user', text: '@opencode Second task for A.', url: urlA, sourceId: 'a-2', ts: Date.now() + 5300 })]);
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode Second task for A.', url: urlA, sourceId: 'a-2', ts: Date.now() + 5300 })]);
   await waitFor(async () => (readRuns(server).length >= 6 ? true : undefined));
 
   const runs = readRuns(server);
@@ -909,7 +1210,7 @@ test('stored backlog and older messages do not start a run', async () => {
   assert.equal(readRuns(server).length, 2);
 });
 
-test('a re-scraped mention does not run twice', async () => {
+test('a provider command runs when the vendor re-renders it', async () => {
   const server = await startRelay();
   const url = 'https://muse.ai/chat/rescrape';
   await importItems(server, [
@@ -919,20 +1220,21 @@ test('a re-scraped mention does not run twice', async () => {
 
   const text = '@opencode Summarize the duplicate scrape.';
   await importItems(server, [
-    museMessage({ role: 'user', text, url, sourceId: 'rescrape-1', ts: Date.now() + 5100 }),
+    museMessage({ role: 'agent', text, url, sourceId: 'rescrape-1', ts: Date.now() + 5100 }),
   ]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   assert.equal(readRuns(server).length, 2);
   assert.equal((await outboxOf(server)).items.length, 1);
 
   // The same bubble at a new page position gets a new source id and a later
-  // observation time. It must not run the task again.
+  // observation time. Provider commands do not have a text dedupe.
   await importItems(server, [
-    museMessage({ role: 'agent', text: `You:\n\n${text}`, url, sourceId: 'rescrape-2', ts: Date.now() + 5200 }),
+    museMessage({ role: 'agent', text, url, sourceId: 'rescrape-2', ts: Date.now() + 5200 }),
   ]);
-  await sleep(500);
-  assert.equal(readRuns(server).length, 2, 'the repeated scrape starts no second run');
-  assert.equal((await outboxOf(server)).items.length, 1, 'the repeated scrape sends no second reply');
+  await waitFor(async () => (readRuns(server).length >= 4 ? true : undefined));
+  assert.equal(readRuns(server).length, 4, 'the re-rendered provider command runs');
+  await waitFor(async () => ((await outboxOf(server)).items.length >= 2 ? true : undefined));
+  assert.equal((await outboxOf(server)).items.length, 2, 'the re-rendered provider command replies');
 });
 
 test('a harness failure records an error and tells the chat', async () => {
@@ -997,7 +1299,7 @@ test('a stale session does not hide the current project registry', async () => {
   });
   assert.equal(registry.status, 200);
 
-  await importItems(server, [museMessage({ role: 'user', text: '@opencode Do the work', url, sourceId: 'stale-1', ts: Date.now() + 5000 })]);
+  await importItems(server, [museMessage({ role: 'agent', text: '@opencode Do the work', url, sourceId: 'stale-1', ts: Date.now() + 5000 })]);
   await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
   const runs = readRuns(server);
   assert.equal(runs.length, 2, 'the work run starts for the allowed project');
@@ -1036,8 +1338,108 @@ test('the mention parser strips the token and the reply never retriggers', () =>
   assert.equal(extractMentionTask('No mention here.'), null);
   assert.equal(extractMentionTask('@opencode'), null);
   assert.equal(extractMentionTask('@opencode!'), null);
+  assert.equal(extractMentionBody('@opencode'), '', 'a bare mention asks for the project list');
+  assert.equal(extractMentionBody('You:\n\n@opencode $proj'), '$proj');
+  assert.equal(extractMentionBody('No mention here.'), null);
+  assert.equal(startsWithMention('@opencode fix it'), true);
+  assert.equal(startsWithMention('You:\n\n@opencode fix it'), true);
+  assert.equal(startsWithMention('what about @opencode fix it'), false, 'a mention in a sentence is not a trigger');
+  assert.equal(isUserTurn('You:\n\n@opencode fix it'), true);
+  assert.equal(isUserTurn('User message: @opencode fix it'), true);
+  assert.equal(isUserTurn('@opencode fix it'), false);
   assert.equal(sanitizeReply('done via @opencode run'), 'done via opencode run');
   assert.match(newSessionId(), /^ses_[A-Za-z0-9]{24}$/);
+});
+
+test('the choice protocol parses projects, sessions, new sessions, and the fallback', () => {
+  const projects = buildProjectChoices(['/projects/alpha', '/projects/beta', '/projects/alpha']);
+  assert.deepEqual(projects, [
+    { path: path.resolve('/projects/alpha'), token: 'alpha' },
+    { path: path.resolve('/projects/beta'), token: 'beta' },
+  ]);
+  assert.deepEqual(parseCommandBody('', projects), { kind: 'projects' });
+  assert.deepEqual(parseCommandBody('  ', projects), { kind: 'projects' });
+  assert.deepEqual(parseCommandBody('fix the build', projects), { kind: 'routing', task: 'fix the build' });
+  assert.deepEqual(parseCommandBody('$alpha', projects), { kind: 'sessions', project: projects[0] });
+  assert.deepEqual(parseCommandBody('$sessions $alpha', projects), { kind: 'sessions', project: projects[0] });
+  assert.deepEqual(parseCommandBody('$sessions alpha', projects), { kind: 'sessions', project: projects[0] });
+  assert.equal(parseCommandBody('$sessions', projects).kind, 'help');
+  assert.equal(parseCommandBody('$sessions $missing', projects).kind, 'help');
+  assert.deepEqual(parseCommandBody('$alpha-new fix it', projects), { kind: 'run-new', project: projects[0], task: 'fix it' });
+  assert.deepEqual(
+    parseCommandBody('$alpha-ses_abc fix it', projects),
+    { kind: 'run-session', project: projects[0], sessionId: 'ses_abc', task: 'fix it' },
+  );
+  assert.deepEqual(parseCommandBody('$find-project', []), { kind: 'find-projects' });
+  assert.deepEqual(parseCommandBody('$find-project find it', []), { kind: 'find-run', task: 'find it' });
+  assert.equal(parseCommandBody('$missing', projects).kind, 'help');
+  assert.equal(parseCommandBody('$alpha fix it', projects).kind, 'help', 'a project alone never runs a task');
+  assert.equal(parseCommandBody('$alpha-new', projects).kind, 'help', 'a new session needs a task');
+  assert.equal(parseCommandBody('$alpha-ses_abc', projects).kind, 'help', 'a session needs a task');
+});
+
+test('duplicate project names get stable unique tokens', () => {
+  const first = buildProjectChoices(['/work/a/app', '/work/b/app']);
+  const second = buildProjectChoices(['/work/b/app', '/work/a/app']);
+  assert.equal(first.length, 2);
+  assert.equal(new Set(first.map((entry) => entry.token)).size, 2);
+  assert.match(first[0].token, /^app-[0-9a-f]{4}$/);
+  assert.deepEqual(
+    new Map(first.map((entry) => [entry.path, entry.token])),
+    new Map(second.map((entry) => [entry.path, entry.token])),
+    'the token follows the path, not the list position',
+  );
+  const reserved = buildProjectChoices(['/work/find-project', '/work/app-new', '/work/sessions', '/work/app']);
+  assert.ok(reserved.every((entry) => !['find-project', 'app-new', 'sessions'].includes(entry.token)), 'reserved command names are escaped');
+});
+
+test('the choice replies show the tokens and never ask for a plain task', () => {
+  const projects = buildProjectChoices(['/projects/alpha', '/projects/beta']);
+  const projectText = formatProjectChoices(projects, { mention: '@opencode', harnessName: 'OpenCode' });
+  assert.ok(projectText.startsWith(CHOICES_HEADER));
+  assert.ok(projectText.includes('$alpha'));
+  assert.ok(!projectText.includes('/projects/alpha'), 'the reply omits the project path');
+  assert.ok(projectText.includes('@opencode $sessions $<project>'));
+  assert.ok(projectText.includes('before you start a new one'));
+  assert.ok(isChoicesMessage(projectText));
+  assert.ok(isChoicesMessage(`You:\n\n${projectText}`));
+  assert.ok(!isChoicesMessage('A normal message'));
+  const sessionText = formatSessionChoices(projects[0], [
+    { id: 'ses_abc', title: 'Fix the build', updated: Date.now() - 60_000 },
+  ], { mention: '@opencode', harnessName: 'OpenCode' });
+  assert.ok(sessionText.includes('$alpha-ses_abc'));
+  assert.ok(sessionText.includes('Fix the build'));
+  assert.ok(sessionText.includes('Prefer an existing session'));
+  assert.ok(sessionText.includes('$alpha-new <task>'));
+  const help = formatHelp('Unknown choice $missing.', { mention: '@opencode', harnessName: 'OpenCode' });
+  assert.ok(help.startsWith(CHOICES_HEADER));
+  assert.ok(help.includes('Unknown choice'));
+});
+
+test('the home-folder search finds marked projects and skips heavy folders', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'blibs-discovery-'));
+  mkdirSync(path.join(root, 'alpha', '.git'), { recursive: true });
+  mkdirSync(path.join(root, 'beta'));
+  writeFileSync(path.join(root, 'beta', 'package.json'), '{}');
+  mkdirSync(path.join(root, 'nested', 'gamma'), { recursive: true });
+  writeFileSync(path.join(root, 'nested', 'gamma', 'pyproject.toml'), '');
+  mkdirSync(path.join(root, 'node_modules', 'ignored'), { recursive: true });
+  writeFileSync(path.join(root, 'node_modules', 'ignored', 'package.json'), '{}');
+  mkdirSync(path.join(root, '.hidden'), { recursive: true });
+  writeFileSync(path.join(root, '.hidden', 'package.json'), '{}');
+  mkdirSync(path.join(root, 'Library', 'ignored'), { recursive: true });
+  writeFileSync(path.join(root, 'Library', 'ignored', 'package.json'), '{}');
+  try {
+    const result = searchHomeProjects({ root });
+    const names = result.projects.map((entry) => path.basename(entry.path)).sort();
+    assert.deepEqual(names, ['alpha', 'beta', 'gamma']);
+    assert.equal(result.truncated, false);
+    assert.ok(!result.projects.some((entry) => entry.path.includes('node_modules')));
+    assert.ok(!result.projects.some((entry) => entry.path.includes('.hidden')));
+    assert.ok(!result.projects.some((entry) => entry.path.includes('Library')));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('the @blibs trigger, introduction text, and harness header stay stable', () => {
@@ -1063,15 +1465,21 @@ test('the @blibs trigger, introduction text, and harness header stay stable', ()
   assert.ok(text.includes('Available harnesses: Claude Code, Codex, OpenCode.'));
   assert.ok(text.includes('Enabled for this assistant: Claude Code, OpenCode.'));
   assert.ok(text.includes('How tagging works:'));
+  assert.ok(text.includes('How to choose a project and session:'));
   assert.ok(text.includes(`${harnessTag('opencode')} fix the failing test`), 'the example uses the preferred enabled harness');
-  assert.ok(text.endsWith(`To give it a try do ${harnessTag('opencode')} hi.`));
+  assert.ok(text.includes(`${harnessTag('opencode')} $sessions $<project> lists the sessions of one project.`));
+  assert.ok(text.includes(`${harnessTag('opencode')} $<project>-new <task> starts a new session.`));
+  assert.ok(text.includes('Check the sessions before you start a new one.'));
+  assert.ok(text.includes(`${harnessTag('opencode')} $find-project <task> searches your home folder`));
+  assert.ok(text.endsWith(`To give it a try do ${harnessTag('opencode')}.`));
   assert.ok(introMessage([]).includes('OpenCode'), 'an empty report falls back to the build harnesses');
   const codexOnly = introMessage([
     { id: 'claude-code', name: 'Claude Code', enabled: false },
     { id: 'codex', name: 'Codex', enabled: true },
   ]);
-  assert.ok(codexOnly.endsWith(`To give it a try do ${harnessTag('codex')} hi.`), 'a disabled preferred harness falls back to the first enabled harness');
+  assert.ok(codexOnly.endsWith(`To give it a try do ${harnessTag('codex')}.`), 'a disabled preferred harness falls back to the first enabled harness');
   assert.ok(codexOnly.includes(`${harnessTag('codex')} fix the failing test`), 'the example follows the enabled harness');
+  assert.ok(codexOnly.includes(`${harnessTag('codex')} $sessions $<project> lists the sessions of one project.`), 'the commands follow the enabled harness');
   const noneEnabled = introMessage([{ id: 'codex', name: 'Codex', enabled: false }]);
   assert.ok(noneEnabled.includes('no harness yet'), 'a report with no enabled harness says so');
   assert.ok(noneEnabled.includes('Turn on a harness in Connections'), 'the reply says how to enable a harness');

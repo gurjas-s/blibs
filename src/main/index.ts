@@ -109,6 +109,14 @@ let staticServer: http.Server | null = null;
 let mainWin: BrowserWindow | null = null;
 /** provider id -> hidden BrowserWindow (alive, real layout viewport) */
 export const _views = new Map<string, BrowserWindow>();
+/** True while the outbox types into a vendor view, so a refresh cannot interrupt it. */
+let vendorSending = false;
+/** True while one outbox drain owns the queue. */
+let drainingOutbox = false;
+/** True while one read-only vendor page is loading. */
+let vendorRefreshing = false;
+/** The provider view is refreshed on this interval to receive phone messages. */
+const VENDOR_SYNC_MS = 60_000;
 /** reqId -> resolve (main -> preload request/response) */
 export const _pending = new Map<string, (result: CollectResult | SendResult) => void>();
 let reqSeq = 0;
@@ -308,6 +316,61 @@ function closeVendorViews(): void {
   _views.clear();
 }
 
+/**
+ * Read one vendor page in a disposable window. The long-lived hidden view is
+ * never reloaded; a temporary window is destroyed after the preload scrapes.
+ */
+async function refreshVendorView(providerId: string): Promise<void> {
+  if (vendorSending || vendorRefreshing) return;
+  const vendor = VENDORS.find((entry) => entry.id === providerId);
+  const hidden = _views.get(providerId);
+  if (!vendor || !hidden || hidden.isDestroyed()) return;
+  let url = vendor.url;
+  try {
+    const current = hidden.webContents.getURL();
+    if (current && current !== 'about:blank') url = current;
+  } catch { /* keep the vendor root */ }
+
+  const view = new BrowserWindow({
+    show: false,
+    width: 1280,
+    height: 860,
+    webPreferences: { preload: PRELOAD, partition: vendor.partition, backgroundThrottling: false },
+  });
+  vendorRefreshing = true;
+  let cleanup = (): void => {};
+  const scraped = new Promise<void>((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      ipcMain.removeListener('blibs:scrape', onScrape);
+      resolve();
+    };
+    const timer = setTimeout(finish, 15000);
+    const onScrape = (event: IpcMainEvent): void => {
+      if (event.sender === view.webContents) finish();
+    };
+    cleanup = finish;
+    ipcMain.on('blibs:scrape', onScrape);
+  });
+  try {
+    await view.loadURL(url);
+    await scraped;
+  } catch { /* the next pass retries */ }
+  finally {
+    cleanup();
+    try { view.destroy(); } catch { /* already gone */ }
+    vendorRefreshing = false;
+  }
+}
+
+/** Refresh the vendor pages that the relay reads. */
+async function refreshRelayView(): Promise<void> {
+  try {
+    const status = await proxyGet<{ provider?: string }>('/api/relay');
+    if (status.provider) await refreshVendorView(status.provider);
+  } catch { /* next pass */ }
+}
+
 /** Visible sign-in window sharing the hidden view's partition (same cookies). */
 function openLogin(vendorId: string, source?: string): void {
   const v = VENDORS.find((x) => x.id === vendorId);
@@ -388,9 +451,7 @@ export function buildMenu(): void {
       { type: 'separator' as const },
       {
         label: 'Reload vendor views',
-        click: () => {
-          for (const view of _views.values()) view.webContents.reload();
-        },
+        click: () => { void refreshRelayView(); },
       },
     ],
   });
@@ -478,31 +539,44 @@ export async function sweep(reason: string): Promise<{ added: number }> {
 
 /** Blibs -> views: type queued messages into the matching vendor view. */
 export async function drainOutbox(reason: string): Promise<{ drained: number; error?: string }> {
-  let pending: OutboxItem[];
+  // More than one scrape, sweep, or timer can ask for a drain. Without this
+  // lock two drains fetch the same queued item and type it twice.
+  if (drainingOutbox) return { drained: 0 };
+  drainingOutbox = true;
   try {
-    const data = await proxyGet<{ items?: OutboxItem[] }>('/api/outbox/pending');
-    pending = data.items || [];
-  } catch {
-    return { drained: 0, error: 'proxy unreachable' };
-  }
-  let drained = 0;
-  for (const item of pending.slice(0, 5)) {
-    const provider = String(item.provider || '').toLowerCase();
-    const view = activeView(provider);
-    if (!view) {
-      await ackOutbox(item.id, false, `no view for provider "${item.provider}"`);
-      continue;
-    }
+    let pending: OutboxItem[];
     try {
-      await ensureThread(view, provider, item.threadId);
-      const r = (await askView(view, 'blibs:send', { text: item.text })) as SendResult;
-      await ackOutbox(item.id, !!r?.ok, r?.ok ? undefined : r?.reason || 'view send failed');
-      if (r?.ok) drained++;
-    } catch (e) {
-      await ackOutbox(item.id, false, `view not writable yet (${reason}): ${(e as Error)?.message || e}`);
+      const data = await proxyGet<{ items?: OutboxItem[] }>('/api/outbox/pending');
+      pending = data.items || [];
+    } catch {
+      return { drained: 0, error: 'proxy unreachable' };
     }
+    let drained = 0;
+    vendorSending = true;
+    try {
+      for (const item of pending.slice(0, 5)) {
+        const provider = String(item.provider || '').toLowerCase();
+        const view = activeView(provider);
+        if (!view) {
+          await ackOutbox(item.id, false, `no view for provider "${item.provider}"`);
+          continue;
+        }
+        try {
+          await ensureThread(view, provider, item.threadId);
+          const r = (await askView(view, 'blibs:send', { text: item.text })) as SendResult;
+          await ackOutbox(item.id, !!r?.ok, r?.ok ? undefined : r?.reason || 'view send failed');
+          if (r?.ok) drained++;
+        } catch (e) {
+          await ackOutbox(item.id, false, `view not writable yet (${reason}): ${(e as Error)?.message || e}`);
+        }
+      }
+    } finally {
+      vendorSending = false;
+    }
+    return { drained };
+  } finally {
+    drainingOutbox = false;
   }
-  return { drained };
 }
 
 // A reply belongs to one conversation. Move the hidden view to that thread
@@ -587,6 +661,12 @@ async function boot(): Promise<void> {
   buildMenu();
   setInterval(() => sweep('sweep-60s').catch(() => {}), 60000);
   setInterval(() => drainOutbox('timer-30s').catch(() => {}), 30000);
+  // The vendor page does not always receive another device's messages while it
+  // stays open. Read it in a disposable window instead of reloading the view.
+  setTimeout(() => {
+    void refreshRelayView();
+    setInterval(() => { void refreshRelayView(); }, VENDOR_SYNC_MS);
+  }, 20000);
 }
 
 async function smoke(): Promise<void> {

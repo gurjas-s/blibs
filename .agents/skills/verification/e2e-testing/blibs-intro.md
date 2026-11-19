@@ -33,10 +33,11 @@ Shared setup: see [README.md](README.md).
    Expected: one new Muse message starts with `blibs introduction`. It lists
    `Available harnesses: Claude Code, Codex, OpenCode.` and
    `Enabled for this assistant: Claude Code, OpenCode.` It explains the tag
-   rule. It ends with `To give it a try do @opencode hi.`
+   rule and the project and session commands. It ends with
+   `To give it a try do @opencode.`
 
 5. Turn `OpenCode` off and turn `Codex` on for Muse. Send `@blibs again`.
-   Expected: the new reply suggests `To give it a try do @codex hi.`
+   Expected: the new reply suggests `To give it a try do @codex.`
 
 6. Turn every harness off for Muse. Send `@blibs again`.
    Expected: the reply says no harness is enabled and to turn one on in
@@ -92,10 +93,8 @@ Artifacts: `tests/e2e/artifacts/blibs-intro.png` and
   `live Muse sign-in with an email code and the @blibs introduction` is an
   opt-in live check. It needs `BLIBS_LIVE_LOGIN=1` and account values in the
   ignored `.env` file. It does not run in CI.
-- `tests/e2e/live-login.spec.ts`, test
-  `live popout: clear, ask blibs, ask without a project, then route one project task`
-  is an opt-in live check. It uses the authenticated app profile, the real
-  OpenCode model, and the registered projects. It does not run in CI.
+- The project and session popout check is in
+  [project-session-selection.md](project-session-selection.md).
 
 Run the mock checks with:
 

@@ -63,10 +63,19 @@ The agent's reply syncs back on its own.
 
 **Ask blibs about itself:** tag `@blibs` in a chat. blibs sends one generated
 reply into the conversation and shows it in the panel. The reply lists the
-harnesses, the ones enabled for the assistant, the tagging rule, and a first
-task. It suggests the first enabled harness, for example
-`To give it a try do @opencode hi.` When no harness is enabled, it says to turn
-one on in Connections.
+harnesses, the ones enabled for the assistant, the tagging rule, and the
+project and session commands. It suggests the first enabled harness, for
+example `To give it a try do @opencode.` When no harness is enabled, it says to
+turn one on in Connections.
+
+**Choose a project and session:** tag a harness with no task to list the
+projects that blibs knows about. Send `$sessions $<project>` to list the
+sessions of one project. Check the sessions before you start a new one. Send
+`$<project>-<sessionid> <task>` to continue a session, or
+`$<project>-new <task>` to start a new one. Send `$find-project` to list the
+projects in your home folder, or `$find-project <task>` to search the home
+folder and run the task. The provider reads the list from the chat and sends
+the next command.
 
 **Harness replies:** a reply from a local coding harness starts with
 `Sent from user's harness (<harness name>).` The header shows where the message
@@ -78,7 +87,9 @@ The relay uses OpenCode. Set its model with `POST /api/relay/projects` and a
 run. A fresh install starts with `~/Projects/LeetCode-Solutions` and
 `~/Projects/streaming-simulator`. The relay also lists the immediate
 subdirectories of `~/Projects` as candidates. A run that fails posts a short
-failure note into the chat.
+failure note into the chat. The `$find-project` command searches the home
+folder to a bounded depth for project markers such as `.git`, `package.json`,
+`pyproject.toml`, `Cargo.toml`, and `go.mod`.
 
 ## Scripts
 
@@ -149,15 +160,18 @@ them. Do not run these checks in CI.
    `tests/e2e/artifacts/live-profile`, so a remembered device works on the next
    run.
 2. **Popout relay check.** It opens the authenticated Muse popout, sends
-   `/clear`, `@blibs`, a task without a project, and one LeetCode task. It uses
-   the installed app profile and runs the real OpenCode model. Set
+   `/clear`, `@blibs`, and a user `@opencode` tag. blibs ignores that user tag.
+   The check then imports provider choice messages to list projects and
+   sessions, start a new session, and list the projects from the home search.
+   It uses the installed app profile and runs the real OpenCode model. Set
    `BLIBS_LIVE_PROFILE` to use another profile. The check reads the model and
    project registry from the app state. Set `BLIBS_LIVE_MODEL` to override the
    model.
 
 Do not commit the profile, a screenshot of a signed-in session, or a
-credential. The popout check writes `tests/e2e/artifacts/live-popout-relay.png`;
-Git ignores that directory.
+credential. The popout check writes
+`tests/e2e/artifacts/live-project-session-choices.png`; Git ignores that
+directory.
 
 ## Troubleshooting
 

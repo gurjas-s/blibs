@@ -45,6 +45,11 @@ export interface LaunchOptions {
    * check sets null to use the configured harness, for example OpenCode.
    */
   relayCommand?: string | null;
+  /**
+   * Root folder for the `$find-project` search. Defaults to a temporary home.
+   * A live relay check sets null to use the real home folder.
+   */
+  searchRoot?: string | null;
 }
 
 export interface E2EApp {
@@ -476,13 +481,21 @@ export async function launch(options: LaunchOptions = {}): Promise<E2EApp> {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-'));
   const profileDir = options.profileDir ?? path.join(tempDir, 'profile');
   const dataDir = path.join(tempDir, 'history');
+  const searchRoot = path.join(tempDir, 'home');
   mkdirSync(profileDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
+  mkdirSync(searchRoot, { recursive: true });
 
-  // The relay routes every @opencode mention through a harness run first.
-  // The e2e check stubs that harness so no run needs a real model.
+  // The relay routes each @opencode mention through a harness run. The e2e
+  // check stubs that harness so no run needs a real model. The same stub serves
+  // the real OpenCode session list shape.
   const fakeHarness = path.join(tempDir, 'fake-harness.mjs');
-  writeFileSync(fakeHarness, `const prompt = process.argv.at(-1) || '';
+  writeFileSync(fakeHarness, `const args = process.argv.slice(2);
+if (args[0] === '--session-list') {
+  process.stdout.write(JSON.stringify([{ id: 'ses_e2e', title: 'E2E session', updated: ${Date.now()} }]));
+  process.exit(0);
+}
+const prompt = args.at(-1) || '';
 if (prompt.includes('blibs routing agent')) {
   // The routing spec sends "Do the e2e thing" and needs one clarifying
   // question. Every other task uses the keyword fallback and one project.
@@ -502,11 +515,19 @@ if (prompt.includes('blibs routing agent')) {
     BLIBS_LEGACY_DIR: tempDir,
     BLIBS_NODE_PATH: process.execPath,
     BLIBS_RELAY_COMMAND: JSON.stringify([process.execPath, fakeHarness]),
+    BLIBS_RELAY_SESSION_COMMAND: JSON.stringify([process.execPath, fakeHarness, '--session-list']),
+    BLIBS_RELAY_SEARCH_ROOT: searchRoot,
     BLIBS_UI_PORT: String(panelPort),
     PROXY_PORT: String(backendPort),
   };
-  if (options.relayCommand === null) delete env.BLIBS_RELAY_COMMAND;
-  else if (options.relayCommand !== undefined) env.BLIBS_RELAY_COMMAND = options.relayCommand;
+  if (options.relayCommand === null) {
+    delete env.BLIBS_RELAY_COMMAND;
+    delete env.BLIBS_RELAY_SESSION_COMMAND;
+  } else if (options.relayCommand !== undefined) {
+    env.BLIBS_RELAY_COMMAND = options.relayCommand;
+  }
+  if (options.searchRoot === null) delete env.BLIBS_RELAY_SEARCH_ROOT;
+  else if (options.searchRoot !== undefined) env.BLIBS_RELAY_SEARCH_ROOT = options.searchRoot;
   if (options.mockLogin === false) delete env.BLIBS_MOCK_LOGIN;
   else env.BLIBS_MOCK_LOGIN = '1';
   delete env.BLIBS_NO_AUTOSTART;
