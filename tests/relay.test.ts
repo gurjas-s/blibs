@@ -369,43 +369,48 @@ test('an unclear task asks once and runs nothing', async () => {
 });
 
 test('one Muse thread can own one session per project', () => {
+  const alpha = path.resolve('/projects/alpha');
+  const beta = path.resolve('/projects/beta');
   const sessions: Record<string, string> = {};
-  sessions[sessionKey('thread-a', '/projects/alpha')] = 'ses_alpha';
-  sessions[sessionKey('thread-a', '/projects/beta')] = 'ses_beta';
-  sessions[sessionKey('thread-b', '/projects/alpha')] = 'ses_other';
-  assert.deepEqual(threadProjects(sessions, 'thread-a'), ['/projects/alpha', '/projects/beta']);
-  assert.deepEqual(threadProjects(sessions, 'thread-b'), ['/projects/alpha']);
+  sessions[sessionKey('thread-a', alpha)] = 'ses_alpha';
+  sessions[sessionKey('thread-a', beta)] = 'ses_beta';
+  sessions[sessionKey('thread-b', alpha)] = 'ses_other';
+  assert.deepEqual(threadProjects(sessions, 'thread-a'), [alpha, beta]);
+  assert.deepEqual(threadProjects(sessions, 'thread-b'), [alpha]);
   assert.deepEqual(threadProjects(sessions, 'thread-unknown'), []);
   assert.notEqual(sessionKey('t', '/a'), sessionKey('t', '/b'), 'projects get distinct keys');
   assert.notEqual(sessionKey('t', '/a'), sessionKey('o', '/a'), 'threads get distinct keys');
 });
 
 test('the project router picks explicit paths, names, and thread memory', () => {
-  const candidates = ['/projects/alpha', '/projects/beta'];
+  const alpha = path.resolve('/projects/alpha');
+  const beta = path.resolve('/projects/beta');
+  const candidates = [alpha, beta];
   assert.equal(
     resolveProject('Fix the build in /projects/alpha today', [], candidates)?.projectPath,
-    '/projects/alpha',
+    alpha,
   );
   assert.equal(
     resolveProject('Fix the beta flake', [], candidates)?.projectPath,
-    '/projects/beta',
+    beta,
   );
   assert.equal(resolveProject('Sync alpha and beta', [], candidates), null, 'two name hits need a question');
   assert.equal(
-    resolveProject('Do more work', ['/projects/alpha', '/projects/beta'], candidates)?.confidence,
+    resolveProject('Do more work', [alpha, beta], candidates)?.confidence,
     'map-hit',
   );
   assert.equal(
-    resolveProject('Do more work', ['/projects/alpha', '/projects/beta'], candidates)?.projectPath,
-    '/projects/beta',
+    resolveProject('Do more work', [alpha, beta], candidates)?.projectPath,
+    beta,
   );
   assert.equal(resolveProject('Do work', [], []), null, 'no registry means the relay falls back');
   assert.equal(
     resolveProject('Fix it in /elsewhere/gamma', [], candidates)?.projectPath,
-    '/elsewhere/gamma',
+    path.resolve('/elsewhere/gamma'),
     'the caller enforces the allowlist after canonicalization',
   );
-  assert.equal(resolveProject('Do work', [], ['/only/project'])?.projectPath, '/only/project');
+  const onlyProject = path.resolve('/only/project');
+  assert.equal(resolveProject('Do work', [], [onlyProject])?.projectPath, onlyProject);
 });
 
 test('the project allowlist and candidate listing stay bounded', () => {
