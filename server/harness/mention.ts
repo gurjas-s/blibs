@@ -5,6 +5,9 @@
 // or a new harness mention stays here.
 export const OPENCODE_MENTION = '@opencode';
 
+/** Muse reports the user turn with role agent and this label. */
+export const USER_ECHO_LABEL = 'You:';
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -13,14 +16,13 @@ function mentionPattern(mention: string): RegExp {
   return new RegExp(`${escapeRegExp(mention)}\\b`, 'gi');
 }
 
-// Muse reports the user turn with role agent and a "You:" label.
 export function isUserEcho(text: string): boolean {
-  return text.trimStart().startsWith('You:');
+  return text.trimStart().startsWith(USER_ECHO_LABEL);
 }
 
 export function stripUserEcho(text: string): string {
   if (!isUserEcho(text)) return text;
-  return text.trimStart().slice('You:'.length).trimStart();
+  return text.trimStart().slice(USER_ECHO_LABEL.length).trimStart();
 }
 
 export function extractMentionTask(text: string, mention: string = OPENCODE_MENTION): string | null {

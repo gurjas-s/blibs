@@ -488,6 +488,9 @@ export async function drainOutbox(reason: string): Promise<{ drained: number; er
 
 // A reply belongs to one conversation. Move the hidden view to that thread
 // before sending, so the message lands in the chat that mentioned @opencode.
+// The vendor page mounts its composer after the load event, so the send waits.
+const THREAD_SETTLE_MS = 2000;
+
 async function ensureThread(view: BrowserWindow, provider: string, threadId?: string): Promise<void> {
   if (!threadId) return;
   let target: URL;
@@ -514,7 +517,7 @@ async function ensureThread(view: BrowserWindow, provider: string, threadId?: st
   }
   if (current.split('#')[0] === threadId.split('#')[0]) return;
   await view.loadURL(threadId);
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+  await new Promise((resolve) => setTimeout(resolve, THREAD_SETTLE_MS));
 }
 
 async function ackOutbox(id: string, ok: boolean, error?: string): Promise<void> {

@@ -3,20 +3,41 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HistoryMessage } from './history.js';
+import { OPENCODE_COMMAND } from './harness/opencode.js';
 import type { Harness, HarnessRun } from './harness/types.js';
 import { extractMentionTask, sanitizeReply } from './harness/mention.js';
+import {
+  RELAY_PROCESSED_LIMIT,
+  RELAY_SESSION_LIMIT,
+  RELAY_STATE_VERSION,
+  RELAY_THREAD_LIMIT,
+  parseModel,
+  parseRelayRun,
+  parseSessions,
+  parseStringArray,
+  readRelayStateFile,
+} from './relay-state.js';
+import type { RelayRunState, RelayState } from './relay-state.js';
+import {
+  canonicalDir,
+  clarificationText,
+  isAllowedProject,
+  listCandidates,
+  resolveProject,
+  resolveRegistryPaths,
+  sessionKey,
+  threadProjects,
+} from './harness/router.js';
+import type { ProjectRegistry } from './harness/router.js';
 
 export const RELAY_QUEUE_LIMIT = 20;
-export const RELAY_PROCESSED_LIMIT = 500;
-export const RELAY_THREAD_LIMIT = 500;
 export const DEFAULT_RELAY_TIMEOUT_MS = 120_000;
 export const RELAY_PROVIDER = 'muse';
-export const DEFAULT_HARNESS_COMMAND = 'opencode run';
+export const DEFAULT_DISCOVERY_ROOT = path.join(os.homedir(), 'Projects');
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROVIDER_HOSTS: Record<string, string> = { muse: 'muse.ai', dots: 'chatgpt.com', grok: 'grok.com' };
 const CHECKOUT_ROOT_DEPTH = 8;
-const ERROR_TEXT_LIMIT = 300;
 
 export interface RelayConfig {
   enabled: boolean;
@@ -24,20 +45,20 @@ export interface RelayConfig {
   command: string;
   cwd: string;
   timeoutMs: number;
-}
-
-export interface RelayRunState {
-  state: 'running' | 'ok' | 'error' | 'skipped';
-  messageId: string;
-  startedAt: number;
-  endedAt?: number;
-  error?: string;
+  /** Default harness model in provider/model form. Empty means the harness default. */
+  model?: string;
+  /** Approved project directories. */
+  projects: string[];
+  /** Directory whose subdirectories are project candidates. */
+  discoveryRoot: string;
 }
 
 export interface RelayStatus {
   enabled: boolean;
   provider: string;
-  harness: { command: string; cwd: string; timeoutMs: number };
+  harness: { command: string; cwd: string; timeoutMs: number; model?: string };
+  projects: string[];
+  discoveryRoot: string;
   pending: number;
   running: boolean;
   processed: number;
@@ -52,16 +73,7 @@ interface RelayItem {
   threadId: string;
   task: string;
   sessionId: string;
-}
-
-interface RelayState {
-  version: 1;
-  watermark: number;
-  processed: string[];
-  threads: string[];
-  sessions: Record<string, string>;
-  runs: number;
-  lastRun: RelayRunState | null;
+  projectPath: string;
 }
 
 export interface RelayServiceOptions {
@@ -102,12 +114,22 @@ export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig
   const config: RelayConfig = {
     enabled: true,
     provider: RELAY_PROVIDER,
-    command: DEFAULT_HARNESS_COMMAND,
+    // The relay's default harness is opencode.
+    command: OPENCODE_COMMAND,
     cwd: path.join(dataDir, 'harness'),
     timeoutMs: DEFAULT_RELAY_TIMEOUT_MS,
+    model: undefined,
+    projects: [],
+    discoveryRoot: DEFAULT_DISCOVERY_ROOT,
     ...overrides,
   };
-  return { ...config, cwd: safeHarnessCwd(path.resolve(config.cwd), dataDir) };
+  const registry = resolveRegistryPaths(config.discoveryRoot, config.projects);
+  return {
+    ...config,
+    cwd: canonicalDir(safeHarnessCwd(path.resolve(config.cwd), dataDir)),
+    projects: registry.projects,
+    discoveryRoot: registry.discoveryRoot,
+  };
 }
 
 export function newSessionId(): string {
@@ -149,7 +171,7 @@ export function isConversationThread(provider: string, threadId: string): boolea
 }
 
 export class RelayService {
-  private readonly config: RelayConfig;
+  private config: RelayConfig;
   private readonly stateDir: string;
   private readonly stateFile: string;
   private readonly harness: Harness;
@@ -174,7 +196,19 @@ export class RelayService {
     const loaded = this.loadState();
     this.state = loaded
       ? loaded
-      : { version: 1, watermark: Date.now(), processed: [], threads: [], sessions: {}, runs: 0, lastRun: null };
+      : {
+          version: RELAY_STATE_VERSION,
+          watermark: Date.now(),
+          processed: [],
+          threads: [],
+          sessions: {},
+          projects: options.config.projects.map(canonicalDir),
+          discoveryRoot: canonicalDir(options.config.discoveryRoot),
+          model: options.config.model,
+          runs: 0,
+          lastRun: null,
+        };
+    if (loaded?.model) this.config = { ...this.config, model: loaded.model };
     this.knownThreads = new Set([...(options.knownThreads ?? []), ...this.state.threads].slice(-RELAY_THREAD_LIMIT));
     this.state.threads = [...this.knownThreads];
     if (this.state.lastRun?.state === 'running') {
@@ -191,40 +225,24 @@ export class RelayService {
   }
 
   private loadState(): RelayState | null {
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.stateFile, 'utf8')) as Partial<RelayState>;
-      if (raw.version !== 1) return null;
-      const watermark = typeof raw.watermark === 'number' && Number.isFinite(raw.watermark) ? raw.watermark : Date.now();
-      const processed = Array.isArray(raw.processed)
-        ? raw.processed.filter((id): id is string => typeof id === 'string').slice(-RELAY_PROCESSED_LIMIT)
-        : [];
-      const threads = Array.isArray(raw.threads)
-        ? raw.threads.filter((id): id is string => typeof id === 'string').slice(-RELAY_THREAD_LIMIT)
-        : [];
-      const runs = typeof raw.runs === 'number' && raw.runs >= 0 ? raw.runs : 0;
-      const sessions: Record<string, string> = {};
-      if (raw.sessions && typeof raw.sessions === 'object') {
-        for (const [key, value] of Object.entries(raw.sessions as Record<string, unknown>)) {
-          if (typeof value === 'string' && value) sessions[key.slice(0, 500)] = value.slice(0, 100);
-        }
-      }
-      return { version: 1, watermark, processed, threads, sessions, runs, lastRun: this.readLastRun(raw.lastRun) };
-    } catch {
-      return null;
-    }
-  }
-
-  private readLastRun(value: unknown): RelayRunState | null {
-    if (!value || typeof value !== 'object') return null;
-    const raw = value as Partial<RelayRunState>;
-    if (raw.state !== 'running' && raw.state !== 'ok' && raw.state !== 'error' && raw.state !== 'skipped') return null;
-    if (typeof raw.messageId !== 'string' || typeof raw.startedAt !== 'number') return null;
+    const raw = readRelayStateFile(this.stateFile);
+    if (!raw) return null;
+    const projects = Array.isArray(raw.projects) ? parseStringArray(raw.projects) : this.config.projects;
+    const registry = resolveRegistryPaths(
+      typeof raw.discoveryRoot === 'string' && raw.discoveryRoot.trim() ? raw.discoveryRoot : this.config.discoveryRoot,
+      projects,
+    );
     return {
-      state: raw.state,
-      messageId: raw.messageId,
-      startedAt: raw.startedAt,
-      endedAt: typeof raw.endedAt === 'number' ? raw.endedAt : undefined,
-      error: typeof raw.error === 'string' ? raw.error.slice(0, ERROR_TEXT_LIMIT) : undefined,
+      version: RELAY_STATE_VERSION,
+      watermark: typeof raw.watermark === 'number' && Number.isFinite(raw.watermark) ? raw.watermark : Date.now(),
+      processed: parseStringArray(raw.processed, RELAY_PROCESSED_LIMIT),
+      threads: parseStringArray(raw.threads, RELAY_THREAD_LIMIT),
+      sessions: parseSessions(raw.sessions),
+      projects: registry.projects.map(canonicalDir),
+      discoveryRoot: canonicalDir(registry.discoveryRoot),
+      model: parseModel(raw.model),
+      runs: typeof raw.runs === 'number' && raw.runs >= 0 ? raw.runs : 0,
+      lastRun: parseRelayRun(raw.lastRun),
     };
   }
 
@@ -247,7 +265,6 @@ export class RelayService {
     if (!isConversationThread(this.config.provider, message.threadId)
       && !this.threadHasUser(this.config.provider, message.threadId)) return false;
     if (this.state.processed.includes(message.id)) return false;
-    if (extractMentionTask(message.text) === null) return false;
     return message.ts > this.state.watermark;
   }
 
@@ -263,19 +280,67 @@ export class RelayService {
     if (threads.length > RELAY_THREAD_LIMIT) {
       const oldest = threads[0];
       this.knownThreads.delete(oldest);
-      delete this.state.sessions[oldest];
+      const prefix = `${oldest}\n`;
+      for (const key of Object.keys(this.state.sessions)) {
+        if (key.startsWith(prefix)) delete this.state.sessions[key];
+      }
     }
     this.state.threads = [...this.knownThreads].slice(-RELAY_THREAD_LIMIT);
   }
 
-  private sessionFor(threadId: string): string {
-    const existing = this.state.sessions[threadId];
+  private sessionFor(threadId: string, projectPath: string): string {
+    const key = sessionKey(threadId, projectPath);
+    const existing = this.state.sessions[key];
     if (existing) return existing;
     const created = newSessionId();
-    this.state.sessions[threadId] = created;
+    this.state.sessions[key] = created;
     const keys = Object.keys(this.state.sessions);
-    if (keys.length > RELAY_THREAD_LIMIT) delete this.state.sessions[keys[0]];
+    if (keys.length > RELAY_SESSION_LIMIT) delete this.state.sessions[keys[0]];
     return created;
+  }
+
+  /** Project paths with sessions in one Muse thread, most recent last. */
+  projectsFor(threadId: string): string[] {
+    return threadProjects(this.state.sessions, threadId);
+  }
+
+  /** Approved projects and the discovery root. The registry persists in state. */
+  registry(): ProjectRegistry {
+    return { projects: [...this.state.projects], discoveryRoot: this.state.discoveryRoot };
+  }
+
+  /** Replace the registry. The caller validates the shape before this call. */
+  updateRegistry(projects: string[], discoveryRoot: string, model?: string | null): RelayStatus {
+    const resolved = resolveRegistryPaths(discoveryRoot, projects);
+    try { fs.mkdirSync(resolved.discoveryRoot, { recursive: true }); } catch { /* discovery stays optional */ }
+    for (const dir of resolved.projects) {
+      try { fs.mkdirSync(dir, { recursive: true }); } catch { /* a run records the failure */ }
+    }
+    this.state.projects = resolved.projects.map(canonicalDir);
+    this.state.discoveryRoot = canonicalDir(resolved.discoveryRoot);
+    this.state.model = model === null ? undefined : (model ?? this.state.model);
+    if (model !== undefined) this.config = { ...this.config, model: model ?? undefined };
+    this.save();
+    return this.status();
+  }
+
+  /** Registered projects plus discovery subdirectories. */
+  candidates(): string[] {
+    return listCandidates(this.registry());
+  }
+
+  private resolveRequest(threadId: string, task: string): { projectPath: string } | null {
+    const known = this.projectsFor(threadId);
+    const candidates = this.candidates();
+    if (known.length === 0 && candidates.length === 0) {
+      return { projectPath: this.config.cwd };
+    }
+    const resolved = resolveProject(task, known, candidates);
+    if (!resolved) return null;
+    const projectPath = canonicalDir(resolved.projectPath);
+    if (!isAllowedProject(projectPath, this.registry(), this.config.cwd)) return null;
+    try { fs.mkdirSync(projectPath, { recursive: true }); } catch { /* the run records the failure */ }
+    return { projectPath };
   }
 
   // The first batch of a conversation is baseline: a sign-in sync is not work.
@@ -299,12 +364,24 @@ export class RelayService {
       }
       const seenTasks = new Set<string>();
       for (const message of rows) {
-        if (!this.accepts(message)) continue;
-        const task = extractMentionTask(message.text);
+        const task = extractMentionTask(message.text, this.harness.mention);
         if (task === null) continue;
+        if (!this.accepts(message)) continue;
         const taskKey = `${threadId}\n${task}`;
         if (seenTasks.has(taskKey)) continue;
         seenTasks.add(taskKey);
+        const resolution = this.resolveRequest(threadId, task);
+        if (!resolution) {
+          this.remember(message);
+          changed = true;
+          this.enqueueReply(
+            message.provider,
+            sanitizeReply(clarificationText(this.candidates(), this.projectsFor(threadId)), this.harness.mention),
+            message.threadId,
+          );
+          continue;
+        }
+        const projectPath = resolution.projectPath;
         this.remember(message);
         changed = true;
         if (this.queue.length >= RELAY_QUEUE_LIMIT) {
@@ -312,7 +389,14 @@ export class RelayService {
           this.state.lastRun = { state: 'skipped', messageId: message.id, startedAt: now, endedAt: now, error: 'relay queue is full; message dropped' };
           continue;
         }
-        this.queue.push({ id: message.id, provider: message.provider, threadId: message.threadId, task, sessionId: this.sessionFor(message.threadId) });
+        this.queue.push({
+          id: message.id,
+          provider: message.provider,
+          threadId: message.threadId,
+          task,
+          sessionId: this.sessionFor(threadId, projectPath),
+          projectPath,
+        });
         queued = true;
       }
     }
@@ -339,7 +423,7 @@ export class RelayService {
     const startedAt = Date.now();
     this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
     this.save();
-    const run = this.harness.start(buildPrompt(item.task), item.sessionId);
+    const run = this.harness.start(buildPrompt(item.task), { sessionId: item.sessionId, cwd: item.projectPath, model: this.config.model });
     this.active = run;
     let ok = false;
     let error: string | undefined;
@@ -348,7 +432,7 @@ export class RelayService {
       error = result.error;
       if (result.ok) {
         try {
-          this.enqueueReply(item.provider, sanitizeReply(result.reply), item.threadId);
+          this.enqueueReply(item.provider, sanitizeReply(result.reply, this.harness.mention), item.threadId);
           ok = true;
         } catch {
           error = 'outbox write failed';
@@ -376,7 +460,10 @@ export class RelayService {
         command: this.config.command,
         cwd: this.config.cwd,
         timeoutMs: this.config.timeoutMs,
+        ...(this.config.model ? { model: this.config.model } : {}),
       },
+      projects: [...this.state.projects],
+      discoveryRoot: this.state.discoveryRoot,
       pending: this.queue.length + (this.active ? 1 : 0),
       running: this.active !== null,
       processed: this.state.processed.length,

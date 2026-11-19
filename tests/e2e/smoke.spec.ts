@@ -6,7 +6,9 @@
 // screenshots to the ignored artifact directory.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type { Page } from 'playwright-core';
 import {
   CONNECTIONS_STORAGE_KEY,
@@ -690,5 +692,97 @@ test(
     assert.equal(await page.getByRole('button', { name: 'Back to chats' }).isVisible(), true);
     await page.getByRole('button', { name: 'Back to chats' }).click();
     await page.locator('.shell').waitFor({ state: 'visible' });
+  },
+);
+
+test(
+  'an @opencode request routes through the relay and asks when unclear',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page } = app;
+
+    // Two projects make one task ambiguous, so the relay must ask, not run.
+    const projA = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-alpha-'));
+    const projB = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-beta-'));
+    const emptyRoot = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-empty-'));
+    try {
+      const registry = await fetch(`${app.backendUrl}/api/relay/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projects: [projA, projB], discoveryRoot: emptyRoot }),
+      });
+      assert.equal(registry.status, 200);
+      const status = (await registry.json()) as { projects?: string[] };
+      assert.equal(status.projects?.length, 2);
+
+      const threadId = 'https://muse.ai/chat/e2e-routing';
+      const baseline = await fetch(`${app.backendUrl}/api/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{
+            provider: 'muse',
+            role: 'user',
+            sourceId: 'e2e-routing-base',
+            threadId,
+            text: 'E2E routing baseline.',
+            ts: Date.now(),
+          }],
+        }),
+      });
+      assert.equal(baseline.status, 200);
+      await page.waitForTimeout(300);
+
+      const task = await fetch(`${app.backendUrl}/api/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{
+            provider: 'muse',
+            role: 'user',
+            sourceId: 'e2e-routing-task',
+            threadId,
+            text: '@opencode Do the e2e thing',
+            ts: Date.now(),
+          }],
+        }),
+      });
+      assert.equal(task.status, 200);
+
+      // The router asks once and queues no harness run.
+      let clarification = '';
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        const outbox = (await (await fetch(`${app.backendUrl}/api/outbox`)).json()) as {
+          items?: Array<{ provider?: string; text?: string; threadId?: string }>;
+        };
+        const hit = (outbox.items ?? []).find((item) => item.text?.includes('Which project'));
+        if (hit) {
+          clarification = hit.text ?? '';
+          assert.equal(hit.provider, 'muse');
+          assert.equal(hit.threadId, threadId);
+          break;
+        }
+        await page.waitForTimeout(250);
+      }
+      assert.ok(clarification.includes('Which project'), 'The relay asks for the project.');
+      assert.ok(!clarification.includes('@opencode'), 'The question never retriggers.');
+
+      // The panel shows the imported @opencode request in the Muse thread.
+      await completeOnboarding(page);
+      await seedChats(page);
+      await selectAgent(page, 'Muse');
+      const trigger = page.getByText('@opencode Do the e2e thing');
+      await trigger.first().waitFor({ timeout: 20_000 });
+      assert.ok((await trigger.count()) >= 1);
+      await trigger.first().scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
+      assertImage(await app.screenshot('relay-routing.png'));
+    } finally {
+      rmSync(projA, { recursive: true, force: true });
+      rmSync(projB, { recursive: true, force: true });
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
   },
 );
