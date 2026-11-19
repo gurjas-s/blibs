@@ -687,13 +687,14 @@ test(
       await sendPopout(popout, composer, `@opencode hi ${nonce}`);
       const question = await waitForOutbox(
         app,
-        (item) => item.ts >= hiSentAt && item.text.startsWith('Which project'),
+        (item) => item.ts >= hiSentAt && item.text.includes('Which project'),
         240_000,
       ).catch(async (error: unknown) => {
         await diagnoseLive(app, popout, 'project question');
         throw error;
       });
-      assert.ok(question.text.startsWith('Which project'), 'a task without a project asks for one');
+      assert.ok(question.text.startsWith(LIVE_HEADER), 'the routing question says which harness asked');
+      assert.ok(question.text.includes('Which project'), 'a task without a project asks for one');
       assert.ok(
         question.text.includes('LeetCode-Solutions') || question.text.includes('streaming-simulator'),
         'the question names a registered project',

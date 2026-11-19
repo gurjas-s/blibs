@@ -70,7 +70,7 @@ one on in Connections.
 
 **Harness replies:** a reply from a local coding harness starts with
 `Sent from user's harness (<harness name>).` The header shows where the message
-came from.
+came from. A routing question from the harness uses the same header.
 
 The relay uses OpenCode. Set its model with `POST /api/relay/projects` and a
 `model` value in `provider/model` form. Set the project folders with a

@@ -62,6 +62,7 @@ Shared setup: see [README.md](README.md).
 - The reply suggests a disabled harness.
 - A reply with no enabled harness has a first-task line.
 - A harness reply has no header, or the header is not the first line.
+- A routing question has no harness header.
 - The relay starts a harness run for the introduction reply.
 - The relay status has an empty `harnesses` list after the panel loads.
 

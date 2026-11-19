@@ -563,6 +563,7 @@ test('an unclear task runs the routing agent once and asks', async () => {
   assert.match(runs[0].prompt, /blibs routing agent/);
   const outbox = await outboxOf(server);
   assert.equal(outbox.items.length, 1);
+  assert.ok(outbox.items[0].text.startsWith(harnessHeader('OpenCode')), 'the routing question says which harness asked');
   assert.ok(outbox.items[0].text.includes('Which project'), 'the user gets one question');
   assert.ok(!outbox.items[0].text.includes('@opencode'), 'the question never retriggers');
   const status = await statusOf(server);
@@ -615,7 +616,10 @@ test('a routing question reaches the thread and starts no work run', async () =>
   assert.equal(readRuns(server).length, 1, 'the routing run is the only run');
   const outbox = await outboxOf(server);
   assert.equal(outbox.items.length, 1);
-  assert.equal(outbox.items[0].text, 'Which project is this task for?');
+  assert.equal(
+    outbox.items[0].text,
+    `${harnessHeader('OpenCode')}\n\nWhich project is this task for?`,
+  );
   assert.ok(!outbox.items[0].text.includes('@opencode'), 'the question never retriggers');
   assert.equal((await statusOf(server)).lastRun?.state, 'ok');
 });
@@ -644,6 +648,7 @@ test('a routing answer outside the allowlist falls back and asks', async () => {
   assert.equal(readRuns(server).length, 1, 'no work run starts for a rejected project');
   const outbox = await outboxOf(server);
   assert.equal(outbox.items.length, 1);
+  assert.ok(outbox.items[0].text.startsWith(harnessHeader('OpenCode')), 'the fallback question says which harness asked');
   assert.ok(outbox.items[0].text.includes('Which project'), 'the keyword fallback asks the user');
 });
 

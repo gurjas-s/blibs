@@ -597,7 +597,11 @@ export class RelayService {
     if (routing.decision?.kind === 'ask') {
       const question = routing.decision.question?.trim();
       if (question) {
-        this.tellProvider(item, question.slice(0, ROUTING_QUESTION_LIMIT));
+        const body = harnessMessage(
+          question.slice(0, ROUTING_QUESTION_LIMIT),
+          harnessKind(this.config.harnessId).name,
+        );
+        this.tellProvider(item, body);
         return this.finishRun(item.id, startedAt, true);
       }
     }
@@ -608,7 +612,11 @@ export class RelayService {
     // No agent decision, or a rejected path: the keyword resolver takes over.
     if (projectPath === null) projectPath = this.heuristicProject(item);
     if (!projectPath) {
-      this.tellProvider(item, clarificationText(this.candidates(), this.projectsFor(item.threadId)));
+      const question = harnessMessage(
+        clarificationText(this.candidates(), this.projectsFor(item.threadId)),
+        harnessKind(this.config.harnessId).name,
+      );
+      this.tellProvider(item, question);
       return this.finishRun(item.id, startedAt, true);
     }
     await this.runWork(item, projectPath, startedAt);
