@@ -21,6 +21,7 @@ import {
   threadProjects,
 } from '../server/harness/router.ts';
 import { extractMentionTask, sanitizeReply } from '../server/harness/mention.ts';
+import { ROUTING_MCP_NAME, parseRoutingReply, routingPrompt } from '../server/harness/routing-agent.ts';
 
 const FAKE_HARNESS = `import fs from 'node:fs';
 import path from 'node:path';
@@ -35,6 +36,14 @@ if (prompt.includes('FAIL_HARNESS')) {
 }
 if (prompt.includes('SLOW_HARNESS')) {
   setTimeout(() => process.exit(9), 10000);
+} else if (prompt.includes('blibs routing agent')) {
+  // The relay talks to the routing agent through the routing prompt. The
+  // tests steer the agent with ROUTE: and ASKME markers or a route.json file.
+  const routed = /ROUTE:(\\S+)/.exec(prompt);
+  if (routed) process.stdout.write('FORWARD ' + routed[1] + '\\n');
+  else if (prompt.includes('ASKME')) process.stdout.write('ASK Which project is this task for?\\n');
+  else if (fs.existsSync(path.join(dir, 'route.json'))) process.stdout.write('FORWARD ' + fs.readFileSync(path.join(dir, 'route.json'), 'utf8').trim() + '\\n');
+  else process.stdout.write('harness reply: no routing decision\\n');
 } else {
   const lastLine = prompt.split('\\n').at(-1) || '';
   process.stdout.write('harness reply: ' + lastLine.slice(0, 60) + '\\n');
@@ -51,7 +60,7 @@ interface RelayServer {
 interface RelayStatus {
   enabled: boolean;
   provider: string;
-  harness: { command: string; cwd: string; timeoutMs: number; model?: string };
+  harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
   projects: string[];
   discoveryRoot: string;
   pending: number;
@@ -183,13 +192,26 @@ test('a user @opencode message starts one run and queues one Muse outbox item', 
   assert.ok(status.lastRun?.endedAt);
 
   const runs = readRuns(server);
-  assert.equal(runs.length, 1);
+  assert.equal(runs.length, 2, 'one routing run and one work run');
+  // The routing run frames the agent, keeps its own session, and writes the MCP config.
+  assert.match(runs[0].prompt, /blibs routing agent/);
   assert.match(runs[0].prompt, /Summarize the release notes\./);
-  assert.ok(!runs[0].prompt.includes('@opencode'), 'the harness prompt has no mention token');
-  assert.ok(!runs[0].args.includes('--model'), 'no model flag without a configured model');
-  assert.ok(sessionOf(runs[0]), 'the run carries a session id');
-  assert.equal(runs[0].cwd, realpathSync(server.harnessDir), 'the harness runs in its own directory');
-  assert.equal(runs[0].pwd, realpathSync(server.harnessDir), 'the harness PWD matches its directory');
+  assert.ok(!runs[0].prompt.includes('@opencode'), 'the routing prompt has no mention token');
+  assert.equal(runs[0].cwd, realpathSync(server.harnessDir), 'the routing agent runs in the harness directory');
+  const mcpConfig = JSON.parse(readFileSync(path.join(server.harnessDir, 'opencode.json'), 'utf8')) as {
+    mcp: { servers: Record<string, { type: string; command: string[] }> };
+  };
+  const routerServer = mcpConfig.mcp.servers[ROUTING_MCP_NAME];
+  assert.ok(routerServer, 'the routing run exposes the router MCP server');
+  assert.equal(routerServer.type, 'local');
+  assert.ok(routerServer.command.includes(server.dataDir), 'the MCP server reads the relay state');
+  // The work run carries the task alone and replies into the session.
+  assert.equal(runs[1].prompt, 'Summarize the release notes.');
+  assert.ok(!runs[1].args.includes('--model'), 'no model flag without a configured model');
+  assert.ok(sessionOf(runs[1]), 'the work run carries a session id');
+  assert.notEqual(sessionOf(runs[0]), sessionOf(runs[1]), 'the routing agent has its own session');
+  assert.equal(runs[1].cwd, realpathSync(server.harnessDir), 'the work run starts in the resolved project');
+  assert.equal(runs[1].pwd, realpathSync(server.harnessDir), 'the work run PWD matches its directory');
 
   const outbox = await outboxOf(server);
   assert.equal(outbox.items.length, 1);
@@ -206,8 +228,8 @@ test('a Muse @opencode delegation starts a run', async () => {
   await importItems(server, [museMessage({ text: '@opencode Fix the build.', ts: Date.now() + 5000, sourceId: 'agent-delegate' })]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   const runs = readRuns(server);
-  assert.equal(runs.length, 1);
-  assert.match(runs[0].prompt, /Fix the build\./);
+  assert.equal(runs.length, 2);
+  assert.equal(runs[1].prompt, 'Fix the build.');
 });
 
 test('a message without a mention does not start a run', async () => {
@@ -252,23 +274,24 @@ test('a root-path conversation with a user turn can relay', async () => {
     museMessage({ text: 'You:\n\n@opencode What is on my plate today?', url, sourceId: 'user-mention', ts: echoTs + 1000 }),
   ]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
-  assert.equal(readRuns(server).length, 1);
-  assert.match(readRuns(server)[0].prompt, /What is on my plate today\?/);
+  assert.equal(readRuns(server).length, 2);
+  assert.equal(readRuns(server)[1].prompt, 'What is on my plate today?');
 
   // The reply typed back into Muse is also a "You:" echo. It must not run.
   await importItems(server, [museMessage({ role: 'agent', text: 'You:\n\nharness reply', url, sourceId: 'reply-echo', ts: echoTs + 2000 })]);
   await sleep(400);
-  assert.equal(readRuns(server).length, 1);
+  assert.equal(readRuns(server).length, 2);
 });
 
-test('a configured model reaches the harness command', async () => {
+test('a configured model reaches every harness command', async () => {
   const server = await startRelay({ model: 'test-provider/test-model' });
   await importItems(server, [museMessage({ role: 'user', text: '@opencode Summarize the model run.', ts: Date.now() + 5000, sourceId: 'model-1' })]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   const runs = readRuns(server);
-  assert.equal(runs.length, 1);
-  assert.equal(modelOf(runs[0]), 'test-provider/test-model');
-  assert.equal(runs[0].cwd, realpathSync(server.harnessDir), 'the model flag does not change the directory');
+  assert.equal(runs.length, 2);
+  assert.equal(modelOf(runs[0]), 'test-provider/test-model', 'the routing run carries the model');
+  assert.equal(modelOf(runs[1]), 'test-provider/test-model', 'the work run carries the model');
+  assert.equal(runs[1].cwd, realpathSync(server.harnessDir), 'the model flag does not change the directory');
 });
 
 test('the project registry persists over the local API', async () => {
@@ -320,23 +343,26 @@ test('one Muse thread routes two projects to two sessions', async () => {
   await importItems(server, [museMessage({ role: 'user', text: `@opencode Fix the build in ${projA}`, url, sourceId: 'mp-a1', ts: Date.now() + 5100 })]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   await importItems(server, [museMessage({ role: 'user', text: '@opencode Fix the proj-beta flake', url, sourceId: 'mp-b1', ts: Date.now() + 5200 })]);
-  await waitFor(async () => (readRuns(server).length >= 2 ? true : undefined));
+  await waitFor(async () => (readRuns(server).length >= 4 ? true : undefined));
   await importItems(server, [museMessage({ role: 'user', text: '@opencode Polish the proj-alpha UI', url, sourceId: 'mp-a2', ts: Date.now() + 5300 })]);
-  await waitFor(async () => (readRuns(server).length >= 3 ? true : undefined));
+  await waitFor(async () => (readRuns(server).length >= 6 ? true : undefined));
 
   const runs = readRuns(server);
-  assert.equal(runs.length, 3);
-  assert.equal(runs[0].cwd, realpathSync(projA), 'the first task runs in its project');
-  assert.equal(runs[1].cwd, realpathSync(projB), 'the second task runs in its project');
-  assert.equal(runs[2].cwd, realpathSync(projA), 'the third task returns to its project');
-  const sessionA = sessionOf(runs[0]);
-  const sessionB = sessionOf(runs[1]);
+  assert.equal(runs.length, 6, 'each task runs the routing agent, then the work run');
+  assert.equal(runs[1].cwd, realpathSync(projA), 'the first task runs in its project');
+  assert.equal(runs[3].cwd, realpathSync(projB), 'the second task runs in its project');
+  assert.equal(runs[5].cwd, realpathSync(projA), 'the third task returns to its project');
+  const sessionA = sessionOf(runs[1]);
+  const sessionB = sessionOf(runs[3]);
   assert.ok(sessionA && sessionB && sessionA !== sessionB, 'projects get different sessions');
-  assert.equal(sessionOf(runs[2]), sessionA, 'the same project reuses its session');
+  assert.equal(sessionOf(runs[5]), sessionA, 'the same project reuses its session');
+  const routerSessions = new Set([sessionOf(runs[0]), sessionOf(runs[2]), sessionOf(runs[4])]);
+  assert.equal(routerSessions.size, 1, 'the routing agent keeps one session across tasks');
+  assert.notEqual([...routerSessions][0], sessionA, 'the routing session is not a project session');
   assert.equal((await statusOf(server)).sessions, 2);
 });
 
-test('an unclear task asks once and runs nothing', async () => {
+test('an unclear task runs the routing agent once and asks', async () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-unclear-'));
   const emptyRoot = path.join(dataDir, 'empty-root');
   mkdirSync(emptyRoot);
@@ -355,17 +381,132 @@ test('an unclear task asks once and runs nothing', async () => {
   await sleep(300);
   const item = museMessage({ role: 'user', text: '@opencode Do the thing', url, sourceId: 'up-1', ts: Date.now() + 5100 });
   await importItems(server, [item]);
-  await sleep(500);
-  assert.equal(readRuns(server).length, 0, 'no harness runs without a project');
+  await waitFor(async () => (await outboxOf(server)).items.length >= 1 ? true : undefined);
+  const runs = readRuns(server);
+  assert.equal(runs.length, 1, 'the routing agent runs, but no work run starts without a project');
+  assert.match(runs[0].prompt, /blibs routing agent/);
   const outbox = await outboxOf(server);
   assert.equal(outbox.items.length, 1);
   assert.ok(outbox.items[0].text.includes('Which project'), 'the user gets one question');
   assert.ok(!outbox.items[0].text.includes('@opencode'), 'the question never retriggers');
-  assert.equal((await statusOf(server)).lastRun, null);
+  const status = await statusOf(server);
+  assert.equal(status.lastRun?.state, 'ok', 'the asked question completes the run');
 
   assert.equal((await importItems(server, [item])).added, 0);
   await sleep(300);
   assert.equal((await outboxOf(server)).items.length, 1, 'a duplicate import asks nothing twice');
+  assert.equal(readRuns(server).length, 1, 'a duplicate import runs nothing twice');
+});
+
+test('the routing agent forwards a task to the project it picks', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-forward-'));
+  const emptyRoot = path.join(dataDir, 'empty-root');
+  mkdirSync(emptyRoot);
+  const server = await startRelay({ dataDir });
+  const projA = path.join(dataDir, 'proj-alpha');
+  const projB = path.join(dataDir, 'proj-beta');
+  const post = await fetch(`${server.base}/api/relay/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projects: [projA, projB], discoveryRoot: emptyRoot }),
+  });
+  assert.equal(post.status, 200);
+  // The fake agent reads route.json, so its answer cannot come from the task text.
+  writeFileSync(path.join(server.harnessDir, 'route.json'), projA);
+
+  const url = 'https://muse.ai/chat/agent-forward';
+  await importItems(server, [museMessage({ text: 'Baseline.', url, sourceId: 'af-base', ts: Date.now() + 5000 })]);
+  await sleep(300);
+  await importItems(server, [museMessage({ role: 'user', text: '@opencode Fix the build', url, sourceId: 'af-1', ts: Date.now() + 5100 })]);
+  await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
+
+  const runs = readRuns(server);
+  assert.equal(runs.length, 2, 'the agent decision runs the work harness once');
+  assert.equal(runs[1].cwd, realpathSync(projA), 'the work run starts in the project the agent picked');
+  assert.ok(sessionOf(runs[1]), 'the work run continues the project session');
+  const outbox = await outboxOf(server);
+  assert.equal(outbox.items.length, 1);
+  assert.ok(outbox.items[0].text.startsWith('harness reply:'), 'the work reply reaches the thread');
+  assert.ok(!outbox.items[0].text.includes('FORWARD'), 'the routing decision never reaches the thread');
+  assert.equal((await statusOf(server)).lastRun?.state, 'ok');
+});
+
+test('a routing question reaches the thread and starts no work run', async () => {
+  const server = await startRelay();
+  await importItems(server, [museMessage({ text: '@opencode Please ASKME which project.', ts: Date.now() + 5000, sourceId: 'ask-1' })]);
+  await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
+  assert.equal(readRuns(server).length, 1, 'the routing run is the only run');
+  const outbox = await outboxOf(server);
+  assert.equal(outbox.items.length, 1);
+  assert.equal(outbox.items[0].text, 'Which project is this task for?');
+  assert.ok(!outbox.items[0].text.includes('@opencode'), 'the question never retriggers');
+  assert.equal((await statusOf(server)).lastRun?.state, 'ok');
+});
+
+test('a routing answer outside the allowlist falls back and asks', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-oustide-'));
+  const emptyRoot = path.join(dataDir, 'empty-root');
+  mkdirSync(emptyRoot);
+  const server = await startRelay({ dataDir });
+  const projA = path.join(dataDir, 'proj-alpha');
+  const projB = path.join(dataDir, 'proj-beta');
+  const post = await fetch(`${server.base}/api/relay/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projects: [projA, projB], discoveryRoot: emptyRoot }),
+  });
+  assert.equal(post.status, 200);
+  writeFileSync(path.join(server.harnessDir, 'route.json'), path.join(dataDir, 'elsewhere'));
+
+  const url = 'https://muse.ai/chat/agent-outside';
+  await importItems(server, [museMessage({ text: 'Baseline.', url, sourceId: 'ao-base', ts: Date.now() + 5000 })]);
+  await sleep(300);
+  await importItems(server, [museMessage({ role: 'user', text: '@opencode Fix the build', url, sourceId: 'ao-1', ts: Date.now() + 5100 })]);
+  await waitFor(async () => ((await outboxOf(server)).items.length >= 1 ? true : undefined));
+
+  assert.equal(readRuns(server).length, 1, 'no work run starts for a rejected project');
+  const outbox = await outboxOf(server);
+  assert.equal(outbox.items.length, 1);
+  assert.ok(outbox.items[0].text.includes('Which project'), 'the keyword fallback asks the user');
+});
+
+test('the routing agent session survives a restart', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-router-session-'));
+  const first = await startRelay({ dataDir, removeDataOnClose: false });
+  await importItems(first, [museMessage({ text: '@opencode Route once.', ts: Date.now() + 5000, sourceId: 'rs-1' })]);
+  await waitFor(async () => (await statusOf(first)).lastRun?.state === 'ok' ? true : undefined);
+  const firstSession = sessionOf(readRuns(first)[0]);
+  assert.ok(firstSession, 'the routing run carries a session id');
+  const saved = JSON.parse(readFileSync(path.join(dataDir, 'relay-state.json'), 'utf8')) as { routerSessionId?: string };
+  assert.equal(saved.routerSessionId, firstSession, 'the routing session persists in the relay state');
+  await first.close();
+
+  const server = await startRelay({ dataDir });
+  await importItems(server, [museMessage({ text: '@opencode Route twice.', ts: Date.now() + 6000, sourceId: 'rs-2' })]);
+  await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
+  assert.equal(sessionOf(readRuns(server)[0]), firstSession, 'the restart reuses the routing session');
+});
+
+test('the routing prompt and reply contract stay strict', () => {
+  const prompt = routingPrompt('Fix the build.', 'https://muse.ai/chat/x');
+  assert.ok(prompt.includes('Fix the build.'));
+  assert.ok(prompt.includes('https://muse.ai/chat/x'));
+  assert.ok(prompt.includes(ROUTING_MCP_NAME));
+  assert.ok(!prompt.includes('@opencode'), 'the routing prompt carries no mention token');
+  assert.deepEqual(
+    parseRoutingReply('Reading the registry.\nFORWARD /projects/alpha'),
+    { kind: 'forward', projectPath: '/projects/alpha' },
+  );
+  assert.deepEqual(
+    parseRoutingReply('ASK Which project is this task for?'),
+    { kind: 'ask', question: 'Which project is this task for?' },
+  );
+  assert.equal(parseRoutingReply('harness reply: no routing decision'), null);
+  assert.deepEqual(
+    parseRoutingReply('FORWARD /a\nASK which project?'),
+    { kind: 'ask', question: 'which project?' },
+    'the last decision line wins',
+  );
 });
 
 test('one Muse thread can own one session per project', () => {
@@ -441,8 +582,10 @@ test('the router MCP answers tool calls', async () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-router-mcp-'));
   const projB = path.join(dataDir, 'proj-beta');
   mkdirSync(projB);
+  const threadId = 'https://muse.ai/chat/t';
   writeFileSync(path.join(dataDir, 'relay-state.json'), JSON.stringify({
-    version: 2, watermark: 1, processed: [], threads: [], sessions: {},
+    version: 2, watermark: 1, processed: [], threads: [],
+    sessions: { [`${threadId}\n${projB}`]: 'ses_beta' },
     projects: [path.join(dataDir, 'proj-alpha'), projB], discoveryRoot: dataDir, runs: 0, lastRun: null,
   }));
   const child = spawn(process.execPath, ['--import', 'tsx', path.join('server', 'router-mcp.ts'), '--data-dir', dataDir], {
@@ -455,7 +598,7 @@ test('the router MCP answers tool calls', async () => {
       const timer = setTimeout(() => reject(new Error('the MCP server timed out')), 20000);
       child.stdout?.on('data', (chunk: string) => {
         for (const line of chunk.split('\n')) if (line.trim()) lines.push(line);
-        if (lines.length >= 3) { clearTimeout(timer); resolve(); }
+        if (lines.length >= 5) { clearTimeout(timer); resolve(); }
       });
     });
     child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
@@ -464,15 +607,32 @@ test('the router MCP answers tool calls', async () => {
       jsonrpc: '2.0',
       id: 3,
       method: 'tools/call',
-      params: { name: 'resolve_project', arguments: { task: 'Fix the proj-beta flake', threadId: 'https://muse.ai/chat/t' } },
+      params: { name: 'resolve_project', arguments: { task: 'Fix the proj-beta flake', threadId } },
+    })}\n`);
+    child.stdin?.write(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: { name: 'resolve_session', arguments: { threadId, projectPath: projB } },
+    })}\n`);
+    child.stdin?.write(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'tools/call',
+      params: { name: 'resolve_session', arguments: { threadId, projectPath: path.join(dataDir, 'proj-alpha') } },
     })}\n`);
     await ready;
     const listed = JSON.parse(lines[1]) as { result: { tools: Array<{ name: string }> } };
     assert.ok(listed.result.tools.some((tool) => tool.name === 'resolve_project'));
+    assert.ok(listed.result.tools.some((tool) => tool.name === 'resolve_session'), 'the MCP resolves the session of a project');
     const called = JSON.parse(lines[2]) as { result: { content: Array<{ text: string }> } };
     const answer = JSON.parse(called.result.content[0].text) as { projectPath: string; confidence: string };
     assert.equal(answer.projectPath, projB);
     assert.equal(answer.confidence, 'match');
+    const sessionAnswer = JSON.parse((JSON.parse(lines[3]) as { result: { content: Array<{ text: string }> } }).result.content[0].text) as { session: string | null };
+    assert.equal(sessionAnswer.session, 'ses_beta', 'a routed project resolves to its session');
+    const noSession = JSON.parse((JSON.parse(lines[4]) as { result: { content: Array<{ text: string }> } }).result.content[0].text) as { session: string | null };
+    assert.equal(noSession.session, null, 'an unrouted project has no session yet');
   } finally {
     child.kill();
   }
@@ -492,16 +652,16 @@ test('each Muse chat keeps its own harness session', async () => {
   await importItems(server, [museMessage({ role: 'user', text: '@opencode Task for A.', url: urlA, sourceId: 'a-1', ts: Date.now() + 5100 })]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   await importItems(server, [museMessage({ role: 'user', text: '@opencode Task for B.', url: urlB, sourceId: 'b-1', ts: Date.now() + 5200 })]);
-  await waitFor(async () => (readRuns(server).length >= 2 ? true : undefined));
+  await waitFor(async () => (readRuns(server).length >= 4 ? true : undefined));
   await importItems(server, [museMessage({ role: 'user', text: '@opencode Second task for A.', url: urlA, sourceId: 'a-2', ts: Date.now() + 5300 })]);
-  await waitFor(async () => (readRuns(server).length >= 3 ? true : undefined));
+  await waitFor(async () => (readRuns(server).length >= 6 ? true : undefined));
 
   const runs = readRuns(server);
-  assert.equal(runs.length, 3);
-  const sessionA = sessionOf(runs[0]);
-  const sessionB = sessionOf(runs[1]);
+  assert.equal(runs.length, 6);
+  const sessionA = sessionOf(runs[1]);
+  const sessionB = sessionOf(runs[3]);
   assert.ok(sessionA && sessionB && sessionA !== sessionB, 'threads get different sessions');
-  assert.equal(sessionOf(runs[2]), sessionA, 'the same thread reuses its session');
+  assert.equal(sessionOf(runs[5]), sessionA, 'the same thread reuses its session');
   assert.equal((await statusOf(server)).sessions, 2);
 });
 
@@ -519,8 +679,8 @@ test('the first import of a conversation is baseline, not a trigger', async () =
   await importItems(server, [museMessage({ text: '@opencode Third agent line.', url, sourceId: 'baseline-3', ts: Date.now() + 5002 })]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   const runs = readRuns(server);
-  assert.equal(runs.length, 1);
-  assert.match(runs[0].prompt, /Third agent line\./);
+  assert.equal(runs.length, 2);
+  assert.equal(runs[1].prompt, 'Third agent line.');
 });
 
 test('a duplicate import does not start a second run', async () => {
@@ -530,7 +690,7 @@ test('a duplicate import does not start a second run', async () => {
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
   assert.equal((await importItems(server, [item])).added, 0);
   await sleep(300);
-  assert.equal(readRuns(server).length, 1);
+  assert.equal(readRuns(server).length, 2);
   assert.equal((await outboxOf(server)).items.length, 1);
 });
 
@@ -561,7 +721,7 @@ test('stored backlog and older messages do not start a run', async () => {
 
   await importItems(server, [museMessage({ text: '@opencode Fresh message.', ts: Date.now() + 5000, sourceId: 'fresh-1' })]);
   await waitFor(async () => (await statusOf(server)).lastRun?.state === 'ok' ? true : undefined);
-  assert.equal(readRuns(server).length, 1);
+  assert.equal(readRuns(server).length, 2);
 });
 
 test('a harness failure records an error and queues nothing', async () => {
@@ -572,6 +732,7 @@ test('a harness failure records an error and queues nothing', async () => {
     return current.lastRun?.state === 'error' ? current : undefined;
   });
   assert.match(status.lastRun?.error ?? '', /harness exited with code 3/);
+  assert.equal(readRuns(server).length, 1, 'a failed routing run forwards no work');
   assert.equal((await outboxOf(server)).items.length, 0);
   assert.ok(!JSON.stringify(status).includes('FAIL_HARNESS'), 'the status has no message body');
 });
@@ -599,7 +760,7 @@ test('a restart does not replay the previous message', async () => {
   const item = museMessage({ text: '@opencode Run this one time.', ts: Date.now() + 5000, sourceId: 'restart-1' });
   await importItems(first, [item]);
   await waitFor(async () => (await statusOf(first)).lastRun?.state === 'ok' ? true : undefined);
-  assert.equal(readRuns(first).length, 1);
+  assert.equal(readRuns(first).length, 2);
   const queued = (await outboxOf(first)).items.length;
   assert.equal(queued, 1);
   await first.close();
@@ -634,7 +795,9 @@ test('the harness command parser and relay defaults are bounded', () => {
   const defaults = buildRelayConfig('/tmp/blibs-data');
   assert.equal(defaults.enabled, true);
   assert.equal(defaults.provider, 'muse');
+  assert.equal(defaults.harnessId, 'opencode', 'the registry default harness is opencode');
   assert.equal(defaults.command, 'opencode run');
+  assert.equal(buildRelayConfig('/tmp/blibs-data', { harnessId: 'unknown' }).harnessId, 'opencode', 'an unknown harness id falls back');
   assert.equal(defaults.timeoutMs, 120000);
   assert.equal(defaults.model, undefined);
   assert.deepEqual(defaults.projects, []);

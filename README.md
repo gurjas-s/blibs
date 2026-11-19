@@ -11,18 +11,7 @@ assistant one time. You also select the shared folder that the harnesses may
 read and write. Chat with all three assistants from one window, and reply from
 blibs straight into the real assistant session.
 
-There is no public chat-history or send API for any of these consumer products
-(verified Oct 2026), and all three block iframing (`X-Frame-Options: SAMEORIGIN` /
-`DENY`). So blibs keeps three persistent vendor sessions alive inside the app
-itself — logged in, syncing — with a tiny local backend as the middleman.
-
-```
-muse.ai / chatgpt.com / grok.com (persistent sessions inside the app)
-        ↕  built-in views read chats, type your replies
-http://127.0.0.1:8787  local backend  (import store + send outbox)
-        ↕  /api/imports, /api/outbox*
-blibs panel (Electron + React, served from inside the app on :5174)
-```
+blibs keeps your vendor sessions active so it can sync chats and send replies.
 
 ## First run (new developer)
 
@@ -73,13 +62,13 @@ The agent's reply syncs back on its own.
 
 | Command | What |
 |---|---|
-| `npm run build` | Full build: `tsc` (main + preload as CJS, backend as ESM) → CJS markers → Vite bundles the panel to `dist/` |
+| `npm run build` | Build the app |
 | `npm start` | Launch the app (needs a prior `build`) |
 | `npm test` | Rebuilds, runs unit and HTTP route tests, then runs the desktop harness with temporary stores and ports |
-| `npm run e2e` | Builds, starts the real Electron app with a remote debugging port, and runs the smoke spec over CDP; needs a display |
-| `npm run test:desktop` | Tests search and citations in an isolated Electron renderer after building; needs a display, but no model downloads |
-| `npm run smoke` | Boots the real app window, prints a JSON status line, quits — needs a display |
-| `npm run lint` | ESLint flat config over `src/`, `server/`, `scripts/`, and `tests/` (fails on warnings) |
+| `npm run e2e` | Build the app and run end-to-end checks; needs a display |
+| `npm run test:desktop` | Test search and citations; needs a display, but no model downloads |
+| `npm run smoke` | Check that the app starts; needs a display |
+| `npm run lint` | Check the code for lint errors |
 | `npm run icons` | Regenerate the app PNG sizes, the macOS `.icns`, and the panel favicon from `assets/icon.svg`; needs macOS |
 | `npm run clean` | Wipe `build/` + `dist/` |
 | `npm run verify:clean-build` | Delete generated output, rebuild with the existing incremental cache, and check that all required output was regenerated |
@@ -117,123 +106,18 @@ installer, add a packager and then:
 
 ## End-to-end tests
 
-`npm run e2e` builds the app and runs the smoke spec in `tests/e2e/` against the
-real Electron app. It starts Electron with a remote debugging port and drives it
-over the Chrome DevTools Protocol through `playwright-core`, so it downloads no
-browser. The app runs with a temporary profile, free ports, mock chats, and
-`BLIBS_MOCK_LOGIN=1`, so it needs no vendor account. It writes light and dark
-screenshots to `tests/e2e/artifacts/`, which Git ignores.
+`npm run e2e` builds the app and runs end-to-end checks. It uses temporary data
+and mock chats, so it needs no vendor account.
 
 The check needs a display. On Linux without `DISPLAY` or `WAYLAND_DISPLAY`, the
-spec skips with a message; use `xvfb-run -a npm run e2e` on a headless machine.
+check skips with a message; use `xvfb-run -a npm run e2e` on a headless machine.
 `npm test` does not run the e2e check.
-
-## Repo layout
-
-Standard Electron + Vite structure — one process per directory:
-
-```
-src/
-  main/         main process (Node + Electron APIs, no DOM)
-    index.ts        app lifecycle, backend + panel servers, vendor views,
-                    menu, outbox loop, 60s sweep / 30s drain timers
-    login.ts        vendor sign-in windows and inline step events
-    test-harness.ts headless tests (npm test)
-  preload/      bridge scripts (DOM + limited Electron IPC, no Node UI code)
-    agent.ts        scrape + send; injected into every vendor session
-    panel.ts        narrow sign-in bridge for the panel
-  renderer/     React UI (DOM only — bundled by Vite into dist/)
-    App.tsx         three-pane shell: assistants, chat, context column
-    main.tsx        React entry (loaded by index.html)
-    client.ts       the only typed data client for backend routes
-    connections.ts  connection state, setup derivation, local storage
-    desktop.ts      typed access to the panel preload bridge
-    Onboarding.tsx  first-run connections screen and harness matrix
-    LoginScreen.tsx agents screen and inline sign-in steps
-    components/     reusable UI components with typed props
-    styles/         design tokens (light + dark) and base styles
-    SearchPanel.tsx results for the global search
-    SettingsPanel.tsx sync, search defaults, index, answers, and theme
-    search.ts       search parsing and persistent defaults
-    providers.ts    the three vendors — the seam for future native APIs
-    types.ts        Agent / ChatMessage / harness types
-    *.css, assets/  layout, theme entry, static assets
-server/
-  proxy.ts      local backend (plain Node HTTP, zero deps): chat fan-out,
-                import store, send outbox, and the relay route. Spawned by the
-                main process.
-  relay.ts      relay queue, durable high-water mark, and run state
-  harness/      the Harness interface and the OpenCode adapter
-tests/
-  e2e/          real-app CDP harness (`harness.ts`) and smoke spec; run with
-                `npm run e2e`
-scripts/
-  emit-cjs-markers.mjs  build step — see "Modules" below
-assets/
-  icon.svg       icon source (flat, one accent color)
-  icons/         generated PNG sizes, 16 px to 1024 px
-  blibs.icns     generated macOS bundle icon
-  build-icons.mjs  generates the PNG sizes and the .icns (`npm run icons`)
-.agents/
-  skills/       repo skills for design, onboarding, and validation
-```
-
-Generated, never edited or committed: `build/` (compiled main/preload/backend),
-`dist/` (bundled panel), `node_modules/`. Retained chats and the send outbox live
-in `<Electron userData>/history`; `BLIBS_DATA_DIR` overrides that directory. See
-[conversation search storage](docs/conversation-search.md) for migration details.
-Panel state lives in `localStorage` (`blibs-messages-v2`, `blibs-agents-v2`,
-`blibs-connections-v1`, `blibs-theme-v1`, …) — swap for a DB + OAuth in
-production.
-
-## Modules (read this before touching the build)
-
-The root is `"type": "module"`, but Electron's main process and preload scripts
-must load as **CommonJS**, while the backend stays **ESM**. This is handled by
-tiny marker files the build regenerates — `build/main/package.json` and
-`build/preload/package.json`, each containing `{"type":"commonjs"}`:
-
-- `tsc -b --force` compiles `src/main` + `src/preload` (CJS) and `server` (ESM).
-  `--force` matters: without it, `tsc -b` trusts stale incremental state and can
-  silently skip emitting after `build/` is deleted.
-- `scripts/emit-cjs-markers.mjs` writes the markers.
-- `vite build` bundles `src/renderer` to `dist/`.
-
-Symptoms if you get this wrong: `exports is not defined in ES module scope`
-at `build/main/index.js` on `npm start` means the markers are missing — just
-re-run `npm run build`.
-
-## Backend API (internal, app ↔ panel)
-
-| Endpoint | Who | What |
-|---|---|---|
-| `GET /api/health` | anyone | `{"ok":true}` — is the backend up? |
-| `POST /api/import` | views | push scraped chats `{items:[{provider,role,text,ts?,url?,sourceId?,threadId?,identity?}]}` (repeatable source identity) |
-| `GET /api/imports` | panel | last 500 stored chats |
-| `GET /api/history?limit=100&offset=0` | panel | paginated retained SQLite history |
-| `GET /api/history/:id` | panel | exact retained citation source |
-| `POST /api/search` | panel | keyword/hybrid search with provider, thread, and date filters |
-| `POST /api/ask` | panel | experimental local extractive answers with validated evidence quotes |
-| `GET/POST /api/index` | panel | model/index status; resume, cancel, or rebuild vectors |
-| `GET /api/relay` | panel | relay state, pending count, and the last run |
-| `POST /api/relay/projects` | panel | replace the project registry `{projects?, discoveryRoot?, model?}` |
-| `POST /api/outbox` | panel | enqueue a reply `{provider,text}` → `{id}` |
-| `GET /api/outbox/pending` | main | oldest queued sends |
-| `POST /api/outbox/ack` | main | confirm delivery `{id,ok,error?}` |
-| `POST /api/outbox/retry` | panel | requeue a failed send |
-| `GET /api/outbox` | panel | delivery statuses (drives the Sent/failed badges) |
-| `POST /api/chat` | panel | BYOK model fan-out (legacy route, kept for API use) |
-
-Ports: backend `:8787` (`PROXY_PORT`), panel `:5174` (`BLIBS_UI_PORT`). The panel
-server forwards `/api/*` to the backend — the same mapping `vite.config.ts`
-declares for reference.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `Cannot find module '…/build/main/index.js'` on `npm start` | You skipped the build — run `npm run build` first (`build/` is generated) |
-| `exports is not defined in ES module scope` | CJS markers missing — re-run `npm run build` |
 | `Electron failed to install correctly` | Use Node.js 24.x. If npm blocked the install script, run `npm install-scripts approve electron`, then `npm ci` again |
 | Weird behavior right after `npm start` | Make sure `ELECTRON_RUN_AS_NODE` is **not** exported in your shell (`unset` it and remove it from `~/.zshrc` — it makes Electron act as plain Node) |
 | Blibs: `Backend unreachable` pill | Backend didn't boot with the app — restart; check the terminal for `[blibs] proxy exited` |

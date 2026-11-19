@@ -702,7 +702,8 @@ test(
     assert.ok(app, 'The E2E app must start.');
     const { page } = app;
 
-    // Two projects make one task ambiguous, so the relay must ask, not run.
+    // Two projects make one task ambiguous, so the routing agent must ask. The
+    // stubbed routing run decides; no work run starts.
     const projA = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-alpha-'));
     const projB = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-beta-'));
     const emptyRoot = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-empty-'));
@@ -750,7 +751,7 @@ test(
       });
       assert.equal(task.status, 200);
 
-      // The router asks once and queues no harness run.
+      // The routing agent asks once and no work run starts.
       let clarification = '';
       const deadline = Date.now() + 15_000;
       while (Date.now() < deadline) {

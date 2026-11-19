@@ -3,9 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HistoryMessage } from './history.js';
-import { OPENCODE_COMMAND } from './harness/opencode.js';
-import type { Harness, HarnessRun } from './harness/types.js';
+import type { Harness, HarnessMcpServer, HarnessResult, HarnessRun } from './harness/types.js';
 import { extractMentionTask, sanitizeReply } from './harness/mention.js';
+import { ROUTING_MCP_NAME, ROUTING_QUESTION_LIMIT, parseRoutingReply, routingPrompt } from './harness/routing-agent.js';
+import type { RoutingDecision } from './harness/routing-agent.js';
+import { harnessKind } from './harness/registry.js';
 import {
   RELAY_PROCESSED_LIMIT,
   RELAY_SESSION_LIMIT,
@@ -13,6 +15,7 @@ import {
   RELAY_THREAD_LIMIT,
   parseModel,
   parseRelayRun,
+  parseSessionId,
   parseSessions,
   parseStringArray,
   readRelayStateFile,
@@ -21,11 +24,13 @@ import type { RelayRunState, RelayState } from './relay-state.js';
 import {
   canonicalDir,
   clarificationText,
+  expandHome,
   isAllowedProject,
   listCandidates,
   resolveProject,
   resolveRegistryPaths,
   sessionKey,
+  sessionKeyPrefix,
   threadProjects,
 } from './harness/router.js';
 import type { ProjectRegistry } from './harness/router.js';
@@ -34,6 +39,10 @@ export const RELAY_QUEUE_LIMIT = 20;
 export const DEFAULT_RELAY_TIMEOUT_MS = 120_000;
 export const RELAY_PROVIDER = 'muse';
 export const DEFAULT_DISCOVERY_ROOT = path.join(os.homedir(), 'Projects');
+/** Environment override for the harness command. Tests and e2e stub the routing agent with it. */
+export const RELAY_COMMAND_ENV = 'BLIBS_RELAY_COMMAND';
+/** Length limit for one stored or env harness command. */
+const RELAY_COMMAND_LIMIT = 2000;
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROVIDER_HOSTS: Record<string, string> = { muse: 'muse.ai', dots: 'chatgpt.com', grok: 'grok.com' };
@@ -42,6 +51,8 @@ const CHECKOUT_ROOT_DEPTH = 8;
 export interface RelayConfig {
   enabled: boolean;
   provider: string;
+  /** Harness id from the registry in `server/harness/registry.ts`. */
+  harnessId: string;
   command: string;
   cwd: string;
   timeoutMs: number;
@@ -56,7 +67,7 @@ export interface RelayConfig {
 export interface RelayStatus {
   enabled: boolean;
   provider: string;
-  harness: { command: string; cwd: string; timeoutMs: number; model?: string };
+  harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
   projects: string[];
   discoveryRoot: string;
   pending: number;
@@ -72,8 +83,6 @@ interface RelayItem {
   provider: string;
   threadId: string;
   task: string;
-  sessionId: string;
-  projectPath: string;
 }
 
 export interface RelayServiceOptions {
@@ -111,17 +120,21 @@ function safeHarnessCwd(requested: string, dataDir: string): string {
 }
 
 export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig> = {}): RelayConfig {
+  const envCommand = process.env[RELAY_COMMAND_ENV]?.trim();
+  // The registry owns the harness default. An explicit command override wins
+  // over the environment, and an unknown harness id falls back to the default.
+  const kind = harnessKind(overrides.harnessId);
   const config: RelayConfig = {
     enabled: true,
     provider: RELAY_PROVIDER,
-    // The relay's default harness is opencode.
-    command: OPENCODE_COMMAND,
     cwd: path.join(dataDir, 'harness'),
     timeoutMs: DEFAULT_RELAY_TIMEOUT_MS,
     model: undefined,
     projects: [],
     discoveryRoot: DEFAULT_DISCOVERY_ROOT,
     ...overrides,
+    harnessId: kind.id,
+    command: overrides.command ?? (envCommand ? envCommand.slice(0, RELAY_COMMAND_LIMIT) : kind.defaultCommand),
   };
   const registry = resolveRegistryPaths(config.discoveryRoot, config.projects);
   return {
@@ -148,26 +161,27 @@ export function buildPrompt(task: string): string {
 }
 
 // A signed-out vendor page scrapes marketing text, so its root is not a chat.
-export function isProviderThread(provider: string, threadId: string): boolean {
+// An unknown provider has no host to check, so any thread id is accepted.
+function providerThreadUrl(provider: string, threadId: string): URL | null {
   const host = PROVIDER_HOSTS[provider];
-  if (!host) return true;
+  if (!host) return null;
   try {
     const url = new URL(threadId);
-    return url.protocol === 'https:' && url.hostname === host;
+    return url.protocol === 'https:' && url.hostname === host ? url : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-export function isConversationThread(provider: string, threadId: string): boolean {
-  if (!isProviderThread(provider, threadId)) return false;
+export function isProviderThread(provider: string, threadId: string): boolean {
   if (!PROVIDER_HOSTS[provider]) return true;
-  try {
-    const url = new URL(threadId);
-    return url.pathname !== '/' && url.pathname !== '';
-  } catch {
-    return false;
-  }
+  return providerThreadUrl(provider, threadId) !== null;
+}
+
+export function isConversationThread(provider: string, threadId: string): boolean {
+  const url = providerThreadUrl(provider, threadId);
+  if (!url) return !PROVIDER_HOSTS[provider];
+  return url.pathname !== '/' && url.pathname !== '';
 }
 
 export class RelayService {
@@ -202,6 +216,7 @@ export class RelayService {
           processed: [],
           threads: [],
           sessions: {},
+          routerSessionId: undefined,
           projects: options.config.projects.map(canonicalDir),
           discoveryRoot: canonicalDir(options.config.discoveryRoot),
           model: options.config.model,
@@ -211,15 +226,7 @@ export class RelayService {
     if (loaded?.model) this.config = { ...this.config, model: loaded.model };
     this.knownThreads = new Set([...(options.knownThreads ?? []), ...this.state.threads].slice(-RELAY_THREAD_LIMIT));
     this.state.threads = [...this.knownThreads];
-    if (this.state.lastRun?.state === 'running') {
-      this.state.lastRun = {
-        state: 'error',
-        messageId: this.state.lastRun.messageId,
-        startedAt: this.state.lastRun.startedAt,
-        endedAt: Date.now(),
-        error: 'interrupted by restart',
-      };
-    }
+    this.interruptLastRun('interrupted by restart');
     // No watermark is written on a disabled start, so stored rows stay backlog.
     if (!loaded && this.config.enabled) this.save();
   }
@@ -238,6 +245,7 @@ export class RelayService {
       processed: parseStringArray(raw.processed, RELAY_PROCESSED_LIMIT),
       threads: parseStringArray(raw.threads, RELAY_THREAD_LIMIT),
       sessions: parseSessions(raw.sessions),
+      routerSessionId: parseSessionId(raw.routerSessionId),
       projects: registry.projects.map(canonicalDir),
       discoveryRoot: canonicalDir(registry.discoveryRoot),
       model: parseModel(raw.model),
@@ -253,6 +261,14 @@ export class RelayService {
       fs.writeFileSync(staging, JSON.stringify(this.state, null, 2));
       fs.renameSync(staging, this.stateFile);
     } catch { /* keep the in-memory state; the next write retries */ }
+  }
+
+  /** Turn a running last run into an error record. True when the record changed. */
+  private interruptLastRun(error: string): boolean {
+    const last = this.state.lastRun;
+    if (last?.state !== 'running') return false;
+    this.state.lastRun = { state: 'error', messageId: last.messageId, startedAt: last.startedAt, endedAt: Date.now(), error };
+    return true;
   }
 
   private accepts(message: HistoryMessage): boolean {
@@ -280,7 +296,7 @@ export class RelayService {
     if (threads.length > RELAY_THREAD_LIMIT) {
       const oldest = threads[0];
       this.knownThreads.delete(oldest);
-      const prefix = `${oldest}\n`;
+      const prefix = sessionKeyPrefix(oldest);
       for (const key of Object.keys(this.state.sessions)) {
         if (key.startsWith(prefix)) delete this.state.sessions[key];
       }
@@ -329,18 +345,54 @@ export class RelayService {
     return listCandidates(this.registry());
   }
 
-  private resolveRequest(threadId: string, task: string): { projectPath: string } | null {
-    const known = this.projectsFor(threadId);
-    const candidates = this.candidates();
-    if (known.length === 0 && candidates.length === 0) {
-      return { projectPath: this.config.cwd };
-    }
-    const resolved = resolveProject(task, known, candidates);
-    if (!resolved) return null;
-    const projectPath = canonicalDir(resolved.projectPath);
+  /** The routing agent session. One persistent session serves every thread. */
+  private routerSession(): string {
+    if (this.state.routerSessionId) return this.state.routerSessionId;
+    const created = newSessionId();
+    this.state.routerSessionId = created;
+    this.save();
+    return created;
+  }
+
+  /** The blibs-router MCP server the routing run must expose to the agent. */
+  private routerMcp(): HarnessMcpServer {
+    return {
+      name: ROUTING_MCP_NAME,
+      command: [process.execPath, path.join(MODULE_DIR, 'router-mcp.js'), '--data-dir', this.stateDir],
+    };
+  }
+
+  /**
+   * Canonicalize one project the routing agent picked and check it against
+   * the allowlist. Null means the path is not an approved project.
+   */
+  private allowedProject(target: string): string | null {
+    const projectPath = canonicalDir(path.resolve(expandHome(target)));
     if (!isAllowedProject(projectPath, this.registry(), this.config.cwd)) return null;
     try { fs.mkdirSync(projectPath, { recursive: true }); } catch { /* the run records the failure */ }
-    return { projectPath };
+    return projectPath;
+  }
+
+  /** Keyword fallback for a decision the routing agent did not make. */
+  private heuristicProject(item: RelayItem): string | null {
+    const known = this.projectsFor(item.threadId);
+    const candidates = this.candidates();
+    if (known.length === 0 && candidates.length === 0) {
+      return this.config.cwd;
+    }
+    const resolved = resolveProject(item.task, known, candidates);
+    if (!resolved) return null;
+    return this.allowedProject(resolved.projectPath);
+  }
+
+  /** One short provider-facing note, without the mention token. */
+  private tellProvider(item: RelayItem, text: string): boolean {
+    try {
+      this.enqueueReply(item.provider, sanitizeReply(text, this.harness.mention), item.threadId);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // The first batch of a conversation is baseline: a sign-in sync is not work.
@@ -370,18 +422,8 @@ export class RelayService {
         const taskKey = `${threadId}\n${task}`;
         if (seenTasks.has(taskKey)) continue;
         seenTasks.add(taskKey);
-        const resolution = this.resolveRequest(threadId, task);
-        if (!resolution) {
-          this.remember(message);
-          changed = true;
-          this.enqueueReply(
-            message.provider,
-            sanitizeReply(clarificationText(this.candidates(), this.projectsFor(threadId)), this.harness.mention),
-            message.threadId,
-          );
-          continue;
-        }
-        const projectPath = resolution.projectPath;
+        // The routing agent resolves the project when the queue drains, so
+        // the queue only carries the provider task.
         this.remember(message);
         changed = true;
         if (this.queue.length >= RELAY_QUEUE_LIMIT) {
@@ -394,8 +436,6 @@ export class RelayService {
           provider: message.provider,
           threadId: message.threadId,
           task,
-          sessionId: this.sessionFor(threadId, projectPath),
-          projectPath,
         });
         queued = true;
       }
@@ -423,32 +463,92 @@ export class RelayService {
     const startedAt = Date.now();
     this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
     this.save();
-    const run = this.harness.start(buildPrompt(item.task), { sessionId: item.sessionId, cwd: item.projectPath, model: this.config.model });
-    this.active = run;
-    let ok = false;
-    let error: string | undefined;
-    try {
-      const result = await run.promise;
-      error = result.error;
-      if (result.ok) {
-        try {
-          this.enqueueReply(item.provider, sanitizeReply(result.reply, this.harness.mention), item.threadId);
-          ok = true;
-        } catch {
-          error = 'outbox write failed';
-        }
+
+    // Phase 1: the routing agent resolves the project through the MCP tools.
+    const routing = await this.runRoutingAgent(item);
+    if (this.closed) return;
+    if (routing.error) {
+      // A failed routing run forwards nothing; the next message retries.
+      return this.finishRun(item.id, startedAt, false, routing.error);
+    }
+
+    // Phase 2: forward the provider message to the resolved session.
+    if (routing.decision?.kind === 'ask') {
+      const question = routing.decision.question?.trim();
+      if (question) {
+        this.tellProvider(item, question.slice(0, ROUTING_QUESTION_LIMIT));
+        return this.finishRun(item.id, startedAt, true);
       }
+    }
+    let projectPath: string | null = null;
+    if (routing.decision?.kind === 'forward' && routing.decision.projectPath) {
+      projectPath = this.allowedProject(routing.decision.projectPath);
+    }
+    // No agent decision, or a rejected path: the keyword resolver takes over.
+    if (projectPath === null) projectPath = this.heuristicProject(item);
+    if (!projectPath) {
+      this.tellProvider(item, clarificationText(this.candidates(), this.projectsFor(item.threadId)));
+      return this.finishRun(item.id, startedAt, true);
+    }
+    await this.runWork(item, projectPath, startedAt);
+  }
+
+  private async runRoutingAgent(item: RelayItem): Promise<{ decision: RoutingDecision | null; error?: string }> {
+    const run = this.harness.start(
+      routingPrompt(item.task, item.threadId),
+      {
+        sessionId: this.routerSession(),
+        cwd: this.config.cwd,
+        model: this.config.model,
+        mcp: [this.routerMcp()],
+      },
+    );
+    try {
+      const result = await this.awaitRun(run);
+      if (!result.ok) return { decision: null, error: result.error };
+      return { decision: parseRoutingReply(result.reply) };
     } catch (e) {
-      error = `harness failed: ${(e as Error).message}`;
+      return { decision: null, error: `routing agent failed: ${(e as Error).message}` };
+    }
+  }
+
+  /** Await one run and keep it visible as the active run while it settles. */
+  private async awaitRun(run: HarnessRun): Promise<HarnessResult> {
+    this.active = run;
+    try {
+      return await run.promise;
     } finally {
       this.active = null;
     }
+  }
+
+  private async runWork(item: RelayItem, projectPath: string, startedAt: number): Promise<void> {
+    const run = this.harness.start(buildPrompt(item.task), {
+      sessionId: this.sessionFor(item.threadId, projectPath),
+      cwd: projectPath,
+      model: this.config.model,
+    });
+    let ok = false;
+    let error: string | undefined;
+    try {
+      const result = await this.awaitRun(run);
+      error = result.error;
+      if (result.ok) {
+        ok = this.tellProvider(item, result.reply);
+        if (!ok) error = 'outbox write failed';
+      }
+    } catch (e) {
+      error = `harness failed: ${(e as Error).message}`;
+    }
     if (this.closed) return;
-    const endedAt = Date.now();
+    this.finishRun(item.id, startedAt, ok, ok ? undefined : (error ?? 'harness failed'));
+  }
+
+  private finishRun(messageId: string, startedAt: number, ok: boolean, error?: string): void {
     this.state.runs += 1;
     this.state.lastRun = ok
-      ? { state: 'ok', messageId: item.id, startedAt, endedAt }
-      : { state: 'error', messageId: item.id, startedAt, endedAt, error: error ?? 'harness failed' };
+      ? { state: 'ok', messageId, startedAt, endedAt: Date.now() }
+      : { state: 'error', messageId, startedAt, endedAt: Date.now(), error: error ?? 'routing failed' };
     this.save();
   }
 
@@ -457,6 +557,7 @@ export class RelayService {
       enabled: this.config.enabled,
       provider: this.config.provider,
       harness: {
+        id: this.config.harnessId,
         command: this.config.command,
         cwd: this.config.cwd,
         timeoutMs: this.config.timeoutMs,
@@ -479,15 +580,6 @@ export class RelayService {
     this.queue.length = 0;
     this.active?.kill();
     this.active = null;
-    if (this.state.lastRun?.state === 'running') {
-      this.state.lastRun = {
-        state: 'error',
-        messageId: this.state.lastRun.messageId,
-        startedAt: this.state.lastRun.startedAt,
-        endedAt: Date.now(),
-        error: 'relay stopped before the harness finished',
-      };
-      this.save();
-    }
+    if (this.interruptLastRun('relay stopped before the harness finished')) this.save();
   }
 }

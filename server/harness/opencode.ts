@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { OPENCODE_MENTION } from './mention.js';
-import type { Harness, HarnessResult, HarnessRun, HarnessStartOptions } from './types.js';
+import type { Harness, HarnessMcpServer, HarnessResult, HarnessRun, HarnessStartOptions } from './types.js';
 
 export const HARNESS_OUTPUT_LIMIT = 64 * 1024;
 /** Default opencode command. The relay uses it unless a config overrides it. */
@@ -33,8 +35,33 @@ function plainText(value: string): string {
   return value.replace(ANSI_SEQUENCE, '').trim();
 }
 
+/** OpenCode reads `opencode.json` from the run directory and connects to every local MCP server in it. */
+const MCP_CONFIG_FILE = 'opencode.json';
+
+function mcpConfig(servers: HarnessMcpServer[]): string {
+  const entries: Record<string, { type: string; command: string[] }> = {};
+  for (const server of servers) entries[server.name] = { type: 'local', command: [...server.command] };
+  return JSON.stringify({ mcp: { servers: entries } }, null, 2);
+}
+
+/**
+ * Write the MCP server config for one run. Only runs that request servers
+ * write the file, and only the routing runs request them, so the write never
+ * touches a user project directory.
+ */
+function writeMcpConfig(cwd: string, servers: HarnessMcpServer[]): void {
+  try {
+    fs.writeFileSync(path.join(cwd, MCP_CONFIG_FILE), mcpConfig(servers));
+  } catch { /* the run proceeds; the agent reports the missing tools */ }
+}
+
 function hasSessionFlag(args: string[]): boolean {
   return args.some((arg) => arg === '--session' || arg === '-s' || arg === '--continue' || arg === '-c');
+}
+
+/** One run that fails before the harness process starts. */
+function failedRun(error: string): HarnessRun {
+  return { promise: Promise.resolve({ ok: false, reply: '', code: null, error }), kill() {} };
 }
 
 function hasModelFlag(args: string[]): boolean {
@@ -78,14 +105,13 @@ export class OpenCodeHarness implements Harness {
     const cwd = run.cwd ?? this.cwd;
     const command = splitCommand(this.command);
     const maxOutput = this.maxOutputBytes;
-    if (!command.length) {
-      return { promise: Promise.resolve({ ok: false, reply: '', code: null, error: 'harness command is empty' }), kill() {} };
-    }
+    if (!command.length) return failedRun('harness command is empty');
     const [file, ...args] = command;
     const finalArgs = [...args];
     if (run.sessionId && !hasSessionFlag(finalArgs)) finalArgs.push('--session', run.sessionId);
     if (run.model && !hasModelFlag(finalArgs)) finalArgs.push('--model', run.model);
     finalArgs.push(prompt);
+    if (run.mcp?.length) writeMcpConfig(cwd, run.mcp);
 
     let child: ReturnType<typeof spawn>;
     try {
@@ -100,7 +126,7 @@ export class OpenCodeHarness implements Harness {
         env: { ...process.env, PWD: cwd },
       });
     } catch (error) {
-      return { promise: Promise.resolve({ ok: false, reply: '', code: null, error: `harness could not start: ${(error as Error).message}` }), kill() {} };
+      return failedRun(`harness could not start: ${(error as Error).message}`);
     }
 
     let output = '';

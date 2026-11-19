@@ -8,7 +8,7 @@
 // Run it with `npm run e2e`. The command builds the app first.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -461,11 +461,23 @@ export async function launch(options: LaunchOptions = {}): Promise<E2EApp> {
   mkdirSync(profileDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
 
+  // The relay routes every @opencode mention through a harness run first.
+  // The e2e check stubs that harness so no run needs a real model.
+  const fakeHarness = path.join(tempDir, 'fake-harness.mjs');
+  writeFileSync(fakeHarness, `const prompt = process.argv.at(-1) || '';
+if (prompt.includes('blibs routing agent')) {
+  process.stdout.write('ASK Which project is this task for?\\n');
+} else {
+  process.stdout.write('harness reply: done\\n');
+}
+`);
+
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     BLIBS_DATA_DIR: dataDir,
     BLIBS_LEGACY_DIR: tempDir,
     BLIBS_NODE_PATH: process.execPath,
+    BLIBS_RELAY_COMMAND: JSON.stringify([process.execPath, fakeHarness]),
     BLIBS_UI_PORT: String(panelPort),
     PROXY_PORT: String(backendPort),
     // Deterministic sign-in steps without a vendor page or a real account.
