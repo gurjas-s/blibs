@@ -162,8 +162,12 @@ server/
   proxy.ts      local backend (plain Node HTTP, zero deps): chat fan-out,
                 import store, send outbox, and the relay route. Spawned by the
                 main process.
-  relay.ts      relay queue, durable high-water mark, and run state
-  harness/      the Harness interface and the OpenCode adapter
+  relay.ts      relay queue, the routing agent flow, durable high-water mark,
+                and run state
+  router-mcp.ts the router MCP server: project and session tools for the
+                routing agent
+  harness/      the Harness MCP contract, the routing agent prompt, and the
+                OpenCode adapter
 tests/
   e2e/          real-app CDP harness (`harness.ts`) and smoke spec; run with
                 `npm run e2e`
@@ -202,6 +206,31 @@ tiny marker files the build regenerates — `build/main/package.json` and
 Symptoms if you get this wrong: `exports is not defined in ES module scope`
 at `build/main/index.js` on `npm start` means the markers are missing — just
 re-run `npm run build`.
+
+## Routing agent
+
+A provider mention (for example `@opencode` in a Muse chat) never names a
+project. The relay first starts the **routing agent**: one persistent harness
+session with the `blibs-router` MCP server attached. The agent calls the MCP
+tools to see the registered projects and the coding sessions the conversation
+already owns, then answers with one line:
+
+- `FORWARD <project path>` — the agent picked a project.
+- `ASK <question>` — the task does not say which project.
+
+The relay checks the answer against the project allowlist, picks the coding
+session for that project (one session per project; one Muse thread can own
+many), and forwards the provider message to that session. The harness reply
+returns to the Muse thread. When the agent gives no answer, the keyword
+resolver in `server/harness/router.ts` takes over and asks the user when it
+cannot pick a project either.
+
+Every harness adapter follows the MCP contract in
+`server/harness/types.ts`: a run may request MCP servers, and the adapter
+must expose their tools to the agent. The OpenCode adapter writes the servers
+into `opencode.json` in the run directory. Set `BLIBS_RELAY_COMMAND` to
+override the harness command for every relay run; the tests use it to stub
+the routing agent.
 
 ## Backend API (internal, app ↔ panel)
 

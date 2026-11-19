@@ -34,6 +34,8 @@ export interface RelayState {
   threads: string[];
   /** Coding sessions keyed by thread id and project path. */
   sessions: Record<string, string>;
+  /** Session id of the routing agent. One routing agent serves every thread. */
+  routerSessionId?: string;
   projects: string[];
   discoveryRoot: string;
   /** Persisted harness model default. Empty means the harness default. */
@@ -68,6 +70,11 @@ export function parseSessions(value: unknown): Record<string, string> {
     if (typeof id === 'string' && id) sessions[key.slice(0, SESSION_KEY_LIMIT)] = id.slice(0, SESSION_ID_LIMIT);
   }
   return sessions;
+}
+
+/** Keep one bounded session id. Undefined means no session yet. */
+export function parseSessionId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.slice(0, SESSION_ID_LIMIT) : undefined;
 }
 
 /** Keep one bounded model id. Undefined means the harness default. */

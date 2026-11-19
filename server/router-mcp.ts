@@ -1,9 +1,9 @@
-// blibs router MCP server: project routing for any harness.
+// blibs router MCP server: project and session tools for the routing agent.
 //
-// Any MCP client (OpenCode, Codex, Claude Code) can call these tools to
-// route one task to a project. The relay uses the same logic directly,
-// so MCP answers match backend behavior. Validation stays in the caller:
-// the backend enforces the allowlist before it launches a harness.
+// The relay attaches this server to every routing run. The agent calls the
+// tools to resolve the project for one task and the coding session that
+// project owns. The tools only read the relay state; the relay stays the
+// single writer and enforces the project allowlist before a harness launch.
 //
 // Run: node build/server/router-mcp.js --data-dir <history dir>
 import path from 'node:path';
@@ -13,6 +13,7 @@ import {
   clarificationText,
   listCandidates,
   resolveProject,
+  sessionKey,
   threadProjects,
 } from './harness/router.js';
 import type { ProjectRegistry } from './harness/router.js';
@@ -73,6 +74,18 @@ const TOOLS = [
       required: ['task', 'threadId'],
     },
   },
+  {
+    name: 'resolve_session',
+    description: 'Return the coding session of one project in one Muse thread. A null session means the project has no session yet.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        threadId: { type: 'string', description: 'Muse conversation URL' },
+        projectPath: { type: 'string', description: 'Absolute project path' },
+      },
+      required: ['threadId', 'projectPath'],
+    },
+  },
 ];
 
 function callTool(name: string, args: Record<string, unknown>, dataDir: string): unknown {
@@ -95,6 +108,12 @@ function callTool(name: string, args: Record<string, unknown>, dataDir: string):
     const resolved = resolveProject(args.task, known, candidates);
     if (!resolved) return { projectPath: null, confidence: 'unclear', clarification: clarificationText(candidates, known) };
     return { projectPath: resolved.projectPath, confidence: resolved.confidence, clarification: '' };
+  }
+  if (name === 'resolve_session') {
+    if (typeof args.threadId !== 'string' || !args.threadId) throw new Error('threadId must be a string');
+    if (typeof args.projectPath !== 'string' || !args.projectPath.trim()) throw new Error('projectPath must be a string');
+    const session = sessions[sessionKey(args.threadId, args.projectPath)];
+    return { projectPath: path.resolve(args.projectPath), session: session ?? null };
   }
   throw new Error(`unknown tool: ${name}`);
 }
