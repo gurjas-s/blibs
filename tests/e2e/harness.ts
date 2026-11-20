@@ -45,6 +45,11 @@ export interface LaunchOptions {
    * check sets null to use the configured harness, for example OpenCode.
    */
   relayCommand?: string | null;
+  /**
+   * Projects directory. Defaults to a temporary directory.
+   * A live relay check sets null to use the real home folder.
+   */
+  projectsDir?: string | null;
 }
 
 export interface E2EApp {
@@ -476,24 +481,16 @@ export async function launch(options: LaunchOptions = {}): Promise<E2EApp> {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-'));
   const profileDir = options.profileDir ?? path.join(tempDir, 'profile');
   const dataDir = path.join(tempDir, 'history');
+  const projectsDir = path.join(tempDir, 'projects');
   mkdirSync(profileDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
+  mkdirSync(projectsDir, { recursive: true });
 
-  // The relay routes every @opencode mention through a harness run first.
-  // The e2e check stubs that harness so no run needs a real model.
+  // The relay runs the harness only after it matches a project.
   const fakeHarness = path.join(tempDir, 'fake-harness.mjs');
-  writeFileSync(fakeHarness, `const prompt = process.argv.at(-1) || '';
-if (prompt.includes('blibs routing agent')) {
-  // The routing spec sends "Do the e2e thing" and needs one clarifying
-  // question. Every other task uses the keyword fallback and one project.
-  if (prompt.includes('Do the e2e thing')) {
-    process.stdout.write('ASK Which project is this task for?\\n');
-  } else {
-    process.stdout.write('harness reply: no routing decision\\n');
-  }
-} else {
-  process.stdout.write('harness reply: ' + (prompt.split('\\n').at(-1) || '') + '\\n');
-}
+  writeFileSync(fakeHarness, `const args = process.argv.slice(2);
+const prompt = args.at(-1) || '';
+process.stdout.write('harness reply: ' + (prompt.split('\\n').at(-1) || '') + '\\n');
 `);
 
   const env: NodeJS.ProcessEnv = {
@@ -502,11 +499,17 @@ if (prompt.includes('blibs routing agent')) {
     BLIBS_LEGACY_DIR: tempDir,
     BLIBS_NODE_PATH: process.execPath,
     BLIBS_RELAY_COMMAND: JSON.stringify([process.execPath, fakeHarness]),
+    BLIBS_RELAY_PROJECTS_DIR: projectsDir,
     BLIBS_UI_PORT: String(panelPort),
     PROXY_PORT: String(backendPort),
   };
-  if (options.relayCommand === null) delete env.BLIBS_RELAY_COMMAND;
-  else if (options.relayCommand !== undefined) env.BLIBS_RELAY_COMMAND = options.relayCommand;
+  if (options.relayCommand === null) {
+    delete env.BLIBS_RELAY_COMMAND;
+  } else if (options.relayCommand !== undefined) {
+    env.BLIBS_RELAY_COMMAND = options.relayCommand;
+  }
+  if (options.projectsDir === null) delete env.BLIBS_RELAY_PROJECTS_DIR;
+  else if (options.projectsDir !== undefined) env.BLIBS_RELAY_PROJECTS_DIR = options.projectsDir;
   if (options.mockLogin === false) delete env.BLIBS_MOCK_LOGIN;
   else env.BLIBS_MOCK_LOGIN = '1';
   delete env.BLIBS_NO_AUTOSTART;

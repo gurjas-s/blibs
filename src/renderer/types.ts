@@ -75,6 +75,7 @@ export interface DesktopLoginApi {
   cancel: (vendorId: string) => Promise<LoginStatus>;
   check: (vendorId: string) => Promise<LoginStatus>;
   status: (vendorId: string) => Promise<LoginStatus | null>;
+  probe: (vendorId: string) => Promise<LoginStatus | null>;
   onStatus: (listener: (status: LoginStatus) => void) => () => void;
 }
 

@@ -37,6 +37,11 @@ export function fetchLoginStatus(vendorId: string): Promise<LoginStatus | null> 
   return requireLogin().status(vendorId);
 }
 
+/** Read the vendor session without opening a window. */
+export function probeVendorLogin(vendorId: string): Promise<LoginStatus | null> {
+  return requireLogin().probe(vendorId);
+}
+
 /** Subscribe to sign-in steps. Returns an unsubscribe function. */
 export function subscribeLoginStatus(listener: (status: LoginStatus) => void): () => void {
   const login = bridge()?.login;

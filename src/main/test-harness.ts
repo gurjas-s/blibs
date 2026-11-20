@@ -144,6 +144,22 @@ try {
   assert.strictEqual(r.items[r.items.length - 1].status, 'sent', 'acked as sent');
   console.log('ok  - outbox enqueue -> view send -> ack');
 
+  // Two drains can start together from a scrape and a timer. Only one may send.
+  await fetch(`${backend}/api/outbox`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider: 'muse', text: 'serialized drain' }),
+  });
+  const [first, second] = await Promise.all([
+    api.drainOutbox('parallel-a'),
+    api.drainOutbox('parallel-b'),
+  ]);
+  const serialized = sentToViews.filter(
+    (entry) => entry.channel === 'blibs:send' && entry.msg.text === 'serialized drain',
+  );
+  assert.strictEqual(serialized.length, 1, 'one parallel drain types the item once');
+  assert.strictEqual(first.drained + second.drained, 1, 'one parallel drain owns the item');
+  console.log('ok  - parallel outbox drains send once');
+
   // 5. sweep relays scraped items into the import store
   (api._views as Map<string, unknown>).set('grok', fakeView());
   const s = await api.sweep('harness');

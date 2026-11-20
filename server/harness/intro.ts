@@ -77,7 +77,7 @@ export function introMessage(choices: HarnessChoice[]): string {
     lines.push(
       `How tagging works: start a message with a harness tag. For example, ${tag} fix the failing test sends that task to ${suggested.name}. blibs types the harness reply back into this chat.`,
       '',
-      `To give it a try do ${tag} hi.`,
+      `To try it, send ${tag} followed by a task.`,
     );
   } else {
     lines.push(

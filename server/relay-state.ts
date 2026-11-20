@@ -1,8 +1,7 @@
 // On-disk relay state.
 //
-// The relay service and the router MCP server read the same state file. This
-// module owns the file shape, its limits, and its parsers, so both processes
-// agree on the data.
+// The relay service owns this state file. This module owns the file shape, its
+// limits, and its parsers.
 import fs from 'node:fs';
 import type { HarnessChoice } from './harness/intro.js';
 
@@ -37,9 +36,7 @@ export interface RelayState {
   threads: string[];
   /** Coding sessions keyed by thread id and project path. */
   sessions: Record<string, string>;
-  /** Session id of the routing agent. One routing agent serves every thread. */
-  routerSessionId?: string;
-  projects: string[];
+  /** Directory whose immediate subfolders are the projects. */
   discoveryRoot: string;
   /** Persisted harness model default. Empty means the harness default. */
   model?: string;
@@ -75,11 +72,6 @@ export function parseSessions(value: unknown): Record<string, string> {
     if (typeof id === 'string' && id) sessions[key.slice(0, SESSION_KEY_LIMIT)] = id.slice(0, SESSION_ID_LIMIT);
   }
   return sessions;
-}
-
-/** Keep one bounded session id. Undefined means no session yet. */
-export function parseSessionId(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.slice(0, SESSION_ID_LIMIT) : undefined;
 }
 
 /** Keep one bounded model id. Undefined means the harness default. */

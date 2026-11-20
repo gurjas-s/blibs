@@ -13,15 +13,15 @@
 // 2. Open the Muse sign-in window and submit the account email.
 // 3. Read the newest Meta code from the Proton inbox and submit it.
 // 4. Send @blibs from the panel and check the generated introduction.
-// 5. Send @opencode hi and check the harness reply header.
-// 6. Drive the authenticated popout Muse chat: /clear, @blibs, @opencode hi,
-//    and one task that the router sends to a project session.
+// 5. Import a provider @opencode hi and check the harness reply header.
+// 6. Ignore a user @opencode tag in the authenticated popout, then list
+//    projects and run a task in the selected project.
 //
-// The sign-in check keeps the deterministic e2e stub. The popout check uses
-// OpenCode and the registered projects, so it can take a few minutes.
+// The sign-in check keeps the deterministic e2e stub. The popout checks use
+// OpenCode and the configured projects directory, so they can take a few minutes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -112,7 +112,6 @@ function relaySkipReason(): string | false {
 }
 
 interface LiveRelaySettings {
-  projects: string[];
   discoveryRoot: string;
   model?: string;
 }
@@ -120,22 +119,14 @@ interface LiveRelaySettings {
 /** Registry and model from the live app state, with the documented defaults as a fallback. */
 function liveRelaySettings(): LiveRelaySettings {
   const settings: LiveRelaySettings = {
-    projects: [
-      path.join(os.homedir(), 'Projects', 'LeetCode-Solutions'),
-      path.join(os.homedir(), 'Projects', 'streaming-simulator'),
-    ],
     discoveryRoot: path.join(os.homedir(), 'Projects'),
     model: process.env.BLIBS_LIVE_MODEL?.trim() || undefined,
   };
   try {
     const state = JSON.parse(readFileSync(LIVE_STATE, 'utf8')) as {
-      projects?: unknown;
       discoveryRoot?: unknown;
       model?: unknown;
     };
-    if (Array.isArray(state.projects) && state.projects.every((entry) => typeof entry === 'string')) {
-      settings.projects = state.projects as string[];
-    }
     if (typeof state.discoveryRoot === 'string' && state.discoveryRoot) settings.discoveryRoot = state.discoveryRoot;
     if (!settings.model && typeof state.model === 'string' && state.model) settings.model = state.model;
   } catch { /* fall back to the documented defaults */ }
@@ -390,6 +381,46 @@ async function sendPopout(
   await sleep(1_000);
 }
 
+/** Reset the Muse context and wait until the vendor and the relay both see it. */
+async function clearMuseContext(
+  app: E2EApp,
+  popout: Page,
+  composer: ReturnType<Page['locator']>,
+): Promise<void> {
+  const initialImports = (await (await fetch(`${app.backendUrl}/api/imports`)).json()) as {
+    imports?: Array<{ text: string }>;
+  };
+  const clearImportsBefore = (initialImports.imports ?? [])
+    .filter((item) => isClearImport(item.text)).length;
+  let cleared = false;
+  for (let attempt = 0; attempt < 3 && !cleared; attempt++) {
+    const clearSentAt = Date.now();
+    const vendorClearBefore = await popout.getByText('Conversation cleared.').count();
+    await sendPopout(popout, composer, '/clear', false);
+    const vendorCleared = await waitFor(
+      'Muse to clear the conversation',
+      async () => ((await popout.getByText('Conversation cleared.').count()) > vendorClearBefore ? true : undefined),
+      30_000,
+      1_000,
+    ).then(() => true).catch(() => false);
+    if (!vendorCleared) continue;
+    cleared = await waitForImport(
+      app,
+      (item) => item.ts >= clearSentAt && isClearImport(item.text),
+      30_000,
+    ).then(async () => {
+      const data = (await (await fetch(`${app.backendUrl}/api/imports`)).json()) as {
+        imports?: Array<{ text: string }>;
+      };
+      const count = (data.imports ?? []).filter((item) => isClearImport(item.text)).length;
+      return count > clearImportsBefore;
+    }).catch(() => false);
+  }
+  assert.ok(cleared, 'The relay did not observe the /clear command. Check the Muse popout and retry.');
+  // Let the first popout scrape settle so old rows do not mask the new triggers.
+  await sleep(15_000);
+}
+
 test(
   'live Muse sign-in with an email code and the @blibs introduction',
   { skip: signInSkipReason() },
@@ -472,13 +503,13 @@ test(
         2_000,
       );
 
-      // One project makes the @opencode task unambiguous.
-      projectDir = mkdtempSync(path.join(tmpdir(), 'blibs-live-project-'));
       discoveryRoot = mkdtempSync(path.join(tmpdir(), 'blibs-live-root-'));
+      projectDir = path.join(discoveryRoot, 'project-alpha');
+      mkdirSync(projectDir);
       const registry = await fetch(`${app.backendUrl}/api/relay/projects`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projects: [projectDir], discoveryRoot }),
+        body: JSON.stringify({ discoveryRoot }),
       });
       assert.equal(registry.status, 200);
 
@@ -536,7 +567,8 @@ test(
       );
       assert.equal(intro.role, 'agent');
       assert.ok(intro.text?.includes('How tagging works:'), 'the reply explains the tags');
-      assert.ok(intro.text?.endsWith('To give it a try do @opencode hi.'), 'the reply ends with the first task');
+      assert.ok(intro.text?.endsWith('To try it, send @opencode followed by a task.'));
+      assert.ok(!/project|\$<project>/i.test(intro.text ?? ''), 'the introduction omits project selection');
 
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
@@ -548,16 +580,32 @@ test(
       assert.ok(existsSync(await app.screenshot('live-intro.png')));
 
       // 2. Muse tags OpenCode. The relay runs the harness and types the reply back.
-      await composer.fill('@opencode hi');
-      await page.getByRole('button', { name: 'Send', exact: true }).click();
+      const replySentAt = Date.now();
+      const providerImport = await fetch(`${app.backendUrl}/api/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{
+            provider: 'muse',
+            role: 'agent',
+            url: 'https://muse.ai/',
+            sourceId: `live-signin-provider-${replySentAt.toString(36)}`,
+            ts: replySentAt,
+            text: '@opencode $project-alpha hi',
+          }],
+        }),
+      });
+      assert.equal(providerImport.status, 200);
       const reply = await waitFor(
         'the harness reply header',
         async () => {
           const data = (await (await fetch(`${app.backendUrl}/api/outbox`)).json()) as {
-            items?: Array<{ text?: string }>;
+            items?: Array<{ text?: string; ts?: number }>;
           };
           return (data.items ?? []).find(
-            (item) => item.text?.startsWith(LIVE_HEADER) && item.text.includes('harness reply: hi'),
+            (item) => (item.ts ?? 0) >= replySentAt
+              && item.text?.startsWith(LIVE_HEADER)
+              && item.text.includes('harness reply: hi'),
           );
         },
         180_000,
@@ -594,145 +642,89 @@ test(
   },
 );
 
+
 test(
-  'live popout: clear, ask blibs, ask without a project, then route one project task',
+  'live popout: ignore a user tag, list projects, and run a selected project task',
   { skip: relaySkipReason() },
   async () => {
     const settings = liveRelaySettings();
-    assert.ok(settings.projects.length >= 2, 'The live check needs at least two registered projects.');
+    assert.ok(existsSync(settings.discoveryRoot), 'The live check needs the configured projects directory.');
     const app = await launch({
       mockLogin: false,
       profileDir: LIVE_PROFILE,
       relayCommand: null,
+      projectsDir: null,
       timeoutMs: 60_000,
     });
     try {
       await completeOnboarding(app.page);
-      const registry = await fetch(`${app.backendUrl}/api/relay/projects`, {
+      const configured = await fetch(app.backendUrl + '/api/relay/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          projects: settings.projects,
           discoveryRoot: settings.discoveryRoot,
           ...(settings.model ? { model: settings.model } : {}),
         }),
       });
-      assert.equal(registry.status, 200);
-
-      await waitFor(
-        'the panel to report the harness toggles',
-        async () => {
-          const status = (await (await fetch(`${app.backendUrl}/api/relay`)).json()) as {
-            harnesses?: Array<{ id: string }>;
-          };
-          return (status.harnesses ?? []).length >= 3 ? true : undefined;
-        },
-        30_000,
-        1_000,
-      );
+      assert.equal(configured.status, 200);
 
       const { popout, composer } = await openMusePopout(app);
+      await clearMuseContext(app, popout, composer);
+      const ignoredAt = Date.now();
+      await sendPopout(popout, composer, '@opencode ignored ' + ignoredAt.toString(36));
+      await sleep(10_000);
+      const afterIgnored = await outboxItems(app);
+      assert.equal(afterIgnored.some((item) => item.ts >= ignoredAt && item.text.startsWith(LIVE_HEADER)), false);
 
-      // 1. Reset the Muse context. Retry until the vendor and the relay both see it.
-      const initialImports = (await (await fetch(`${app.backendUrl}/api/imports`)).json()) as {
-        imports?: Array<{ text: string }>;
+      const importProvider = async (text: string): Promise<void> => {
+        const response = await fetch(app.backendUrl + '/api/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: [{
+            provider: 'muse', role: 'agent', url: 'https://muse.ai/',
+            sourceId: 'live-provider-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+            ts: Date.now(), text,
+          }] }),
+        });
+        assert.equal(response.status, 200);
       };
-      const clearImportsBefore = (initialImports.imports ?? [])
-        .filter((item) => isClearImport(item.text)).length;
-      let cleared = false;
-      for (let attempt = 0; attempt < 3 && !cleared; attempt++) {
-        const clearSentAt = Date.now();
-        const vendorClearBefore = await popout.getByText('Conversation cleared.').count();
-        await sendPopout(popout, composer, '/clear', false);
-        const vendorCleared = await waitFor(
-          'Muse to clear the conversation',
-          async () => ((await popout.getByText('Conversation cleared.').count()) > vendorClearBefore ? true : undefined),
-          30_000,
-          1_000,
-        ).then(() => true).catch(() => false);
-        if (!vendorCleared) continue;
-        cleared = await waitForImport(
-          app,
-          (item) => item.ts >= clearSentAt && isClearImport(item.text),
-          30_000,
-        ).then(async () => {
-          const data = (await (await fetch(`${app.backendUrl}/api/imports`)).json()) as {
-            imports?: Array<{ text: string }>;
-          };
-          const count = (data.imports ?? []).filter((item) => isClearImport(item.text)).length;
-          return count > clearImportsBefore;
-        }).catch(() => false);
-      }
-      assert.ok(cleared, 'The relay did not observe the /clear command. Check the Muse popout and retry.');
-      // Let the first popout scrape settle so old rows do not mask the new triggers.
-      await sleep(15_000);
 
-      // 2. Ask blibs. A new introduction must appear with the dynamic tag hint.
-      const askSentAt = Date.now();
-      const nonce = askSentAt.toString(36);
-      await sendPopout(popout, composer, `@blibs what can you do? ${nonce}`);
-      const intro = await waitForOutbox(
-        app,
-        (item) => item.ts >= askSentAt && item.text.startsWith('blibs introduction'),
-        120_000,
-      ).catch(async (error: unknown) => {
-        await diagnoseLive(app, popout, 'introduction');
-        throw error;
-      });
-      assert.ok(intro.text.includes('How tagging works:'), 'the introduction explains the tags');
-      assert.ok(intro.text.endsWith('To give it a try do @opencode hi.'), 'the introduction suggests the enabled harness');
-      await sleep(5_000);
+      const listSentAt = Date.now();
+      await importProvider('@opencode');
+      const projectList = await waitForOutbox(app, (item) => item.ts >= listSentAt
+        && item.text.startsWith('blibs choices') && item.text.includes('Pick a project for your task:'), 120_000)
+        .catch(async (error: unknown) => {
+          await diagnoseLive(app, popout, 'project list');
+          throw error;
+        });
+      const choice = /^- \$(\S+)/m.exec(projectList.text);
+      assert.ok(choice, 'The project list has a project token.');
+      const token = choice[1];
+      console.log('[live] project choice: ' + token);
+      await sleep(3_000);
 
-      // 3. A task without a project asks which project to use.
-      const hiSentAt = Date.now();
-      await sendPopout(popout, composer, `@opencode hi ${nonce}`);
-      const question = await waitForOutbox(
-        app,
-        (item) => item.ts >= hiSentAt && item.text.includes('Which project'),
-        240_000,
-      ).catch(async (error: unknown) => {
-        await diagnoseLive(app, popout, 'project question');
-        throw error;
-      });
-      assert.ok(question.text.startsWith(LIVE_HEADER), 'the routing question says which harness asked');
-      assert.ok(question.text.includes('Which project'), 'a task without a project asks for one');
-      assert.ok(
-        question.text.includes('LeetCode-Solutions') || question.text.includes('streaming-simulator'),
-        'the question names a registered project',
-      );
+      const runSentAt = Date.now();
+      const nonce = runSentAt.toString(36);
+      await importProvider('@opencode $' + token + ' Reply with exactly: live selection ok ' + nonce);
+      const reply = await waitForOutbox(app, (item) => item.ts >= runSentAt
+        && item.text.startsWith(LIVE_HEADER) && item.text.toLowerCase().includes('live selection ok'), 300_000)
+        .catch(async (error: unknown) => {
+          await diagnoseLive(app, popout, 'selected project run');
+          throw error;
+        });
+      assert.ok(reply.text.toLowerCase().includes('live selection ok'));
+      await waitForOutbox(app, (item) => item.text === reply.text && item.status === 'sent', 120_000);
 
-      // 4. One project task reaches the router, the project agent, and this chat.
-      const taskSentAt = Date.now();
-      await sendPopout(popout, composer, '@opencode tell me whats in LeetCode-Solutions');
-      const reply = await waitForOutbox(
-        app,
-        (item) => item.ts >= taskSentAt
-          && item.text.startsWith(LIVE_HEADER)
-          && item.text.toLowerCase().includes('leetcode'),
-        300_000,
-      ).catch(async (error: unknown) => {
-        await diagnoseLive(app, popout, 'project reply');
-        throw error;
-      });
-      assert.ok(reply.text.startsWith(LIVE_HEADER), 'the header is the first line of the project reply');
-      assert.match(reply.text, /LeetCode-Solutions|0020|README/i, 'the reply describes the project');
-
-      await waitForOutbox(
-        app,
-        (item) => item.text === reply.text && item.status === 'sent',
-        120_000,
-      );
       await popout.bringToFront();
-      const headerLine = popout.getByText(LIVE_HEADER).first();
+      const headerLine = popout.getByText(LIVE_HEADER).last();
       if (await headerLine.isVisible().catch(() => false)) await headerLine.scrollIntoViewIfNeeded();
       await sleep(500);
-      const file = path.join(ARTIFACT_DIR, 'live-popout-relay.png');
+      const file = path.join(ARTIFACT_DIR, 'live-project-selection.png');
       await popout.screenshot({ path: file });
       assert.ok(existsSync(file));
-      console.log(`Screenshot: ${file}`);
+      console.log('Screenshot: ' + file);
     } finally {
       await app.close();
     }
   },
 );
-

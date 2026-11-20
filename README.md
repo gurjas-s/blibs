@@ -62,23 +62,35 @@ under your message flips `Sending…` → `Sent` (or `Not delivered` + Retry).
 The agent's reply syncs back on its own.
 
 **Ask blibs about itself:** tag `@blibs` in a chat. blibs sends one generated
-reply into the conversation and shows it in the panel. The reply lists the
-harnesses, the ones enabled for the assistant, the tagging rule, and a first
-task. It suggests the first enabled harness, for example
-`To give it a try do @opencode hi.` When no harness is enabled, it says to turn
-one on in Connections.
+reply into the conversation and shows it in the panel. The reply explains what
+blibs does, lists the available and enabled harnesses, and explains how to send
+a task with a harness tag. It suggests the first enabled harness. When no
+harness is enabled, it says to turn one on in Connections.
+
+**Choose a project:** tag a harness with a task but no project to get a list of
+folders in the configured projects directory (`~/Projects` by default). The
+reply asks the assistant to pick a project and send `$<project> <task>`. A
+project name in the task also selects that project. blibs reuses one OpenCode
+session for each project in each chat. A `$<project>` token that does not match
+a folder gets a message with the placeholder command
+`blibs new-project <name>`.
 
 **Harness replies:** a reply from a local coding harness starts with
 `Sent from user's harness (<harness name>).` The header shows where the message
-came from. A routing question from the harness uses the same header.
+came from.
 
-The relay uses OpenCode. Set its model with `POST /api/relay/projects` and a
-`model` value in `provider/model` form. Set the project folders with a
-`projects` array. The relay stores both values and passes the model to every
-run. A fresh install starts with `~/Projects/LeetCode-Solutions` and
-`~/Projects/streaming-simulator`. The relay also lists the immediate
-subdirectories of `~/Projects` as candidates. A run that fails posts a short
-failure note into the chat.
+The relay uses OpenCode. It uses the personal OpenCode Go provider with the
+Beam Free model by default. Set another model with `POST /api/relay/projects`
+and a `model` value in `provider/model` form. Set the projects directory with
+the `discoveryRoot` value. The relay uses only its immediate subfolders. A run
+that fails posts a short failure note into the chat.
+
+## Relay logs
+
+Start blibs from a terminal with `npm start` to see the relay logs. Search for
+`blibs-relay` to see whether blibs skipped a request, matched a project,
+started a harness, or queued a reply. Search for `blibs-outbox` to see if the
+app acknowledged a send. The logs omit chat text, prompts, and harness output.
 
 ## Scripts
 
@@ -149,15 +161,18 @@ them. Do not run these checks in CI.
    `tests/e2e/artifacts/live-profile`, so a remembered device works on the next
    run.
 2. **Popout relay check.** It opens the authenticated Muse popout, sends
-   `/clear`, `@blibs`, a task without a project, and one LeetCode task. It uses
-   the installed app profile and runs the real OpenCode model. Set
+   `/clear`, `@blibs`, and a user `@opencode` tag. blibs ignores that user tag.
+   The check then imports provider choice messages to list projects and run a
+   task in the selected project.
+   It uses the installed app profile and runs the real OpenCode model. Set
    `BLIBS_LIVE_PROFILE` to use another profile. The check reads the model and
-   project registry from the app state. Set `BLIBS_LIVE_MODEL` to override the
+   projects directory from the app state. Set `BLIBS_LIVE_MODEL` to override the
    model.
 
 Do not commit the profile, a screenshot of a signed-in session, or a
-credential. The popout check writes `tests/e2e/artifacts/live-popout-relay.png`;
-Git ignores that directory.
+credential. The popout check writes
+`tests/e2e/artifacts/live-project-session-choices.png`; Git ignores that
+directory.
 
 ## Troubleshooting
 
@@ -169,7 +184,7 @@ Git ignores that directory.
 | Blibs: `Backend unreachable` pill | Backend didn't boot with the app — restart; check the terminal for `[blibs] proxy exited` |
 | `EADDRINUSE` on `:5174`/`:8787` in `npm test` | A previous app instance is still running — quit it first |
 | Send stuck on `Sending…` | Session not signed in or page still loading — use Agents, then Retry |
-| Harness run shows `harness exited with code 1` | Use an OpenCode model with credits. Set it with `POST /api/relay/projects` and `{"model":"provider/model"}`. |
+| Harness run shows `harness exited with code 1` | Check the OpenCode model and account limits. Set another model with `POST /api/relay/projects` and `{"model":"provider/model"}`. |
 | Login lost after restart | Partitions persist per OS user; check you didn't clear app data |
 
 ## Limits (honest POC notes)

@@ -6,7 +6,7 @@
 // screenshots to the ignored artifact directory.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Page } from 'playwright-core';
@@ -702,8 +702,8 @@ test(
     assert.ok(app, 'The E2E app must start.');
     const { page } = app;
 
-    const project = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-intro-project-'));
-    const emptyRoot = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-intro-root-'));
+    const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-intro-projects-'));
+    mkdirSync(path.join(projectsDir, 'alpha'));
     try {
       // The panel reports its harness toggles. Muse has Codex off, so the
       // introduction must not list Codex as enabled.
@@ -728,7 +728,7 @@ test(
       const registry = await fetch(`${app.backendUrl}/api/relay/projects`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projects: [project], discoveryRoot: emptyRoot }),
+        body: JSON.stringify({ discoveryRoot: projectsDir }),
       });
       assert.equal(registry.status, 200);
 
@@ -773,7 +773,9 @@ test(
         'a disabled harness is not listed as enabled',
       );
       assert.match(introText, /How tagging works:/);
-      assert.ok(introText.endsWith('To give it a try do @opencode hi.'), 'the reply ends with the first task');
+      assert.match(introText, /sends that task to OpenCode/);
+      assert.doesNotMatch(introText, /project|\$<project>/i);
+      assert.ok(introText.endsWith('To try it, send @opencode followed by a task.'));
       await intro.scrollIntoViewIfNeeded();
       await page.waitForTimeout(300);
       assertImage(await app.screenshot('blibs-intro.png'));
@@ -804,7 +806,7 @@ test(
       // Muse tags OpenCode. The one project resolves and the harness replies.
       await importMuse({
         role: 'agent',
-        text: '@opencode hi',
+        text: '@opencode $alpha hi',
         sourceId: 'e2e-intro-task',
         ts: Date.now(),
       });
@@ -845,101 +847,78 @@ test(
       await page.waitForTimeout(300);
       assertImage(await app.screenshot('harness-reply.png'));
     } finally {
-      rmSync(project, { recursive: true, force: true });
-      rmSync(emptyRoot, { recursive: true, force: true });
+      rmSync(projectsDir, { recursive: true, force: true });
     }
   },
 );
 
 test(
-  'an @opencode request routes through the relay and asks when unclear',
+  'the relay asks Muse to choose a project and runs the selected task',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {
     assert.ok(app, 'The E2E app must start.');
     const { page } = app;
-
-    // Two projects make one task ambiguous, so the routing agent must ask. The
-    // stubbed routing run decides; no work run starts.
-    const projA = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-alpha-'));
-    const projB = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-beta-'));
-    const emptyRoot = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-empty-'));
+    const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-projects-'));
+    const alpha = path.join(projectsDir, 'alpha');
+    const beta = path.join(projectsDir, 'beta');
+    mkdirSync(alpha);
+    mkdirSync(beta);
     try {
-      const registry = await fetch(`${app.backendUrl}/api/relay/projects`, {
+      const configured = await fetch(app.backendUrl + '/api/relay/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projects: [projA, projB], discoveryRoot: emptyRoot }),
+        body: JSON.stringify({ discoveryRoot: projectsDir }),
       });
-      assert.equal(registry.status, 200);
-      const status = (await registry.json()) as { projects?: string[] };
-      assert.equal(status.projects?.length, 2);
+      assert.equal(configured.status, 200);
 
-      const threadId = 'https://muse.ai/chat/e2e-routing';
-      const baseline = await fetch(`${app.backendUrl}/api/import`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: [{
-            provider: 'muse',
-            role: 'user',
-            sourceId: 'e2e-routing-base',
-            threadId,
-            text: 'E2E routing baseline.',
-            ts: Date.now(),
-          }],
-        }),
-      });
-      assert.equal(baseline.status, 200);
-      await page.waitForTimeout(300);
-
-      const task = await fetch(`${app.backendUrl}/api/import`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: [{
-            provider: 'muse',
-            role: 'user',
-            sourceId: 'e2e-routing-task',
-            threadId,
-            text: '@opencode Do the e2e thing',
-            ts: Date.now(),
-          }],
-        }),
-      });
-      assert.equal(task.status, 200);
-
-      // The routing agent asks once and no work run starts.
-      let clarification = '';
-      const deadline = Date.now() + 15_000;
-      while (Date.now() < deadline) {
-        const outbox = (await (await fetch(`${app.backendUrl}/api/outbox`)).json()) as {
-          items?: Array<{ provider?: string; text?: string; threadId?: string }>;
-        };
-        const hit = (outbox.items ?? []).find((item) => item.text?.includes('Which project'));
-        if (hit) {
-          clarification = hit.text ?? '';
-          assert.equal(hit.provider, 'muse');
-          assert.equal(hit.threadId, threadId);
-          break;
+      const threadId = 'https://muse.ai/chat/e2e-project-choice';
+      let ts = Date.now();
+      const importMuse = async (role: string, text: string, sourceId: string): Promise<void> => {
+        ts += 1000;
+        const response = await fetch(app.backendUrl + '/api/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: [{ provider: 'muse', role, text, url: threadId, sourceId, ts }] }),
+        });
+        assert.equal(response.status, 200);
+      };
+      const waitForOutbox = async (match: (text: string) => boolean): Promise<string> => {
+        const deadline = Date.now() + 20_000;
+        while (Date.now() < deadline) {
+          const data = await (await fetch(app.backendUrl + '/api/outbox')).json() as {
+            items?: Array<{ text?: string; threadId?: string }>;
+          };
+          const hit = (data.items ?? []).find((item) => item.threadId === threadId && item.text && match(item.text));
+          if (hit?.text) return hit.text;
+          await page.waitForTimeout(250);
         }
-        await page.waitForTimeout(250);
-      }
-      assert.ok(clarification.includes('Which project'), 'The relay asks for the project.');
-      assert.ok(!clarification.includes('@opencode'), 'The question never retriggers.');
+        throw new Error('The relay did not queue the expected reply.');
+      };
 
-      // The panel shows the imported @opencode request in the Muse thread.
+      await importMuse('user', 'Project choice baseline.', 'e2e-project-base');
+      await page.waitForTimeout(200);
+      await importMuse('agent', '@opencode Build a small app', 'e2e-project-list');
+      const projectList = await waitForOutbox((text) => text.startsWith('blibs choices') && text.includes('Pick a project for your task:'));
+      assert.match(projectList, /Pick a project for your task:/);
+      assert.match(projectList, /- \$alpha/);
+      assert.match(projectList, /- \$beta/);
+      assert.match(projectList, /Reply with @opencode \$<project> <task>/);
+      assert.ok(!projectList.includes(projectsDir), 'The project list does not expose filesystem paths.');
+
+      await importMuse('agent', '@opencode $alpha Build a small app', 'e2e-project-run');
+      const reply = await waitForOutbox((text) => text.startsWith("Sent from user's harness (OpenCode)."));
+      assert.match(reply, /harness reply: Build a small app/);
+
       await completeOnboarding(page);
       await seedChats(page);
       await selectAgent(page, 'Muse');
-      const trigger = page.getByText('@opencode Do the e2e thing');
-      await trigger.first().waitFor({ timeout: 20_000 });
-      assert.ok((await trigger.count()) >= 1);
-      await trigger.first().scrollIntoViewIfNeeded();
+      const choiceBubble = page.locator('.msg.agent', { hasText: 'blibs choices' }).first();
+      await choiceBubble.waitFor({ state: 'visible', timeout: 20_000 });
+      await choiceBubble.scrollIntoViewIfNeeded();
       await page.waitForTimeout(300);
-      assertImage(await app.screenshot('relay-routing.png'));
+      assertImage(await app.screenshot('project-selection.png'));
     } finally {
-      rmSync(projA, { recursive: true, force: true });
-      rmSync(projB, { recursive: true, force: true });
-      rmSync(emptyRoot, { recursive: true, force: true });
+      rmSync(projectsDir, { recursive: true, force: true });
     }
   },
 );

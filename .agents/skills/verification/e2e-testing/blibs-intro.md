@@ -16,7 +16,8 @@ Shared setup: see [README.md](README.md).
 - Use the shared mock command. It sets `BLIBS_MOCK_LOGIN=1`.
 - The relay uses a temporary data directory and the fake harness from
   `tests/e2e/harness.ts`. No model runs.
-- One project makes the `@opencode hi` task unambiguous.
+- Set `BLIBS_RELAY_PROJECTS_DIR` to a temporary directory with one folder
+  named `alpha`.
 
 ## Test steps
 
@@ -33,10 +34,12 @@ Shared setup: see [README.md](README.md).
    Expected: one new Muse message starts with `blibs introduction`. It lists
    `Available harnesses: Claude Code, Codex, OpenCode.` and
    `Enabled for this assistant: Claude Code, OpenCode.` It explains the tag
-   rule. It ends with `To give it a try do @opencode hi.`
+   rule and says that a tagged task goes to the selected harness. It does not
+   describe project selection. It ends with
+   `To try it, send @opencode followed by a task.`
 
 5. Turn `OpenCode` off and turn `Codex` on for Muse. Send `@blibs again`.
-   Expected: the new reply suggests `To give it a try do @codex hi.`
+   Expected: the new reply suggests `To try it, send @codex followed by a task.`
 
 6. Turn every harness off for Muse. Send `@blibs again`.
    Expected: the reply says no harness is enabled and to turn one on in
@@ -46,7 +49,7 @@ Shared setup: see [README.md](README.md).
    Expected: a second introduction reply appears. The reply to the first
    message does not trigger itself.
 
-8. Use the panel composer to send `@opencode hi`.
+8. Use the panel composer to send `@opencode $alpha hi`.
    Expected: the relay runs the fake harness. The reply in the chat starts with
    `Sent from user's harness (OpenCode).` The text `harness reply: hi` follows
    the header.
@@ -62,7 +65,7 @@ Shared setup: see [README.md](README.md).
 - The reply suggests a disabled harness.
 - A reply with no enabled harness has a first-task line.
 - A harness reply has no header, or the header is not the first line.
-- A routing question has no harness header.
+- A project selection message has no harness header.
 - The relay starts a harness run for the introduction reply.
 - The relay status has an empty `harnesses` list after the panel loads.
 
@@ -79,23 +82,17 @@ Artifacts: `tests/e2e/artifacts/blibs-intro.png` and
 
 - `tests/e2e/smoke.spec.ts`, test
   `an @blibs mention shows the introduction and a harness reply says which harness sent it`
-  covers the mention, the harness list, the disabled row, the final line, and
-  the header.
-- `tests/relay.test.ts`, tests
-  `an @blibs mention returns one introduction reply in the chat`,
-  `the panel report controls the harness list in the introduction`,
-  `a cleared chat can ask blibs again without replaying old tasks`, and
-  `the @blibs trigger, introduction text, and harness header stay stable`
-  cover the reply, the deduplication, the harness report, the dynamic tag, the
-  clear reset, and the text.
+  covers the mention, the harness list, the disabled row, the tag instructions,
+  and the header.
+- `tests/relay.test.ts`, test `project replies ask the assistant to choose,
+  and the blibs introduction explains routing`, covers the updated
+  introduction and project reply.
 - `tests/e2e/live-login.spec.ts`, test
   `live Muse sign-in with an email code and the @blibs introduction` is an
   opt-in live check. It needs `BLIBS_LIVE_LOGIN=1` and account values in the
   ignored `.env` file. It does not run in CI.
-- `tests/e2e/live-login.spec.ts`, test
-  `live popout: clear, ask blibs, ask without a project, then route one project task`
-  is an opt-in live check. It uses the authenticated app profile, the real
-  OpenCode model, and the registered projects. It does not run in CI.
+- The project selection check is in
+  [project-selection.md](project-selection.md).
 
 Run the mock checks with:
 

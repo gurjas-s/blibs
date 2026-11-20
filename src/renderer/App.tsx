@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { PROVIDERS, SEED_AGENTS, providerFor } from './providers';
 import type { Agent, ChatMessage, LoginStatus } from './types';
-import { cleanImportText, isIntroText } from './text';
+import { cleanImportText, dedupeReplyMessages, isChoicesText, isHarnessReplyText, isIntroText } from './text';
 import {
   applyTheme,
   readThemePreference,
@@ -25,8 +25,8 @@ import {
   cancelVendorLogin,
   checkVendorLogin,
   desktopLoginAvailable,
-  fetchLoginStatus,
   openVendorLogin,
+  probeVendorLogin,
   subscribeLoginStatus,
 } from './desktop';
 import {
@@ -132,7 +132,12 @@ function clock(ts: number): string {
 
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>(() => load(LS_AGENTS, SEED_AGENTS));
-  const [messages, setMessages] = useState<Record<string, ChatMessage[]>>(() => load(LS_MSGS, {}));
+  const [messages, setMessages] = useState<Record<string, ChatMessage[]>>(() => {
+    const loaded = load<Record<string, ChatMessage[]>>(LS_MSGS, {});
+    const next: Record<string, ChatMessage[]> = {};
+    for (const [agentId, list] of Object.entries(loaded)) next[agentId] = dedupeReplyMessages(list);
+    return next;
+  });
   const [activeId, setActiveId] = useState(agents[0]?.id ?? 'muse');
   const [query, setQuery] = useState('');
   const [view, setView] = useState<View>('chat');
@@ -229,10 +234,12 @@ export default function App() {
     setLoginStatuses((current) => ({ ...current, [status.vendorId]: status }));
   }), []);
 
+  // Read the saved vendor sessions at startup. A session from an earlier run
+  // counts as signed in, so the composer is enabled without a manual check.
   useEffect(() => {
     if (!desktopLoginAvailable()) return;
     for (const vendor of PROVIDERS) {
-      fetchLoginStatus(vendor.id)
+      probeVendorLogin(vendor.id)
         .then((status) => {
           if (status) {
             setLoginStatuses((current) => ({ ...current, [status.vendorId]: status }));
@@ -301,17 +308,27 @@ export default function App() {
         if (!target) continue;
         const role = it.role === 'agent' ? 'agent' : 'user';
         const intro = isIntroText(text);
+        const choices = isChoicesText(text);
+        const harnessReply = isHarnessReplyText(text);
+        const collapsed = (value: string): string => value.replace(/\s+/g, ' ').trim();
         const list = next[target] ?? [];
         const existing = list.find(m => m.historyId === it.id) ?? list.find(m => {
           // An introduction is also delivered to the vendor chat. Its echo
           // must not add a second bubble.
-          if (intro && isIntroText(cleanImportText(m.text)) && cleanImportText(m.text) === text) return true;
+          if (intro && isIntroText(cleanImportText(m.text)) && collapsed(cleanImportText(m.text)) === collapsed(text)) return true;
+          // A choice list may lose its line breaks in the vendor chat. Compare
+          // the collapsed text so the echo does not add a second bubble.
+          if (choices && isChoicesText(cleanImportText(m.text)) && collapsed(cleanImportText(m.text)) === collapsed(text)) return true;
+          // A harness reply can be scraped from several rendered positions.
+          if (harnessReply && isHarnessReplyText(cleanImportText(m.text)) && collapsed(cleanImportText(m.text)) === collapsed(text)) return true;
           if (m.historyId || m.role !== role || cleanImportText(m.text) !== text) return false;
           // Imports use first-observed times. Delivery may occur long after a send or retry.
           return m.ts === it.ts || (m.via === 'tab' && it.ts >= m.ts);
         });
         if (existing) {
           if (intro && isIntroText(cleanImportText(existing.text))) continue;
+          if (choices && isChoicesText(cleanImportText(existing.text))) continue;
+          if (harnessReply && isHarnessReplyText(cleanImportText(existing.text))) continue;
           if (existing.historyId !== it.id || existing.text !== text || existing.role !== role) {
             next[target] = list.map(m => m.id === existing.id ? { ...m, historyId: it.id, text, role } : m);
             merged++;
@@ -324,11 +341,11 @@ export default function App() {
             id: `history:${it.id}`,
             historyId: it.id,
             agentId: target,
-            role: intro ? 'agent' : role,
+            role: intro || choices ? 'agent' : role,
             text,
             ts: Number(it.ts) || Date.now(),
             source: 'desktop',
-            ...(intro ? { senderName: 'blibs' } : {}),
+            ...(intro || choices ? { senderName: 'blibs' } : {}),
           },
         ];
         merged++;

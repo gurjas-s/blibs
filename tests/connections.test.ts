@@ -112,6 +112,26 @@ test('resolveSetupStatus uses the desktop login status when it exists', () => {
     'connected',
     'A closed attempt must not clear a connected session.',
   );
+  assert.equal(
+    resolveSetupStatus(connectionFor(connected, 'muse'), {
+      vendorId: 'muse',
+      phase: 'loading',
+      message: '',
+      mock: true,
+    }),
+    'connected',
+    'A loading status is not an answer and must keep a connected session.',
+  );
+  assert.equal(
+    resolveSetupStatus(connectionFor(connected, 'muse'), {
+      vendorId: 'muse',
+      phase: 'opening',
+      message: '',
+      mock: true,
+    }),
+    'connected',
+    'An opening status is not an answer and must keep a connected session.',
+  );
   assert.equal(resolveSetupStatus(connectionFor(connected, 'muse'), undefined), 'connected');
 });
 
