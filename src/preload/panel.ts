@@ -28,6 +28,7 @@ interface DesktopLoginApi {
   cancel: (vendorId: string) => Promise<LoginStatus>;
   check: (vendorId: string) => Promise<LoginStatus>;
   status: (vendorId: string) => Promise<LoginStatus | null>;
+  probe: (vendorId: string) => Promise<LoginStatus | null>;
   onStatus: (listener: (status: LoginStatus) => void) => () => void;
 }
 
@@ -36,6 +37,7 @@ const login: DesktopLoginApi = {
   cancel: (vendorId) => ipcRenderer.invoke('blibs:login:cancel', vendorId) as Promise<LoginStatus>,
   check: (vendorId) => ipcRenderer.invoke('blibs:login:check', vendorId) as Promise<LoginStatus>,
   status: (vendorId) => ipcRenderer.invoke('blibs:login:status', vendorId) as Promise<LoginStatus | null>,
+  probe: (vendorId) => ipcRenderer.invoke('blibs:login:probe', vendorId) as Promise<LoginStatus | null>,
   onStatus: (listener) => {
     const handler = (_event: IpcRendererEvent, status: LoginStatus): void => listener(status);
     ipcRenderer.on('blibs:login:status', handler);

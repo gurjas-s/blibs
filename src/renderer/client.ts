@@ -172,20 +172,19 @@ export async function fetchHistoryItem(id: string): Promise<HistoryMessage> {
   return data.item;
 }
 
-/** Harness defaults and the project registry behind a relay run. */
+/** Harness defaults and the projects directory behind a relay run. */
 export interface RelayStatus {
   enabled: boolean;
   provider: string;
   harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
   /** Harness rows that the introduction reply lists. */
   harnesses: Array<{ id: string; name: string; enabled: boolean }>;
-  projects: string[];
   discoveryRoot: string;
   pending: number;
   sessions: number;
 }
 
-/** Read the relay harness defaults and the project registry. */
+/** Read the relay harness defaults and the projects directory. */
 export function fetchRelayStatus(signal?: AbortSignal): Promise<RelayStatus> {
   return request<RelayStatus>('/api/relay', { signal });
 }
@@ -201,9 +200,9 @@ export function updateRelayHarnesses(
   });
 }
 
-/** Replace the project registry. Omit a field to keep its value. */
+/** Set the projects directory and relay model. Omit a field to keep its value. */
 export function updateRelayProjects(
-  body: { projects?: string[]; discoveryRoot?: string; model?: string | null },
+  body: { discoveryRoot?: string; model?: string | null },
 ): Promise<RelayStatus> {
   return request<RelayStatus>('/api/relay/projects', {
     method: 'POST',

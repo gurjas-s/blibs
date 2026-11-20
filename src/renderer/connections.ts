@@ -225,15 +225,17 @@ export function setAssistantSetup(
 
 /**
  * Derive the setup state from the desktop login status when a status exists.
- * A signed-in session is connected. An unfinished attempt is setup. With no
- * status, the saved state is the best known value.
+ * A signed-in session is connected. An unfinished attempt is setup. A status
+ * that is still opening or loading is not an answer, so the saved state wins.
  */
 export function resolveSetupStatus(
   connection: AssistantConnection,
   status: LoginStatus | undefined,
 ): AssistantSetup {
   if (status?.phase === 'signed-in') return 'connected';
-  if (status && status.phase !== 'closed') return 'setup';
+  if (status && status.phase !== 'closed' && status.phase !== 'opening' && status.phase !== 'loading') {
+    return 'setup';
+  }
   return connection.setup;
 }
 

@@ -24,7 +24,7 @@ import type { HarnessChoice } from './harness/intro.js';
 import { HARNESS_TEXT_LIMIT, RELAY_HARNESS_LIMIT, RELAY_MODEL_LIMIT } from './relay-state.js';
 import { harnessKind } from './harness/registry.js';
 import { USER_ECHO_LABEL } from './harness/mention.js';
-import { PROJECT_LIMIT, PROJECT_PATH_LIMIT } from './harness/router.js';
+import { PROJECT_PATH_LIMIT } from './harness/projects.js';
 
 const PORT = Number(process.env.PROXY_PORT || 8787);
 const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -119,7 +119,6 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
       command: relayConfig.command,
       cwd: relayConfig.cwd,
       timeoutMs: relayConfig.timeoutMs,
-      sessionListCommand: relayConfig.sessionListCommand,
     }),
     stateDir: dataDir,
     enqueue: (provider, text, threadId) => { enqueueOutbox(provider, text, threadId); },
@@ -187,11 +186,6 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
       if (req.url === '/api/relay/projects' && req.method === 'POST') {
         let payload: Record<string, unknown>;
         try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
-        const projects = payload.projects;
-        if (projects !== undefined && (!Array.isArray(projects) || projects.length > PROJECT_LIMIT
-          || projects.some((entry) => typeof entry !== 'string' || !entry.trim() || entry.length > PROJECT_PATH_LIMIT))) {
-          return send(res, 400, { error: `projects must be an array of 0–${PROJECT_LIMIT} paths` });
-        }
         const discoveryRoot = payload.discoveryRoot;
         if (discoveryRoot !== undefined && (typeof discoveryRoot !== 'string' || !discoveryRoot.trim() || discoveryRoot.length > PROJECT_PATH_LIMIT)) {
           return send(res, 400, { error: 'discoveryRoot must be a path' });
@@ -200,10 +194,8 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         if (model !== undefined && model !== null && (typeof model !== 'string' || !model.trim() || model.length > RELAY_MODEL_LIMIT)) {
           return send(res, 400, { error: 'model must be a provider/model id' });
         }
-        const current = relay.registry();
-        return send(res, 200, relay.updateRegistry(
-          projects === undefined ? current.projects : projects as string[],
-          typeof discoveryRoot === 'string' ? discoveryRoot : current.discoveryRoot,
+        return send(res, 200, relay.updateProjects(
+          typeof discoveryRoot === 'string' ? discoveryRoot : undefined,
           model === undefined ? undefined : model === null ? null : (model as string),
         ));
       }

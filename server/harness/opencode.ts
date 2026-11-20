@@ -1,24 +1,16 @@
 import { spawn } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
 import { OPENCODE_MENTION } from './mention.js';
 import type {
   Harness,
-  HarnessMcpServer,
   HarnessResult,
   HarnessRun,
-  HarnessSession,
   HarnessStartOptions,
 } from './types.js';
 
 export const HARNESS_OUTPUT_LIMIT = 64 * 1024;
 /** Default opencode command. The relay uses it unless a config overrides it. */
 export const OPENCODE_COMMAND = 'opencode run';
-/** Default command that lists the sessions of one project. */
-export const OPENCODE_SESSION_LIST_COMMAND = 'opencode session list --format json --max-count 50';
 const KILL_GRACE_MS = 2000;
-const SESSION_OUTPUT_LIMIT = 256 * 1024;
-const SESSION_TIMEOUT_MS = 20_000;
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
 
 export interface OpenCodeHarnessOptions {
@@ -26,7 +18,6 @@ export interface OpenCodeHarnessOptions {
   cwd: string;
   timeoutMs: number;
   maxOutputBytes?: number;
-  sessionListCommand?: string;
 }
 
 export function splitCommand(value: string): string[] {
@@ -45,26 +36,6 @@ export function splitCommand(value: string): string[] {
 
 function plainText(value: string): string {
   return value.replace(ANSI_SEQUENCE, '').trim();
-}
-
-/** OpenCode reads `opencode.json` from the run directory and connects to every local MCP server in it. */
-const MCP_CONFIG_FILE = 'opencode.json';
-
-function mcpConfig(servers: HarnessMcpServer[]): string {
-  const entries: Record<string, { type: string; command: string[] }> = {};
-  for (const server of servers) entries[server.name] = { type: 'local', command: [...server.command] };
-  return JSON.stringify({ mcp: { servers: entries } }, null, 2);
-}
-
-/**
- * Write the MCP server config for one run. Only runs that request servers
- * write the file, and only the routing runs request them, so the write never
- * touches a user project directory.
- */
-function writeMcpConfig(cwd: string, servers: HarnessMcpServer[]): void {
-  try {
-    fs.writeFileSync(path.join(cwd, MCP_CONFIG_FILE), mcpConfig(servers));
-  } catch { /* the run proceeds; the agent reports the missing tools */ }
 }
 
 function hasSessionFlag(args: string[]): boolean {
@@ -96,34 +67,6 @@ function killTree(child: ReturnType<typeof spawn>): void {
   }
 }
 
-/** Read the JSON array from a session list. A log prefix is allowed. */
-function parseSessionList(output: string): HarnessSession[] {
-  let parsed: unknown;
-  for (let start = output.indexOf('['); start !== -1; start = output.indexOf('[', start + 1)) {
-    const end = output.lastIndexOf(']');
-    if (end <= start) break;
-    try {
-      parsed = JSON.parse(output.slice(start, end + 1));
-      break;
-    } catch { /* try the next array start */ }
-  }
-  if (!Array.isArray(parsed)) throw new Error('session list returned no JSON array');
-  const sessions: HarnessSession[] = [];
-  for (const entry of parsed) {
-    if (!entry || typeof entry !== 'object') continue;
-    const raw = entry as Record<string, unknown>;
-    if (typeof raw.id !== 'string') continue;
-    const id = raw.id.trim();
-    if (!/^[A-Za-z0-9._-]{1,100}$/.test(id)) continue;
-    const session: HarnessSession = { id };
-    if (typeof raw.title === 'string' && raw.title.trim()) session.title = raw.title.trim().slice(0, 200);
-    if (typeof raw.updated === 'number' && Number.isFinite(raw.updated)) session.updated = raw.updated;
-    sessions.push(session);
-    if (sessions.length >= 50) break;
-  }
-  return sessions;
-}
-
 export class OpenCodeHarness implements Harness {
   readonly id = 'opencode';
   readonly mention = OPENCODE_MENTION;
@@ -132,14 +75,12 @@ export class OpenCodeHarness implements Harness {
   private readonly cwd: string;
   private readonly timeoutMs: number;
   private readonly maxOutputBytes: number;
-  private readonly sessionListCommand: string;
 
   constructor(options: OpenCodeHarnessOptions) {
     this.command = options.command;
     this.cwd = options.cwd;
     this.timeoutMs = options.timeoutMs;
     this.maxOutputBytes = options.maxOutputBytes ?? HARNESS_OUTPUT_LIMIT;
-    this.sessionListCommand = options.sessionListCommand ?? OPENCODE_SESSION_LIST_COMMAND;
   }
 
   start(prompt: string, options?: HarnessStartOptions | string): HarnessRun {
@@ -153,7 +94,6 @@ export class OpenCodeHarness implements Harness {
     if (run.sessionId && !hasSessionFlag(finalArgs)) finalArgs.push('--session', run.sessionId);
     if (run.model && !hasModelFlag(finalArgs)) finalArgs.push('--model', run.model);
     finalArgs.push(prompt);
-    if (run.mcp?.length) writeMcpConfig(cwd, run.mcp);
 
     let child: ReturnType<typeof spawn>;
     try {
@@ -216,57 +156,5 @@ export class OpenCodeHarness implements Harness {
     });
 
     return { promise, kill: () => killTree(child) };
-  }
-
-  async listSessions(cwd: string): Promise<HarnessSession[]> {
-    const command = splitCommand(this.sessionListCommand);
-    if (!command.length) throw new Error('session list command is empty');
-    const [file, ...args] = command;
-    const timeoutMs = Math.min(this.timeoutMs, SESSION_TIMEOUT_MS);
-    const output = await new Promise<string>((resolve, reject) => {
-      let child: ReturnType<typeof spawn>;
-      try {
-        child = spawn(file, args, {
-          cwd,
-          shell: false,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true,
-          detached: process.platform !== 'win32',
-          env: { ...process.env, PWD: cwd },
-        });
-      } catch (error) {
-        reject(new Error(`session list could not start: ${(error as Error).message}`));
-        return;
-      }
-      let text = '';
-      let settled = false;
-      const finish = (error?: string, value?: string): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (error) reject(new Error(error));
-        else resolve(value ?? '');
-      };
-      const timer = setTimeout(() => {
-        killTree(child);
-        finish(`session list timed out after ${timeoutMs} ms`);
-      }, timeoutMs);
-      child.stdout?.setEncoding('utf8');
-      child.stdout?.on('data', (chunk: string) => {
-        if (settled) return;
-        text += chunk;
-        if (text.length > SESSION_OUTPUT_LIMIT) {
-          killTree(child);
-          finish(`session list output exceeded ${SESSION_OUTPUT_LIMIT} bytes`);
-        }
-      });
-      child.stderr?.resume();
-      child.once('error', (error) => finish(`session list could not start: ${error.message}`));
-      child.once('close', (code) => {
-        if (code !== 0) finish(`session list exited with code ${code ?? 'unknown'}`);
-        else finish(undefined, text);
-      });
-    });
-    return parseSessionList(output);
   }
 }

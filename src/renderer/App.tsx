@@ -25,8 +25,8 @@ import {
   cancelVendorLogin,
   checkVendorLogin,
   desktopLoginAvailable,
-  fetchLoginStatus,
   openVendorLogin,
+  probeVendorLogin,
   subscribeLoginStatus,
 } from './desktop';
 import {
@@ -234,10 +234,12 @@ export default function App() {
     setLoginStatuses((current) => ({ ...current, [status.vendorId]: status }));
   }), []);
 
+  // Read the saved vendor sessions at startup. A session from an earlier run
+  // counts as signed in, so the composer is enabled without a manual check.
   useEffect(() => {
     if (!desktopLoginAvailable()) return;
     for (const vendor of PROVIDERS) {
-      fetchLoginStatus(vendor.id)
+      probeVendorLogin(vendor.id)
         .then((status) => {
           if (status) {
             setLoginStatuses((current) => ({ ...current, [status.vendorId]: status }));

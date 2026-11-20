@@ -150,16 +150,21 @@ function classifyUrl(vendor: LoginVendor, url: string): LoginStatus {
   );
 }
 
+/** Cookie name parts that mark a signed-in vendor session. */
+const SESSION_COOKIE = /(session|sess|auth|token|sid|login|user)/i;
+
+/** True when the persistent partition holds a vendor session cookie. */
+async function hasSessionCookie(vendor: LoginVendor): Promise<boolean> {
+  const host = new URL(vendor.url).hostname.replace(/^www\./, '');
+  const cookies = await session.fromPartition(vendor.partition).cookies.get({ domain: host });
+  return cookies.some((cookie) => SESSION_COOKIE.test(cookie.name));
+}
+
 /** Read cookies after a page load. A vendor session cookie means sign-in worked. */
 async function inspectLogin(vendor: LoginVendor, url: string): Promise<LoginStatus> {
   if (url && !isLoginPath(url)) {
     try {
-      const host = new URL(vendor.url).hostname.replace(/^www\./, '');
-      const cookies = await session.fromPartition(vendor.partition).cookies.get({ domain: host });
-      const hasSession = cookies.some((cookie) =>
-        /(session|auth|token|sid|login|user)/i.test(cookie.name),
-      );
-      if (hasSession) {
+      if (await hasSessionCookie(vendor)) {
         return statusFor(vendor, 'signed-in', `Signed in to ${vendor.name}. The session stays on this device.`);
       }
     } catch {
@@ -167,6 +172,24 @@ async function inspectLogin(vendor: LoginVendor, url: string): Promise<LoginStat
     }
   }
   return classifyUrl(vendor, url);
+}
+
+/**
+ * Read the vendor session without opening a window. The panel calls this at
+ * startup, so a session from an earlier run counts as signed in. A vendor that
+ * stores its session outside a cookie returns null, and the saved state wins.
+ */
+export async function probeVendorLogin(vendor: LoginVendor): Promise<LoginStatus | null> {
+  if (MOCK_LOGIN) return statuses.get(vendor.id) ?? null;
+  try {
+    if (await hasSessionCookie(vendor)) {
+      return statusFor(vendor, 'signed-in', `Signed in to ${vendor.name}. The session stays on this device.`);
+    }
+  } catch {
+    // The cookie store is not ready. Keep the last known status.
+    return statuses.get(vendor.id) ?? null;
+  }
+  return null;
 }
 
 function mockOpen(vendor: LoginVendor): LoginStatus {
@@ -190,16 +213,16 @@ function mockOpen(vendor: LoginVendor): LoginStatus {
 
 /** Open a vendor sign-in window. The tray menu and the panel use this path. */
 export function openVendorLogin(vendor: LoginVendor, source?: string, preload?: string): LoginStatus {
-  const attempt = attemptSeq++;
-  attempts.set(vendor.id, attempt);
-  clearMockTimers(vendor.id);
-  clearPollTimer(vendor.id);
-
   const existing = windows.get(vendor.id);
   if (existing && !existing.isDestroyed()) {
     existing.focus();
     return statuses.get(vendor.id) ?? statusFor(vendor, 'loading', `The ${vendor.name} sign-in window is open.`);
   }
+
+  const attempt = attemptSeq++;
+  attempts.set(vendor.id, attempt);
+  clearMockTimers(vendor.id);
+  clearPollTimer(vendor.id);
 
   if (MOCK_LOGIN) return mockOpen(vendor);
 

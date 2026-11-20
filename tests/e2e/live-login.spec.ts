@@ -15,13 +15,13 @@
 // 4. Send @blibs from the panel and check the generated introduction.
 // 5. Import a provider @opencode hi and check the harness reply header.
 // 6. Ignore a user @opencode tag in the authenticated popout, then list
-//    projects and sessions, start a new session, and list the home projects.
+//    projects and run a task in the selected project.
 //
 // The sign-in check keeps the deterministic e2e stub. The popout checks use
-// OpenCode and the registered projects, so they can take a few minutes.
+// OpenCode and the configured projects directory, so they can take a few minutes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -112,7 +112,6 @@ function relaySkipReason(): string | false {
 }
 
 interface LiveRelaySettings {
-  projects: string[];
   discoveryRoot: string;
   model?: string;
 }
@@ -120,22 +119,14 @@ interface LiveRelaySettings {
 /** Registry and model from the live app state, with the documented defaults as a fallback. */
 function liveRelaySettings(): LiveRelaySettings {
   const settings: LiveRelaySettings = {
-    projects: [
-      path.join(os.homedir(), 'Projects', 'LeetCode-Solutions'),
-      path.join(os.homedir(), 'Projects', 'streaming-simulator'),
-    ],
     discoveryRoot: path.join(os.homedir(), 'Projects'),
     model: process.env.BLIBS_LIVE_MODEL?.trim() || undefined,
   };
   try {
     const state = JSON.parse(readFileSync(LIVE_STATE, 'utf8')) as {
-      projects?: unknown;
       discoveryRoot?: unknown;
       model?: unknown;
     };
-    if (Array.isArray(state.projects) && state.projects.every((entry) => typeof entry === 'string')) {
-      settings.projects = state.projects as string[];
-    }
     if (typeof state.discoveryRoot === 'string' && state.discoveryRoot) settings.discoveryRoot = state.discoveryRoot;
     if (!settings.model && typeof state.model === 'string' && state.model) settings.model = state.model;
   } catch { /* fall back to the documented defaults */ }
@@ -512,13 +503,13 @@ test(
         2_000,
       );
 
-      // One project makes the @opencode task unambiguous.
-      projectDir = mkdtempSync(path.join(tmpdir(), 'blibs-live-project-'));
       discoveryRoot = mkdtempSync(path.join(tmpdir(), 'blibs-live-root-'));
+      projectDir = path.join(discoveryRoot, 'project-alpha');
+      mkdirSync(projectDir);
       const registry = await fetch(`${app.backendUrl}/api/relay/projects`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projects: [projectDir], discoveryRoot }),
+        body: JSON.stringify({ discoveryRoot }),
       });
       assert.equal(registry.status, 200);
 
@@ -576,7 +567,8 @@ test(
       );
       assert.equal(intro.role, 'agent');
       assert.ok(intro.text?.includes('How tagging works:'), 'the reply explains the tags');
-      assert.ok(intro.text?.endsWith('To give it a try do @opencode.'), 'the reply ends with the project list request');
+      assert.ok(intro.text?.endsWith('To try it, send @opencode followed by a task.'));
+      assert.ok(!/project|\$<project>/i.test(intro.text ?? ''), 'the introduction omits project selection');
 
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
@@ -599,7 +591,7 @@ test(
             url: 'https://muse.ai/',
             sourceId: `live-signin-provider-${replySentAt.toString(36)}`,
             ts: replySentAt,
-            text: '@opencode hi',
+            text: '@opencode $project-alpha hi',
           }],
         }),
       });
@@ -652,143 +644,87 @@ test(
 
 
 test(
-  'live popout: ignore a user tag, list projects, list sessions, and start a new session',
+  'live popout: ignore a user tag, list projects, and run a selected project task',
   { skip: relaySkipReason() },
   async () => {
     const settings = liveRelaySettings();
-    assert.ok(settings.projects.length >= 1, 'The live check needs at least one registered project.');
+    assert.ok(existsSync(settings.discoveryRoot), 'The live check needs the configured projects directory.');
     const app = await launch({
       mockLogin: false,
       profileDir: LIVE_PROFILE,
       relayCommand: null,
-      searchRoot: null,
+      projectsDir: null,
       timeoutMs: 60_000,
     });
     try {
       await completeOnboarding(app.page);
-      const registry = await fetch(`${app.backendUrl}/api/relay/projects`, {
+      const configured = await fetch(app.backendUrl + '/api/relay/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          projects: settings.projects,
           discoveryRoot: settings.discoveryRoot,
           ...(settings.model ? { model: settings.model } : {}),
         }),
       });
-      assert.equal(registry.status, 200);
+      assert.equal(configured.status, 200);
 
       const { popout, composer } = await openMusePopout(app);
       await clearMuseContext(app, popout, composer);
-
-      // A user tag is ignored. Only the provider can send harness commands.
       const ignoredAt = Date.now();
-      await sendPopout(popout, composer, `@opencode ignored ${ignoredAt.toString(36)}`);
+      await sendPopout(popout, composer, '@opencode ignored ' + ignoredAt.toString(36));
       await sleep(10_000);
       const afterIgnored = await outboxItems(app);
-      assert.equal(
-        afterIgnored.some((item) => item.ts >= ignoredAt && item.text.startsWith(LIVE_HEADER)),
-        false,
-        'A user @opencode tag starts no harness run',
-      );
+      assert.equal(afterIgnored.some((item) => item.ts >= ignoredAt && item.text.startsWith(LIVE_HEADER)), false);
 
       const importProvider = async (text: string): Promise<void> => {
-        const response = await fetch(`${app.backendUrl}/api/import`, {
+        const response = await fetch(app.backendUrl + '/api/import', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            items: [{
-              provider: 'muse',
-              role: 'agent',
-              url: 'https://muse.ai/',
-              sourceId: `live-provider-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-              ts: Date.now(),
-              text,
-            }],
-          }),
+          body: JSON.stringify({ items: [{
+            provider: 'muse', role: 'agent', url: 'https://muse.ai/',
+            sourceId: 'live-provider-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+            ts: Date.now(), text,
+          }] }),
         });
         assert.equal(response.status, 200);
       };
 
       const listSentAt = Date.now();
       await importProvider('@opencode');
-      const projectList = await waitForOutbox(
-        app,
-        (item) => item.ts >= listSentAt
-          && item.text.startsWith('blibs choices')
-          && item.text.includes('projects:'),
-        120_000,
-      ).catch(async (error: unknown) => {
-        await diagnoseLive(app, popout, 'project list');
-        throw error;
-      });
-      assert.match(projectList.text, /^- \$\S+/m, 'The project list has a choice');
+      const projectList = await waitForOutbox(app, (item) => item.ts >= listSentAt
+        && item.text.startsWith('blibs choices') && item.text.includes('Pick a project for your task:'), 120_000)
+        .catch(async (error: unknown) => {
+          await diagnoseLive(app, popout, 'project list');
+          throw error;
+        });
       const choice = /^- \$(\S+)/m.exec(projectList.text);
-      assert.ok(choice, 'The project choice has a token');
+      assert.ok(choice, 'The project list has a project token.');
       const token = choice[1];
-      console.log(`[live] project choice: ${token}`);
-      await sleep(5_000);
-
-      const sessionsSentAt = Date.now();
-      await importProvider(`@opencode $sessions $${token}`);
-      const sessions = await waitForOutbox(
-        app,
-        (item) => item.ts >= sessionsSentAt
-          && item.text.startsWith('blibs choices')
-          && item.text.includes(`Sessions for $${token}`),
-        120_000,
-      ).catch(async (error: unknown) => {
-        await diagnoseLive(app, popout, 'session list');
-        throw error;
-      });
-      assert.ok(sessions.text.includes(`$${token}-`), 'The session reply has a session choice or the new session hint');
-      await sleep(5_000);
+      console.log('[live] project choice: ' + token);
+      await sleep(3_000);
 
       const runSentAt = Date.now();
       const nonce = runSentAt.toString(36);
-      await importProvider(`@opencode $${token}-new Reply with exactly: live selection ok ${nonce}`);
-      const reply = await waitForOutbox(
-        app,
-        (item) => item.ts >= runSentAt
-          && item.text.startsWith(LIVE_HEADER)
-          && item.text.toLowerCase().includes('live selection ok'),
-        300_000,
-      ).catch(async (error: unknown) => {
-        await diagnoseLive(app, popout, 'new session reply');
-        throw error;
-      });
-      assert.ok(reply.text.startsWith(LIVE_HEADER), 'The new session reply has the harness header');
-      assert.ok(reply.text.toLowerCase().includes('live selection ok'), 'The new session reply answers the task');
-      await waitForOutbox(
-        app,
-        (item) => item.text === reply.text && item.status === 'sent',
-        120_000,
-      );
-
-      const findSentAt = Date.now();
-      await importProvider('@opencode $find-project');
-      const found = await waitForOutbox(
-        app,
-        (item) => item.ts >= findSentAt
-          && item.text.startsWith('blibs choices')
-          && item.text.includes('home folder'),
-        120_000,
-      ).catch(async (error: unknown) => {
-        await diagnoseLive(app, popout, 'home folder list');
-        throw error;
-      });
-      assert.ok(found.text.includes('home folder'), 'The home search reply names the home folder');
+      await importProvider('@opencode $' + token + ' Reply with exactly: live selection ok ' + nonce);
+      const reply = await waitForOutbox(app, (item) => item.ts >= runSentAt
+        && item.text.startsWith(LIVE_HEADER) && item.text.toLowerCase().includes('live selection ok'), 300_000)
+        .catch(async (error: unknown) => {
+          await diagnoseLive(app, popout, 'selected project run');
+          throw error;
+        });
+      assert.ok(reply.text.toLowerCase().includes('live selection ok'));
+      await waitForOutbox(app, (item) => item.text === reply.text && item.status === 'sent', 120_000);
 
       await popout.bringToFront();
       const headerLine = popout.getByText(LIVE_HEADER).last();
       if (await headerLine.isVisible().catch(() => false)) await headerLine.scrollIntoViewIfNeeded();
       await sleep(500);
-      const file = path.join(ARTIFACT_DIR, 'live-project-session-choices.png');
+      const file = path.join(ARTIFACT_DIR, 'live-project-selection.png');
       await popout.screenshot({ path: file });
       assert.ok(existsSync(file));
-      console.log(`Screenshot: ${file}`);
+      console.log('Screenshot: ' + file);
     } finally {
       await app.close();
     }
   },
 );
-

@@ -27,6 +27,7 @@ import {
   getLoginStatus,
   getVendorWindow,
   openVendorLogin,
+  probeVendorLogin,
   setLoginStatusSink,
 } from './login';
 
@@ -419,6 +420,12 @@ function registerLoginIpc(): void {
     if (!vendor) throw new Error('Unknown vendor.');
     return getLoginStatus(vendor.id);
   });
+  ipcMain.handle('blibs:login:probe', async (event, vendorId: unknown) => {
+    if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
+    const vendor = vendorFor(vendorId);
+    if (!vendor) throw new Error('Unknown vendor.');
+    return probeVendorLogin(vendor);
+  });
 }
 
 export function buildMenu(): void {
@@ -616,7 +623,10 @@ async function ensureThread(view: BrowserWindow, provider: string, threadId?: st
 async function ackOutbox(id: string, ok: boolean, error?: string): Promise<void> {
   try {
     await proxyPost('/api/outbox/ack', { id, ok, error });
-  } catch { /* ack lost — item stays queued, retried next sweep */ }
+    console.info(JSON.stringify({ time: new Date().toISOString(), component: 'blibs-outbox', event: 'delivery-result', id, ok }));
+  } catch {
+    console.warn(JSON.stringify({ time: new Date().toISOString(), component: 'blibs-outbox', event: 'ack-failed', id }));
+  }
 }
 
 function wireIpc(): void {

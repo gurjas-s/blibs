@@ -77,17 +77,7 @@ export function introMessage(choices: HarnessChoice[]): string {
     lines.push(
       `How tagging works: start a message with a harness tag. For example, ${tag} fix the failing test sends that task to ${suggested.name}. blibs types the harness reply back into this chat.`,
       '',
-      'How to choose a project and session:',
-      `- ${tag} lists the projects blibs knows about.`,
-      `- ${tag} $sessions $<project> lists the sessions of one project.`,
-      `- ${tag} $<project>-<sessionid> <task> continues one session.`,
-      `- ${tag} $<project>-new <task> starts a new session.`,
-      `- ${tag} $find-project lists projects in your home folder.`,
-      `- ${tag} $find-project <task> searches your home folder and runs the task.`,
-      '',
-      'Check the sessions before you start a new one. Reuse an existing session when it fits the task.',
-      '',
-      `To give it a try do ${tag}.`,
+      `To try it, send ${tag} followed by a task.`,
     );
   } else {
     lines.push(

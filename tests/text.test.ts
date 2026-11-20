@@ -16,8 +16,8 @@ test('cleanImportText keeps labels within a message and handles empty content', 
 });
 
 test('cleanImportText keeps the line breaks in a choice reply', () => {
-  const text = cleanImportText('You:\n\nblibs choices\n\nOpenCode projects:\n- $alpha — /projects/alpha\n');
-  assert.equal(text, 'blibs choices\n\nOpenCode projects:\n- $alpha — /projects/alpha');
+  const text = cleanImportText('You:\n\nblibs choices\n\nPick a project for your task:\n- $alpha — /projects/alpha\n');
+  assert.equal(text, 'blibs choices\n\nPick a project for your task:\n- $alpha — /projects/alpha');
 });
 
 test('cleanImportText keeps the line breaks in the introduction', () => {
@@ -26,7 +26,7 @@ test('cleanImportText keeps the line breaks in the introduction', () => {
 });
 
 test('isChoicesText finds the generated choice reply', () => {
-  assert.equal(isChoicesText('blibs choices\n\nOpenCode projects:'), true);
+  assert.equal(isChoicesText('blibs choices\n\nPick a project for your task:'), true);
   assert.equal(isChoicesText('  blibs choices'), true);
   assert.equal(isChoicesText('You:\n\nblibs choices'), true);
   assert.equal(isChoicesText('Muse choices'), false);
@@ -50,8 +50,8 @@ test('dedupeReplyMessages removes repeated blibs and harness replies', () => {
   const items = [
     { role: 'agent', text: 'blibs introduction\n\nblibs is a desktop control panel' },
     { role: 'agent', text: 'You:\n\nblibs introduction\n\nblibs is a desktop control panel' },
-    { role: 'agent', text: 'blibs choices\n\nOpenCode projects:\n- $alpha' },
-    { role: 'agent', text: 'You:\n\nblibs choices\n\nOpenCode projects:\n- $alpha' },
+    { role: 'agent', text: 'blibs choices\n\nPick a project for your task:\n- $alpha' },
+    { role: 'agent', text: 'You:\n\nblibs choices\n\nPick a project for your task:\n- $alpha' },
     { role: 'agent', text: "Sent from user's harness (OpenCode).\n\ndone" },
     { role: 'agent', text: "You:\n\nSent from user's harness (OpenCode).\n\ndone" },
     { role: 'user', text: 'done' },
@@ -61,7 +61,7 @@ test('dedupeReplyMessages removes repeated blibs and harness replies', () => {
     dedupeReplyMessages(items).map((item) => item.text),
     [
       'blibs introduction\n\nblibs is a desktop control panel',
-      'blibs choices\n\nOpenCode projects:\n- $alpha',
+      'blibs choices\n\nPick a project for your task:\n- $alpha',
       "Sent from user's harness (OpenCode).\n\ndone",
       'done',
       'A normal assistant message',

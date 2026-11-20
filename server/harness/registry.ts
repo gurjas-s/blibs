@@ -3,7 +3,7 @@
 // The relay modules stay harness-generic: the relay config names a harness id,
 // and this registry turns the id into the default command and the adapter. A
 // new harness adds one entry to HARNESS_KINDS; no relay module changes.
-import { OPENCODE_COMMAND, OPENCODE_SESSION_LIST_COMMAND, OpenCodeHarness } from './opencode.js';
+import { OPENCODE_COMMAND, OpenCodeHarness } from './opencode.js';
 import { OPENCODE_MENTION } from './mention.js';
 import type { Harness } from './types.js';
 
@@ -12,8 +12,6 @@ export interface HarnessOptions {
   command: string;
   cwd: string;
   timeoutMs: number;
-  /** Command that lists the sessions of one project. Empty disables listing. */
-  sessionListCommand?: string;
 }
 
 /** One harness blibs can drive. */
@@ -26,8 +24,6 @@ export interface HarnessKind {
   readonly mention: string;
   /** Default harness command when no override is set. */
   readonly defaultCommand: string;
-  /** Default command that lists the sessions of one project. */
-  readonly defaultSessionListCommand?: string;
   /** Build one adapter from the relay config values. */
   create(options: HarnessOptions): Harness;
 }
@@ -37,7 +33,6 @@ const OPENCODE_KIND: HarnessKind = {
   name: 'OpenCode',
   mention: OPENCODE_MENTION,
   defaultCommand: OPENCODE_COMMAND,
-  defaultSessionListCommand: OPENCODE_SESSION_LIST_COMMAND,
   create: (options) => new OpenCodeHarness(options),
 };
 
