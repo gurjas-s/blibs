@@ -11,7 +11,6 @@ import type {
 export const HARNESS_OUTPUT_LIMIT = 64 * 1024;
 /** Default opencode command. The relay uses it unless a config overrides it. */
 export const OPENCODE_COMMAND = 'opencode run';
-const PROGRESS_INTERVAL_MS = 60_000;
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
 
 export interface OpenCodeHarnessOptions {
@@ -133,13 +132,9 @@ export class OpenCodeHarness implements Harness {
     const finish = (result: HarnessResult): void => {
       if (settled) return;
       settled = true;
-      clearInterval(progressTimer);
       resolveRun({ ...result, diagnostics: diagnostics() });
     };
 
-    const progressTimer = run.onProgress && setInterval(() => {
-      run.onProgress?.(diagnostics());
-    }, PROGRESS_INTERVAL_MS);
     const stop = (): void => {
       killTree(child);
       child.stdout?.destroy();

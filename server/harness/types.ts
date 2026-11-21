@@ -27,7 +27,6 @@ export interface HarnessStartOptions {
   sessionId?: string;
   cwd?: string;
   model?: string;
-  onProgress?: (diagnostics: HarnessDiagnostics) => void;
 }
 
 export interface Harness {

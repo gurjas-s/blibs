@@ -108,7 +108,7 @@ started a harness, or queued a reply. Search for `blibs-outbox` to see if the
 app acknowledged a send. OpenCode runs until it finishes or blibs stops the
 relay. Different projects can run at the same time. Tasks for the same
 project run in order. The relay logs process
-status and stream byte counts once per minute and when the run ends. Match
+status and stream byte counts when the run ends. Match
 these events by `messageId`. The logs omit chat text, prompts, and harness output.
 
 ## Scripts

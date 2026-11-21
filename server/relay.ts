@@ -800,7 +800,6 @@ export class RelayService {
       sessionId: this.sessionFor(item.threadId, projectPath),
       cwd: projectPath,
       model: this.config.model,
-      onProgress: (diagnostics) => this.log('harness-progress', item.id, { ...diagnostics }),
     });
     work.run = run;
     let ok = false;
