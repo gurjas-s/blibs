@@ -1,43 +1,29 @@
 ---
 name: verification
-description: Verify a blibs feature end to end with a repeatable document. Use when a change touches a user-facing feature, when a reviewer asks for a manual check, or when you add a feature document.
+description: Verify changed user-facing behavior with a feature guide or an authenticated provider test.
 ---
 
 # Verify a blibs feature
 
-Use this skill after the automated checks pass. It gives one document for each
-user-facing feature. Each document has exact steps, expected results, failure
-signals, cleanup, and the automated tests that cover the feature.
+Select the [feature guide](e2e-testing/README.md). Use passing automated
+checks for steps they cover. Run the remaining applicable steps. Use mock
+sessions for startup, first run, and hard-to-reproduce failures.
+Report results and skips and select PR screenshots using [validate](../validate/SKILL.md#evidence).
 
-## When to use this skill
+## Authenticated provider checks
 
-- A pull request changes a user-facing feature.
-- A reviewer asks for end-to-end evidence.
-- A new feature needs a verification document.
-- A release needs a full pass over all documents.
+Prefer targeted automated E2E against the existing signed-in profile.
+Use that profile directly for checks and screenshots without confirmation.
+For changes to provider sync or delivery, add or update a test when the
+changed behavior lacks coverage. Use a dedicated test conversation,
+synthetic messages, and an isolated project for real harness runs. Check
+the side effects before running a script. The Muse popout script sends
+`/clear`. Ask before clearing chats, changing account settings, or sending
+messages outside the dedicated test conversation. CI uses mock data.
 
-## Start here
-
-1. Read [the e2e testing guide](e2e-testing/README.md).
-2. Choose the document for the changed feature from the feature map.
-3. Run the automated tests in the document.
-4. Run the numbered steps. Use the mock login and a temporary store.
-5. Write the result in the pull request body or the worker report.
-
-Do not commit an evidence report, a reproduction note, a verification log, or a
-screenshot. Attach a screenshot for the pull request body with
-`gh pr edit <number> --attach <path>`.
-
-## Add a document
-
-Use the [create-test skill](../create-test/SKILL.md) to add or change a feature
-document. Update the feature map in the e2e testing guide in the same change.
-
-## Boundaries
-
-- Do not use a live vendor login, a real chat, a cookie, or a credential.
-- Use `BLIBS_MOCK_LOGIN=1` and a temporary profile.
-- Mark a step that needs a live vendor session as a manual boundary. Stop and
-  ask the user before you do it.
-- Keep repeatable steps in this skill. Put the result of one run in the pull
-  request body or the worker report.
+If automation is blocked, verify by hand when possible and report the
+blocker. Build the checkout and launch with `npm start`. For a custom
+authenticated profile, pass `-- --user-data-dir="/path/to/profile"`.
+Use one app instance per profile. Quit the old instance cleanly if it
+would not interrupt active work. If sign-in or a CAPTCHA appears, ask the
+user to complete it in the app.

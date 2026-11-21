@@ -1,6 +1,6 @@
 # Verify conversation search
 
-## Scope and non-goals
+## Scope
 
 This document covers the `Search all conversations` panel, keyword search,
 provider, thread, and date filters, source messages, thread links, index
@@ -11,9 +11,9 @@ It does not cover the current-chat search field. Use
 download. Read [the search guide](../../../../docs/conversation-search.md) for
 storage, migration, and model setup.
 
-## Preconditions and setup
+## Setup
 
-Shared setup: see [README.md](README.md).
+See [shared setup](README.md#shared-setup).
 
 - Keyword search works without a local model. Do not download a model for this
   document.
@@ -28,7 +28,7 @@ Shared setup: see [README.md](README.md).
 2. Import one message:
 
    ```sh
-   curl -s http://127.0.0.1:8899/api/import \
+   curl -s "$BLIBS_BACKEND_URL/api/import" \
      -H 'Content-Type: application/json' \
      -d '{"items":[{"provider":"dots","role":"agent","text":"Atlas uses SQLite for local storage.","ts":1700000000000,"url":"https://chatgpt.com/c/atlas","sourceId":"verify-search-1"}]}'
    ```
@@ -63,30 +63,17 @@ Shared setup: see [README.md](README.md).
    review. The desktop test covers the citation flow with a fixed local
    response.
 
-10. Read the outbox: `curl -s http://127.0.0.1:8899/api/outbox`.
+10. Read the outbox: `curl -s "$BLIBS_BACKEND_URL/api/outbox"`.
     Expected: `{"items":[]}`. Search and answers never queue a reply.
 
-## Failure signals and artifacts
+## Diagnostics
 
 - A history route returns 403 for the panel origin or 200 for an untrusted
   origin.
-- A keyword search returns no result for an imported message.
-- A filter does not change the result set.
-- `View message` shows different text than the citation.
-- An answer cites an unknown source or an invented quote.
-- The outbox has an item after a search.
 
-Artifacts: the `/api/search`, `/api/ask`, `/api/index`, and `/api/history/:id`
-responses and the temp history directory under `$TMP/history`.
+Inspect the `/api/search`, `/api/ask`, `/api/index`, and `/api/history/:id` responses.
 
-## Cleanup
-
-1. Quit the mock app. On macOS, press `Cmd+Q`. On Linux or Windows, close the
-   window. Press `Ctrl+C` in the terminal when the process stays open.
-2. Remove the temporary directory: `rm -rf "$TMP"`.
-3. Do not commit a history database or an answer log.
-
-## Automated tests that cover it
+## Automated coverage
 
 - `tests/history.test.ts` covers migration, source identity, keyword filters,
   paging, chunk bounds, vectors, model fallback, citation validation, source URL

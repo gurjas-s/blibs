@@ -1,23 +1,16 @@
 # Verify the blibs introduction and harness replies
 
-## Scope and non-goals
+## Scope
 
 This document covers the `@blibs` mention, the generated introduction reply, the
 harness list that the panel reports, and the header on a forwarded harness
 reply.
 
-It does not cover a real model run, a real coding task, or a live vendor
-session. The live sign-in check is a separate opt-in command.
+Use the shared mock session for the steps below.
 
-## Preconditions and setup
+## Setup
 
-Shared setup: see [README.md](README.md).
-
-- Use the shared mock command. It sets `BLIBS_MOCK_LOGIN=1`.
-- The relay uses a temporary data directory and the fake harness from
-  `tests/e2e/harness.ts`. No model runs.
-- Set `BLIBS_RELAY_PROJECTS_DIR` to a temporary directory with one folder
-  named `alpha`.
+See [shared setup](README.md#shared-setup).
 
 ## Test steps
 
@@ -45,7 +38,7 @@ Shared setup: see [README.md](README.md).
    Expected: the reply says no harness is enabled and to turn one on in
    Connections. It has no first-task line.
 
-7. Repeat step 4 in the same chat.
+7. Enable Claude Code and OpenCode for Muse and repeat step 4 in the same chat.
    Expected: a second introduction reply appears. The reply to the first
    message does not trigger itself.
 
@@ -54,31 +47,17 @@ Shared setup: see [README.md](README.md).
    `Sent from user's harness (OpenCode).` The text `harness reply: hi` follows
    the header.
 
-9. Read the relay status at `http://127.0.0.1:8899/api/relay`.
+9. Read the relay status at `"$BLIBS_BACKEND_URL/api/relay"`.
    Expected: `harnesses` lists the three rows. The `codex` row has
    `"enabled": false`.
 
-## Failure signals and artifacts
+## Diagnostics
 
-- The `@blibs` message adds no reply.
-- The reply lists a disabled harness as enabled.
-- The reply suggests a disabled harness.
-- A reply with no enabled harness has a first-task line.
-- A harness reply has no header, or the header is not the first line.
-- A project selection message has no harness header.
 - The relay starts a harness run for the introduction reply.
-- The relay status has an empty `harnesses` list after the panel loads.
 
-Artifacts: `tests/e2e/artifacts/blibs-intro.png` and
-`tests/e2e/artifacts/harness-reply.png`.
+Smoke screenshots: `blibs-intro.png` and `harness-reply.png`.
 
-## Cleanup
-
-1. Quit the app.
-2. Remove the temporary directory: `rm -rf "$TMP"`.
-3. Do not commit a screenshot, an evidence file, or a note.
-
-## Automated tests that cover it
+## Automated coverage
 
 - `tests/e2e/smoke.spec.ts`, test
   `an @blibs mention shows the introduction and a harness reply says which harness sent it`
@@ -94,15 +73,4 @@ Artifacts: `tests/e2e/artifacts/blibs-intro.png` and
 - The project selection check is in
   [project-selection.md](project-selection.md).
 
-Run the mock checks with:
-
-```sh
-npm run e2e
-npm test
-```
-
-Run the live check with:
-
-```sh
-BLIBS_LIVE_LOGIN=1 npm run e2e:live
-```
+See the [authenticated workflow](../SKILL.md#authenticated-provider-checks) for live checks.

@@ -1,20 +1,17 @@
 # Verify sync and status
 
-## Scope and non-goals
+## Scope
 
 This document covers the sync pill, the status announcement, the sidebar sync
 label, the auto-sync checkbox and interval, the import pull, import
 deduplication, the backend health route, and the outbox status refresh.
 
-It does not cover vendor scraping selectors or a live vendor session. It does
-not cover search indexing.
+The authenticated check covers the real vendor collection path. Search
+indexing has its own guide.
 
-## Preconditions and setup
+## Setup
 
-Shared setup: see [README.md](README.md).
-
-- The shared command starts the backend on `PROXY_PORT` and the panel on
-  `BLIBS_UI_PORT`. Use those values in the URLs below.
+See [shared setup](README.md#shared-setup).
 
 ## Test steps
 
@@ -26,7 +23,7 @@ Shared setup: see [README.md](README.md).
 2. Import one message:
 
    ```sh
-   curl -s http://127.0.0.1:8899/api/import \
+   curl -s "$BLIBS_BACKEND_URL/api/import" \
      -H 'Content-Type: application/json' \
      -d '{"items":[{"provider":"dots","role":"agent","text":"synced from the API","ts":2,"sourceId":"verify-sync-1"}]}'
    ```
@@ -47,39 +44,28 @@ Shared setup: see [README.md](README.md).
    `Agents` entry and no sync controls.
 
 5. Stop the backend process, then wait for the next pull:
-   `lsof -ti tcp:8899 | xargs kill`.
+   Use the backend port printed for this mock session. On macOS, find the
+   listener with `lsof -nP -iTCP:<backend-port> -sTCP:LISTEN`, then stop that
+   backend with `kill <pid>`.
    Expected: the sync pill shows `Backend unreachable`. The status
    announcement reads `Backend unreachable — restart the app.`
 
-6. Quit the app and start it again with the same `TMP` value.
+6. Quit the app and start a new mock session. Complete the first-run card.
    Expected: a new backend starts and the pill returns to a synced state after
    the first pull.
 
-7. Manual boundary: a live vendor sync needs a signed-in vendor session. Do
-   not sign in during a review. The automated fake view covers the sweep and
-   import path.
+7. For vendor sync changes, use the
+   [authenticated profile](../SKILL.md#authenticated-provider-checks).
+   Open a dedicated test conversation in the provider and check that its
+   messages appear once in the matching blibs thread after sync.
 
-## Failure signals and artifacts
+## Diagnostics
 
-- The pill stays on `Waiting for sync`.
 - The terminal prints `[blibs] proxy exited` or a backend schema error.
-- The same import appears two times after a repeat pull.
-- Auto-sync or the interval does not persist after a reload.
-- The sidebar label does not change after a new import.
 
-Artifacts: the `/api/health`, `/api/import`, and `/api/imports` responses and
-the temp data under `$TMP/history`.
+Artifacts: the `/api/health`, `/api/import`, and `/api/imports` responses.
 
-## Cleanup
-
-1. Quit the mock app. On macOS, press `Cmd+Q`. On Linux or Windows, close the
-   window. Press `Ctrl+C` in the terminal when the process stays open.
-2. Stop the backend if it still runs.
-3. Remove the temporary directory: `rm -rf "$TMP"`.
-4. Do not commit `server/imports.json`, `server/outbox.json`, or a history
-   database.
-
-## Automated tests that cover it
+## Automated coverage
 
 - `tests/proxy.test.ts`, test
   `legacy imports deduplicate exact provider/thread/role/timestamp/text observations and survive restart`,
