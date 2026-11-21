@@ -113,7 +113,7 @@ app acknowledged a send. The logs omit chat text, prompts, and harness output.
 | `npm run test:built` | Run unit, HTTP, and headless harness checks against the current build |
 | `npm run e2e:built` | Run desktop smoke checks against the current build |
 | `npm run mock:desktop` | Open the built app with a temporary profile and mock sign-in |
-| `npm run e2e:live` | Opt-in live checks; needs `BLIBS_LIVE_LOGIN=1`. The sign-in check also needs account values in `.env` |
+| `npm run e2e:live` | Check the relay with a signed-in Muse profile and `BLIBS_LIVE_LOGIN=1` |
 | `npm run test:desktop` | Test search and citations; needs a display, but no model downloads |
 | `npm run smoke` | Check that the app starts; needs a display |
 | `npm run lint` | Check the code for lint errors |
@@ -169,29 +169,20 @@ to test the changed path in the built app. The automated scripts below
 exercise specific flows and can send commands to a real account. Check their
 side effects before running them.
 
-### Live test scripts
+### Live Muse relay check
 
-`npm run e2e:live` runs two opt-in checks. Set `BLIBS_LIVE_LOGIN=1` to enable
-them. Do not run these checks in CI.
+Run `BLIBS_LIVE_LOGIN=1 npm run e2e:live` with a signed-in Muse profile
+and OpenCode configured. Use a dedicated test conversation. The check sends
+a request from the Muse composer, waits for the harness reply in the same
+conversation, and verifies the exact bytes in `alpha/hello.txt`. It also
+checks that `beta` stays empty and removes both temporary projects when it ends.
 
-1. **Sign-in check.** It uses a real Muse account and the Proton inbox that
-   receives the verification code. Put `EMAIL_MUSE`, `PASSWORD_MUSE`, and
-   `PROTON_URL` in the ignored `.env` file. The check reads the newest code,
-   signs in, sends `@blibs`, and sends `@opencode hi` to the deterministic
-   harness stub. It keeps its Electron profile in
-   `tests/e2e/artifacts/live-profile`, so a remembered device works on the next
-   run.
-2. **Project file check.** It sends a plain-language request from the Muse
-   composer. Muse sends a task to OpenCode. The check looks for the harness
-   reply in the same conversation and verifies the exact bytes in
-   `alpha/hello.txt`. It also checks that `beta` stays empty. The check
-   removes both temporary projects when it ends.
-   It uses the signed-in app profile. Set `BLIBS_LIVE_PROFILE` to use a
-   different signed-in profile. Set `BLIBS_LIVE_MODEL` to override the model.
+Set `BLIBS_LIVE_PROFILE` to use a different signed-in profile. Set
+`BLIBS_LIVE_MODEL` to override the model. This check runs outside CI.
 
 Do not commit a profile, a screenshot of a signed-in session, or a credential.
 See the [project selection verification steps](.agents/skills/verification/e2e-testing/project-selection.md)
-to run the project file check by itself.
+for setup and expected results.
 
 ## Troubleshooting
 
