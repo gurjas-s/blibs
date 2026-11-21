@@ -75,7 +75,7 @@ See [shared setup](README.md#shared-setup).
 
 10. For delivery changes, use the
     [authenticated profile](../SKILL.md#authenticated-provider-checks).
-    Send one synthetic message from blibs in a dedicated test conversation.
+    Send one synthetic message from blibs in the current conversation.
     Expected: blibs shows `Sent` and the provider shows the message once.
 
 ## Diagnostics

@@ -13,9 +13,11 @@ import type { HarnessChoice } from './harness/intro.js';
 import { harnessMessage } from './harness/message.js';
 import {
   buildProjectChoices,
+  CHOICES_HEADER,
   PROJECT_CHOICE_LIMIT,
   formatMissingTask,
   formatProjectList,
+  projectSelectionFormat,
   unknownProjectNote,
   isChoicesMessage,
 } from './harness/project-reply.js';
@@ -36,6 +38,7 @@ import {
 import type { RelayRunState, RelayState } from './relay-state.js';
 import {
   canonicalDir,
+  PROJECT_LIMIT,
   listProjects,
   matchProject,
   projectsRoot,
@@ -83,6 +86,7 @@ export interface RelayStatus {
   /** Harnesses supported by the configured provider. */
   harnesses: HarnessChoice[];
   discoveryRoot: string;
+  projects: Array<{ name: string; token: string }>;
   pending: number;
   running: boolean;
   processed: number;
@@ -90,6 +94,10 @@ export interface RelayStatus {
   sessions: number;
   lastRun: RelayRunState | null;
 }
+
+export type ProjectCreation =
+  | { kind: 'created'; token: string }
+  | { kind: 'invalid' | 'conflict' | 'failed'; error: string };
 
 interface RelayItem {
   id: string;
@@ -411,6 +419,43 @@ export class RelayService {
     return this.status();
   }
 
+  createProject(name: unknown): ProjectCreation {
+    if (typeof name !== 'string' || name.length > 80 || name.trim() !== name
+      || !/^[a-z0-9](?:[a-z0-9._ -]*[a-z0-9_-])?$/i.test(name)
+      || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:[. ]|$)/i.test(name)) {
+      return { kind: 'invalid', error: 'Enter one project name using letters, numbers, spaces, dots, underscores, or hyphens. Start with a letter or number.' };
+    }
+
+    const root = this.config.discoveryRoot;
+    const target = path.join(root, name);
+    try {
+      if (fs.realpathSync(root) !== root) {
+        return { kind: 'failed', error: 'The projects folder changed. Set it again in Connections.' };
+      }
+      if (listProjects(root).length >= PROJECT_LIMIT) {
+        return { kind: 'failed', error: 'The projects folder has reached the project limit.' };
+      }
+      fs.mkdirSync(target);
+      const choices = buildProjectChoices(listProjects(root));
+      const created = choices.find((choice) => choice.path === target);
+      if (!created) return { kind: 'failed', error: 'Could not list the new project.' };
+      for (const pending of this.pendingProjectTasks.values()) {
+        // Issue a new request ID if a token from the old list now names the new folder.
+        if (pending.choices.some((choice) => choice.token === created.token && choice.path !== target)) {
+          pending.id = randomBytes(6).toString('hex');
+          pending.choices = choices.slice(0, PROJECT_CHOICE_LIMIT);
+        }
+        if (!pending.choices.some((choice) => choice.path === target)) pending.choices.push(created);
+      }
+      return { kind: 'created', token: created.token };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        return { kind: 'conflict', error: 'A file or folder with that name already exists.' };
+      }
+      return { kind: 'failed', error: 'Could not create the project in the projects folder.' };
+    }
+  }
+
   /** One short provider-facing note. */
   private tellProvider(
     target: { provider: string; threadId: string },
@@ -599,7 +644,11 @@ export class RelayService {
         // it when the queue drains, so a choice uses the current project list.
         this.remember(message);
         changed = true;
-        if (this.queueItem(message, body)) queued = true;
+        // Preserve the full name so invalid characters are rejected.
+        const request = /^\/new-project(?:\s|$)/i.test(body)
+          ? stripVendorLabel(message.text).slice(this.harness.mention.length).trim()
+          : body;
+        if (this.queueItem(message, request)) queued = true;
       }
     }
     if (changed) this.save();
@@ -639,10 +688,21 @@ export class RelayService {
     this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
     this.save();
 
+    const body = item.body.trim();
+    const [command, requestId, token, extra] = body.split(/\s+/, 4);
+    if (command.toLowerCase() === '/new-project') {
+      const result = this.createProject(body.slice(command.length).trim());
+      const mention = this.harness.mention;
+      const note = result.kind === 'created'
+        ? `Project created. Project ID: $${result.token}.` + (pending
+          ? ` Reply with ${projectSelectionFormat(mention, pending.id, `$${result.token}`)} to use the saved task.`
+          : ` Send ${mention} $${result.token} <task> to start work.`)
+        : result.error;
+      return this.finishChoices(item, `${CHOICES_HEADER}\n\n${note}`, startedAt);
+    }
     const allChoices = buildProjectChoices(listProjects(this.config.discoveryRoot));
     const choices = allChoices.slice(0, PROJECT_CHOICE_LIMIT);
     const options = { ...this.choiceOptions(), total: allChoices.length };
-    const [command, requestId, token, extra] = item.body.trim().split(/\s+/, 4);
     if (command.toLowerCase() === '/select') {
       if (!pending || requestId !== pending.id) {
         return this.finishChoices(item, formatProjectList(choices, {
@@ -656,8 +716,9 @@ export class RelayService {
         return this.runWork(item, pending.task, selected.path, startedAt);
       }
       const available = pending.choices.filter((choice) => allChoices.some((current) => current.path === choice.path));
-      return this.finishChoices(item, formatProjectList(available, {
+      return this.finishChoices(item, formatProjectList(available.slice(0, PROJECT_CHOICE_LIMIT), {
         ...this.choiceOptions(),
+        total: available.length,
         requestId: pending.id,
         note: 'Choose an available project ID from this request, or send a new task.',
       }), startedAt);
@@ -678,7 +739,7 @@ export class RelayService {
     const task = match.kind === 'unknown' ? taskAfterUnknownProject(item.body) : item.body.trim();
     const note = match.kind === 'unknown' ? unknownProjectNote(match.name, options)
       : match.kind === 'ambiguous' ? 'The task names more than one project.' : undefined;
-    const id = task && choices.length ? randomBytes(6).toString('hex') : undefined;
+    const id = task ? randomBytes(6).toString('hex') : undefined;
     const sent = this.tellChoices(item, formatProjectList(choices, { ...options, note, requestId: id }));
     if (sent && task) {
       this.pendingProjectTasks.delete(item.threadId);
@@ -763,6 +824,10 @@ export class RelayService {
       },
       harnesses: this.harnesses(),
       discoveryRoot: this.state.discoveryRoot,
+      projects: buildProjectChoices(listProjects(this.config.discoveryRoot)).map(({ path: projectPath, token }) => ({
+        name: path.basename(projectPath),
+        token,
+      })),
       pending: this.queue.length + (this.active ? 1 : 0),
       running: this.active !== null,
       processed: this.state.processed.length,

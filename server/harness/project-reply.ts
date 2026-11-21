@@ -83,8 +83,12 @@ export function projectTaskFormat(mention: string): string {
   return `${mention} $<project> <task>`;
 }
 
-export function projectSelectionFormat(mention: string, requestId = '<request-id>'): string {
-  return `${mention} /select ${requestId} $<project>`;
+export function projectSelectionFormat(mention: string, requestId = '<request-id>', project = '$<project>'): string {
+  return `${mention} /select ${requestId} ${project}`;
+}
+
+export function projectCreationFormat(mention: string): string {
+  return `${mention} /new-project <name>`;
 }
 
 /** Show the available project IDs and how to continue. */
@@ -98,7 +102,6 @@ export function formatProjectList(
     lines.push(
       '',
       `No projects are available in ${displayPath(options.root)}.`,
-      'Ask the user to add a project folder there or change the folder in Connections.',
     );
   } else {
     lines.push('', 'Pick a project for your task:', ...choices.map(({ token }) => `- $${token}`));
@@ -109,6 +112,7 @@ export function formatProjectList(
       lines.push('', `Reply with ${projectSelectionFormat(options.mention, options.requestId)} to use the saved task.`);
     }
   }
+  lines.push('', `If the user asks for a new project, use ${projectCreationFormat(options.mention)}.`);
   lines.push('', `To send a new task, use ${projectTaskFormat(options.mention)}.`);
   return lines.join('\n');
 }

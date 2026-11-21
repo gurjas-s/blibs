@@ -51,7 +51,8 @@ and queues replies. Read [README.md](README.md) before making changes.
 | Update a feature's verification steps or test references | [write-verification-guide](.agents/skills/write-verification-guide/SKILL.md) |
 
 Use the existing signed-in blibs profile for provider checks and screenshots
-without asking for confirmation.
+without asking for confirmation. Send synthetic verification messages in
+the current provider conversation when needed.
 Follow the [authenticated workflow](.agents/skills/verification/SKILL.md#authenticated-provider-checks)
 for automation, test data, and account boundaries.
 

@@ -247,7 +247,7 @@ try {
       }
     }, 8000);
   });
-  obs.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  obs.observe(document, { childList: true, subtree: true, characterData: true });
 } catch {
   /* observer unavailable — sweep covers us */
 }

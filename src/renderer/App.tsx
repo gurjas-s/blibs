@@ -41,6 +41,7 @@ import {
   fetchRelayStatus,
   updateRelayHarnesses,
   updateRelayProjects,
+  createRelayProject,
   type RelayStatus,
 } from './client';
 import {
@@ -630,6 +631,16 @@ export default function App() {
     }
   }
 
+  async function createProject(name: string): Promise<string | undefined> {
+    let token: string | undefined;
+    await saveRelay(async () => {
+      const result = await createRelayProject(name);
+      token = result.token;
+      return result.relay;
+    });
+    return token;
+  }
+
   function toggleHarness(enabled: boolean): void {
     const choice = relay?.harnesses[0];
     if (relay?.enabled && choice) {
@@ -702,6 +713,8 @@ export default function App() {
         saving={relaySaving}
         error={relayError}
         onToggleHarness={toggleHarness}
+        onClearError={() => setRelayError('')}
+        onCreateProject={createProject}
         onChangeFolder={(discoveryRoot) => saveRelay(() => updateRelayProjects({ discoveryRoot }))}
         onConnectAnother={connectAnother}
         onStart={startChat}

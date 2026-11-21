@@ -6,7 +6,7 @@
 // screenshots to the ignored artifact directory.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
@@ -539,6 +539,20 @@ test(
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     assert.equal(await folder.innerText(), previousFolder);
 
+    await page.getByRole('button', { name: 'New project', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Project name' }).fill('picker-test');
+    assertImage(await app.screenshot('new-project-dark.png'));
+    await setTheme(page, 'light');
+    assertImage(await app.screenshot('new-project-light.png'));
+    await setTheme(page, 'dark');
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'New project', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Project name' }).fill('picker-test');
+    await page.getByRole('button', { name: 'Create project', exact: true }).click();
+    await page.locator('option[value="picker-test"]').waitFor({ state: 'attached' });
+    assert.equal(await page.getByRole('combobox', { name: 'Project', exact: true }).inputValue(), 'picker-test');
+    assert.deepEqual(readdirSync(path.join(previousFolder, 'picker-test')), []);
+
     await page.getByRole('button', { name: 'Start chatting' }).click();
     await page.locator('.shell').waitFor({ state: 'visible' });
     assert.equal(await page.locator('.onboarding-screen').count(), 0);
@@ -836,6 +850,113 @@ test(
       assertImage(await app.screenshot('harness-reply.png'));
     } finally {
       rmSync(projectsDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'scripted Muse creates a project and writes a file from the composer',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async (t) => {
+    const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-composer-projects-'));
+    t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
+    const alpha = path.join(projectsDir, 'alpha');
+    const content = 'Hello from blibs.';
+    const task = 'Create hello.txt with exactly ' + content;
+    const request = 'Create a project named alpha and use OpenCode to create hello.txt. Write exactly: ' + content;
+    const museChatHtml = `<!doctype html>
+      <main>
+        <div role="log"></div>
+        <button id="create" disabled>Create alpha</button>
+        <button id="repeat" disabled>Redeliver creation</button>
+        <button id="choose" disabled>Choose alpha</button>
+        <form><textarea aria-label="Message"></textarea><button type="submit">Send</button></form>
+      </main>
+      <script>
+        const log = document.querySelector('[role="log"]');
+        const composer = document.querySelector('textarea');
+        function append(role, text) {
+          const row = document.createElement('div');
+          row.dataset.messageAuthorRole = role;
+          row.style.whiteSpace = 'pre-wrap';
+          row.textContent = text;
+          log.append(row);
+        }
+        const create = document.querySelector('#create');
+        const repeat = document.querySelector('#repeat');
+        let created = false;
+        create.addEventListener('click', () => {
+          append('assistant', '@opencode /new-project alpha');
+          created = true;
+          create.disabled = true;
+        });
+        repeat.addEventListener('click', () => {
+          append('assistant', '@opencode /new-project alpha');
+          repeat.disabled = true;
+        });
+        const choose = document.querySelector('#choose');
+        choose.addEventListener('click', () => {
+          append('assistant', '@opencode /select ' + choose.dataset.requestId + ' $alpha');
+          choose.disabled = true;
+        });
+        document.querySelector('form').addEventListener('submit', (event) => {
+          event.preventDefault();
+          const text = composer.value;
+          composer.value = '';
+          append('user', text);
+          if (created && text.startsWith("Sent from user's harness")) repeat.disabled = false;
+          if (text === ${JSON.stringify(request)}) append('assistant', '@opencode ' + ${JSON.stringify(task)});
+          if (text.startsWith('blibs choices') && text.includes('No projects are available')) create.disabled = false;
+          if (text.startsWith('blibs choices') && text.includes('Project created. Project ID: $alpha.')) {
+            choose.dataset.requestId = text.split('/select ')[1].split(' ')[0];
+            choose.disabled = false;
+          }
+        });
+      </script>`;
+    const testApp = await launch({ projectsDir, museChatHtml });
+    try {
+      const deadline = Date.now() + 15_000;
+      let muse: Page | undefined;
+      while (!muse && Date.now() < deadline) {
+        muse = testApp.browser.contexts().flatMap((context) => context.pages())
+          .find((page) => page.url() === 'https://muse.ai/');
+        if (!muse) await delay(100);
+      }
+      assert.ok(muse, 'The Muse vendor view must start.');
+      const threadUrl = 'https://muse.ai/chat/e2e-project-file';
+      await muse.goto(threadUrl);
+      const baseline = await fetch(testApp.backendUrl + '/api/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [{
+          provider: 'muse', role: 'user', text: 'Project file test baseline.',
+          url: threadUrl, sourceId: 'project-file-baseline', ts: Date.now(),
+        }] }),
+      });
+      assert.equal(baseline.status, 200);
+      await muse.getByRole('textbox', { name: 'Message' }).fill(request);
+      await muse.getByRole('button', { name: 'Send' }).click();
+      const log = muse.getByRole('log');
+      await log.getByText('No projects are available', { exact: false }).waitFor({ timeout: 30_000 });
+      assert.deepEqual(readdirSync(projectsDir), []);
+      await muse.getByRole('button', { name: 'Create alpha' }).click();
+      await log.getByText('Project created. Project ID: $alpha.', { exact: false }).waitFor({ timeout: 30_000 });
+      assert.deepEqual(readdirSync(alpha), []);
+      await muse.getByRole('button', { name: 'Choose alpha' }).click();
+      await log.getByText(/^@opencode \/select [a-f0-9]{12} \$alpha$/).waitFor({ timeout: 30_000 });
+      await log.getByText("Sent from user's harness (OpenCode).", { exact: false }).waitFor({ timeout: 30_000 });
+      assert.equal(muse.url(), threadUrl);
+      assert.deepEqual(readFileSync(path.join(alpha, 'hello.txt')), Buffer.from(content));
+      await muse.getByRole('button', { name: 'Redeliver creation' }).click();
+      await log.getByText('A file or folder with that name already exists.', { exact: false }).waitFor({ timeout: 30_000 });
+      assert.deepEqual(readdirSync(projectsDir), ['alpha']);
+      assert.deepEqual(readFileSync(path.join(alpha, 'hello.txt')), Buffer.from(content));
+    } catch (error) {
+      const response = await fetch(testApp.backendUrl + '/api/outbox');
+      const outbox = await response.text();
+      throw new Error(`${String(error)}\nMock Muse outbox: ${outbox}`, { cause: error });
+    } finally {
+      await testApp.close();
     }
   },
 );

@@ -80,10 +80,15 @@ Send a new task if the choice is no longer active. Pending choices expire
 when blibs restarts, the chat is cleared, or the projects folder changes.
 
 A project name in the task can also select that project when the name is
-unambiguous. If the list is empty, add a project folder under the configured
-folder (`~/Projects` by default) or change the folder in **Connections**.
-Then send the task again. blibs reuses one OpenCode session per project
-in each chat.
+unambiguous. blibs reuses one OpenCode session per project in each chat.
+
+To create a project, ask Muse for a new project. Muse sends
+`@opencode /new-project <name>`. blibs creates one empty folder in the
+configured projects directory and returns its project ID. If blibs saved a
+task, Muse can use the `/select` command in the reply to continue. You can
+also select **New project** in the **Connections** project picker. Use a name
+that starts with a letter or number and contains only letters, numbers,
+spaces, dots, underscores, and hyphens.
 
 **Harness replies:** a reply from a local coding harness starts with
 `Sent from user's harness (<harness name>).` The header shows where the message
@@ -172,10 +177,9 @@ side effects before running them.
 ### Live Muse relay check
 
 Run `BLIBS_LIVE_LOGIN=1 npm run e2e:live` with a signed-in Muse profile
-and OpenCode configured. Use a dedicated test conversation. The check sends
-a request from the Muse composer, waits for the harness reply in the same
-conversation, and verifies the exact bytes in `alpha/hello.txt`. It also
-checks that `beta` stays empty and removes both temporary projects when it ends.
+and OpenCode configured. The checks use the current Muse conversation.
+They verify the harness reply and exact bytes in `alpha/hello.txt` for a
+new and an existing project. They remove their temporary projects when done.
 
 Set `BLIBS_LIVE_PROFILE` to use a different signed-in profile. Set
 `BLIBS_LIVE_MODEL` to override the model. This check runs outside CI.

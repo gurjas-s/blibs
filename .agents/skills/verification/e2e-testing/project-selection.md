@@ -17,7 +17,7 @@ See [shared setup](README.md#shared-setup).
 
 1. Follow the [authenticated provider workflow](../SKILL.md#authenticated-provider-checks).
    Close any app instance that uses the profile. Use a signed-in Muse profile
-   with a dedicated test conversation ready in the composer. Set
+   with the current conversation ready in the composer. Set
    `BLIBS_LIVE_PROFILE` if the profile differs from the installed app profile.
 
    ```sh
@@ -26,7 +26,10 @@ See [shared setup](README.md#shared-setup).
 
    Confirm that Muse sends an OpenCode task. The check verifies the harness
    reply in the same conversation, the exact test bytes in `alpha/hello.txt`,
-   and an empty `beta`.
+   and an empty `beta`. The creation test starts with an empty projects
+   folder and checks that Muse requests `alpha` before OpenCode writes the
+   file. Set `BLIBS_LIVE_CREATION_CHAT` to use another Muse chat URL for the
+   creation test.
 
 2. Start the mock app with the shared command. Expected: the panel opens.
 
@@ -64,6 +67,10 @@ See [shared setup](README.md#shared-setup).
 7. Open the Muse chat in the panel. Expected: the project list and harness
    replies appear once in the thread.
 
+8. Open **Connections** and select **New project**. Create `picker-test`.
+   The picker selects the new project, and the shared folder contains an
+   empty `picker-test` folder.
+
 ## Diagnostics
 
 - Check whether the harness reply appeared in the same conversation.
@@ -75,5 +82,7 @@ The live check stops Electron and removes its temporary projects when it ends. U
 
 - `tests/relay.test.ts` covers direct tasks, short selection replies, duplicate
   delivery, stale choices, ambiguous requests, and unknown and empty project
-  lists. Run with `node --import tsx --test tests/relay.test.ts`.
+  lists, folder creation, invalid names, conflicts, and write failures. Run with `node --import tsx --test tests/relay.test.ts`.
+- `tests/e2e/smoke.spec.ts` checks picker creation and scripted Muse
+  creation, continuation, and redelivery. Run with `npm run e2e`.
 - `tests/e2e/live-muse.spec.ts` checks the provider composer, relay, and file contents in step 1.
