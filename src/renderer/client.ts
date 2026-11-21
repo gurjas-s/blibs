@@ -176,7 +176,7 @@ export async function fetchHistoryItem(id: string): Promise<HistoryMessage> {
 export interface RelayStatus {
   enabled: boolean;
   provider: string;
-  harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
+  harness: { id: string; command: string; cwd: string; model?: string };
   /** Harness rows that the introduction reply lists. */
   harnesses: Array<{ id: string; name: string; enabled: boolean }>;
   discoveryRoot: string;

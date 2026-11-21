@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { OPENCODE_MENTION } from './mention.js';
 import type {
   Harness,
+  HarnessDiagnostics,
   HarnessResult,
   HarnessRun,
   HarnessStartOptions,
@@ -10,13 +11,11 @@ import type {
 export const HARNESS_OUTPUT_LIMIT = 64 * 1024;
 /** Default opencode command. The relay uses it unless a config overrides it. */
 export const OPENCODE_COMMAND = 'opencode run';
-const KILL_GRACE_MS = 2000;
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
 
 export interface OpenCodeHarnessOptions {
   command: string;
   cwd: string;
-  timeoutMs: number;
   maxOutputBytes?: number;
 }
 
@@ -73,13 +72,11 @@ export class OpenCodeHarness implements Harness {
 
   private readonly command: string;
   private readonly cwd: string;
-  private readonly timeoutMs: number;
   private readonly maxOutputBytes: number;
 
   constructor(options: OpenCodeHarnessOptions) {
     this.command = options.command;
     this.cwd = options.cwd;
-    this.timeoutMs = options.timeoutMs;
     this.maxOutputBytes = options.maxOutputBytes ?? HARNESS_OUTPUT_LIMIT;
   }
 
@@ -95,6 +92,7 @@ export class OpenCodeHarness implements Harness {
     if (run.model && !hasModelFlag(finalArgs)) finalArgs.push('--model', run.model);
     finalArgs.push(prompt);
 
+    const startedAt = performance.now();
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(file, finalArgs, {
@@ -113,41 +111,60 @@ export class OpenCodeHarness implements Harness {
 
     let output = '';
     let overflow = false;
-    let timedOut = false;
     let settled = false;
+    let spawned = false;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let lastOutputAt: number | null = null;
+    let spawnErrorCode: string | null = null;
+    const diagnostics = (): HarnessDiagnostics => ({
+      elapsedMs: Math.round(performance.now() - startedAt),
+      spawned,
+      processExited: child.exitCode !== null || child.signalCode !== null,
+      stdoutBytes,
+      stderrBytes,
+      lastOutputAgoMs: lastOutputAt === null ? null : Math.round(performance.now() - lastOutputAt),
+      signal: child.signalCode,
+      spawnErrorCode,
+    });
     let resolveRun: (result: HarnessResult) => void = () => {};
     const promise = new Promise<HarnessResult>((resolve) => { resolveRun = resolve; });
     const finish = (result: HarnessResult): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
-      resolveRun(result);
+      resolveRun({ ...result, diagnostics: diagnostics() });
     };
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const stop = (): void => {
       killTree(child);
-      // Do not wait forever for a child that ignores SIGKILL.
-      setTimeout(() => finish({ ok: false, reply: '', code: null, error: `harness timed out after ${this.timeoutMs} ms` }), KILL_GRACE_MS);
-    }, this.timeoutMs);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
 
+    child.once('spawn', () => { spawned = true; });
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => {
+      stdoutBytes += Buffer.byteLength(chunk);
+      lastOutputAt = performance.now();
       if (overflow) return;
-      output += chunk;
-      if (output.length > maxOutput) {
+      if (stdoutBytes > maxOutput) {
         overflow = true;
-        killTree(child);
+        stop();
+        return;
       }
+      output += chunk;
     });
-    // opencode can repeat the prompt on stderr, so the relay never keeps it.
-    child.stderr?.resume();
+    // OpenCode can repeat the prompt on stderr. Count bytes and discard the text.
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderrBytes += chunk.length;
+      lastOutputAt = performance.now();
+    });
 
     child.once('error', (error) => {
-      finish({ ok: false, reply: '', code: null, error: `harness could not start: ${error.message}` });
+      spawnErrorCode = (error as NodeJS.ErrnoException).code ?? null;
+      finish({ ok: false, reply: '', code: null, error: `harness could not start: ${spawnErrorCode ?? 'unknown error'}` });
     });
     child.once('close', (code) => {
-      if (timedOut) return finish({ ok: false, reply: '', code, error: `harness timed out after ${this.timeoutMs} ms` });
       if (overflow) return finish({ ok: false, reply: '', code, error: `harness output exceeded ${maxOutput} bytes` });
       if (code !== 0) return finish({ ok: false, reply: '', code, error: `harness exited with code ${code ?? 'unknown'}` });
       const reply = plainText(output);
@@ -155,6 +172,6 @@ export class OpenCodeHarness implements Harness {
       finish({ ok: true, reply, code });
     });
 
-    return { promise, kill: () => killTree(child) };
+    return { promise, kill: stop };
   }
 }

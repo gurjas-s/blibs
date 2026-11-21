@@ -4,7 +4,8 @@
 
 This document covers the project selection flow for OpenCode. The relay uses
 only immediate folders in the configured projects directory. It reuses one
-OpenCode session for each project in one chat thread.
+OpenCode session for each project in one chat thread. Different projects can
+run at the same time. Tasks for the same project run in order.
 
 The relay tests use a harness stub. The live check uses a signed-in Muse
 session and OpenCode.
@@ -82,7 +83,10 @@ The live check stops Electron and removes its temporary projects when it ends. U
 
 - `tests/relay.test.ts` covers direct tasks, short selection replies, duplicate
   delivery, stale choices, ambiguous requests, and unknown and empty project
-  lists, folder creation, invalid names, conflicts, and write failures. Run with `node --import tsx --test tests/relay.test.ts`.
+  lists, folder creation, invalid names, conflicts, and write failures. The
+  parallel run test holds one project open while a second project completes.
+  It then checks that a follow-up waits and reuses its session. Run with
+  `node --import tsx --test tests/relay.test.ts`.
 - `tests/e2e/smoke.spec.ts` checks picker creation and scripted Muse
   creation, continuation, and redelivery. Run with `npm run e2e`.
 - `tests/e2e/live-muse.spec.ts` checks the provider composer, relay, and file contents in step 1.

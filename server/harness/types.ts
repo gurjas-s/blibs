@@ -1,8 +1,20 @@
+export interface HarnessDiagnostics {
+  elapsedMs: number;
+  spawned: boolean;
+  processExited: boolean;
+  stdoutBytes: number;
+  stderrBytes: number;
+  lastOutputAgoMs: number | null;
+  signal: NodeJS.Signals | null;
+  spawnErrorCode: string | null;
+}
+
 export interface HarnessResult {
   ok: boolean;
   reply: string;
   code: number | null;
   error?: string;
+  diagnostics?: HarnessDiagnostics;
 }
 
 export interface HarnessRun {
