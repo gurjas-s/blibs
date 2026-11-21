@@ -24,21 +24,36 @@ See [shared setup](README.md#shared-setup).
    Confirm that the test passes. It checks that both projects stay empty
    until Muse sends the short selection reply. The harness reply then appears
    in the same conversation, `alpha/hello.txt` contains exactly
-   `Hello from blibs.`, and `beta` stays empty.
+   `Hello from blibs.`, and `beta` stays empty. The creation scenario starts
+   with an empty projects directory. It checks that Muse creates `alpha`,
+   uses the short selection reply to resume the task, and keeps the file
+   intact when Muse repeats the creation command.
 
 2. For the opt-in live check, follow the
    [authenticated provider workflow](../SKILL.md#authenticated-provider-checks).
-   Use a dedicated test conversation and a signed-in profile. With the app
+   Use a signed-in profile. With the app
    built and OpenCode configured, run the following command. Set `BLIBS_LIVE_PROFILE` if the signed-in profile differs from the
    installed app profile.
 
    ```sh
-   BLIBS_LIVE_LOGIN=1 node --import tsx --test --test-name-pattern='live Muse creates' tests/e2e/live-login.spec.ts
+   BLIBS_LIVE_LOGIN=1 node --import tsx --test --test-name-pattern='live Muse creates a file' tests/e2e/live-login.spec.ts
    ```
 
    Confirm that Muse sends its own OpenCode task. The check verifies the
    harness reply in the same conversation, the exact test bytes in
    `alpha/hello.txt`, and an empty `beta`.
+
+   To check creation with a live provider, run the following command. It uses
+   the current Muse chat. Set `BLIBS_LIVE_CREATION_CHAT` to use another Muse
+   chat URL.
+
+   ```sh
+   BLIBS_LIVE_LOGIN=1 node --import tsx --test --test-name-pattern='live Muse creates a project' tests/e2e/live-login.spec.ts
+   ```
+
+   Confirm that Muse creates `alpha` from an empty projects directory and
+   that OpenCode writes the exact bytes. Check that both replies reach the
+   same conversation.
 
 3. Start the mock app with the shared command. Expected: the panel opens.
 
@@ -73,7 +88,11 @@ See [shared setup](README.md#shared-setup).
    Expected: blibs says that the project is unavailable and offers the
    available project IDs. The harness does not run.
 
-8. Open the Muse chat in the panel. Expected: the project list and harness
+8. Open **Connections** and select **New project**. Create a folder named
+   `picker-test`. The picker selects the new project, and the configured
+   projects directory contains an empty `picker-test` folder.
+
+9. Open the Muse chat in the panel. Expected: the project list and harness
    replies appear once in the thread.
 
 ## Diagnostics
@@ -81,7 +100,8 @@ See [shared setup](README.md#shared-setup).
 - Check whether the harness reply appeared in the same conversation.
 - Check whether the file exists, its bytes match, and `beta` is empty.
 
-Artifact: `tests/e2e/artifacts/project-selection.png`.
+Artifacts are `project-selection.png`, `new-project-dark.png`, and
+`new-project-light.png` in `tests/e2e/artifacts/`.
 
 The composer checks stop Electron and remove their temporary projects when
 they end. Use the shared cleanup steps for the manual mock app.
@@ -90,7 +110,8 @@ they end. Use the shared cleanup steps for the manual mock app.
 
 - `tests/relay.test.ts` covers direct tasks, short selection replies, duplicate
   delivery, stale choices, ambiguous requests, and unknown and empty project
-  lists. Run with `node --import tsx --test tests/relay.test.ts`.
+  lists, folder creation, duplicate delivery, invalid names, conflicts, and
+  write failures. Run with `node --import tsx --test tests/relay.test.ts`.
 - `tests/e2e/smoke.spec.ts`: `the relay asks Muse to choose a project and runs the selected task`. Run with `npm run e2e`.
 - `tests/e2e/smoke.spec.ts` includes `scripted Muse creates a file in the requested project from the composer`. Run step 1.
 - `tests/e2e/live-login.spec.ts` includes `live Muse creates a file in the requested project from the composer`. Run step 2 for the opt-in check.

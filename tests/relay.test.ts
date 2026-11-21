@@ -1,7 +1,7 @@
 // Relay tests use a fake harness, temporary projects, and mocked Muse rows.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -254,16 +254,65 @@ test('unknown and removed projects get choices without running the harness', asy
   assert.equal(runs(server)[0].prompt, 'build it');
 });
 
-test('an empty project list explains how to add a project', async () => {
+test('Muse creates a project from an empty list and resumes the saved task once', async () => {
   const server = await startRelay();
   rmSync(server.alpha, { recursive: true });
   rmSync(path.join(server.projectsDir, 'beta'), { recursive: true });
-  await importMuse(server, '@opencode build it', 'empty-projects');
+  await importMuse(server, '@opencode $missing build it', 'empty-projects');
   const reply = (await outbox(server))[0].text;
   assert.match(reply, /No projects are available/);
-  assert.match(reply, /add a project folder.*Connections/);
-  assert.doesNotMatch(reply, /\/select/);
+  assert.ok(reply.includes('@opencode /new-project <name>'));
+
+  for (const [index, name] of ['../escape', 'alpha@opencode'].entries()) {
+    await importMuse(server, `@opencode /new-project ${name}`, `invalid-project-${index}`);
+    assert.match((await outbox(server)).at(-1)?.text ?? '', /Enter one project name/);
+  }
+  assert.deepEqual(readdirSync(server.projectsDir), []);
+  await importMuse(server, '@opencode /new-project alpha', 'create-alpha');
+  const created = (await outbox(server)).at(-1)?.text ?? '';
+  assert.ok(created.includes('Project created. Project ID: $alpha.'));
+  const selection = created.match(/@opencode \/select [a-f0-9]{12} \$alpha/)?.[0];
+  assert.ok(selection);
   assert.equal(runs(server).length, 0);
+  await importMuse(server, selection, 'select-created-alpha');
+  await waitForRunCount(server, 1);
+  assert.equal(runs(server)[0].cwd, server.alpha);
+  assert.equal(runs(server)[0].prompt, 'build it');
+
+  const file = path.join(server.alpha, 'hello.txt');
+  writeFileSync(file, 'keep this file');
+  const repliesBeforeReplay = (await outbox(server)).length;
+  await importMuse(server, '@opencode /new-project alpha', 'create-alpha');
+  assert.equal((await outbox(server)).length, repliesBeforeReplay);
+  await importMuse(server, '@opencode /new-project alpha', 'rescanned-create-alpha');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /already exists/);
+  assert.deepEqual(readdirSync(server.projectsDir), ['alpha']);
+  assert.equal(readFileSync(file, 'utf8'), 'keep this file');
+  assert.equal(runs(server).length, 1);
+});
+
+test('the picker API creates projects and reports invalid names, conflicts, and write failures', async () => {
+  const server = await startRelay();
+  const create = (name: string): Promise<Response> => fetch(server.base + '/api/relay/projects/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  for (const name of ['../escape', '/tmp/escape', 'nested\\escape', 'NUL.txt', 'alpha.', '.hidden', 'alpha\n']) {
+    assert.equal((await create(name)).status, 400, name);
+  }
+  writeFileSync(path.join(server.projectsDir, 'existing'), 'keep');
+  assert.equal((await create('existing')).status, 409);
+  assert.equal((await create('alpha')).status, 409);
+  const response = await create('New project');
+  assert.equal(response.status, 201);
+  const result = await response.json() as { token: string; relay: { projects: Array<{ name: string; token: string }> } };
+  assert.equal(result.token, 'new-project');
+  assert.ok(result.relay.projects.some(({ name, token }) => name === 'New project' && token === result.token));
+  assert.deepEqual(readdirSync(path.join(server.projectsDir, 'New project')), []);
+  assert.equal(readFileSync(path.join(server.projectsDir, 'existing'), 'utf8'), 'keep');
+  rmSync(server.projectsDir, { recursive: true });
+  assert.equal((await create('unavailable')).status, 500);
 });
 
 test('a clear makes an unanswered project choice stale', async () => {

@@ -184,6 +184,13 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         try { return send(res, 200, relay.updateHarnesses(harnesses)); }
         catch { return send(res, 500, { error: 'Could not save the harness setting.' }); }
       }
+      if (req.url === '/api/relay/projects/create' && req.method === 'POST') {
+        let payload: Record<string, unknown>;
+        try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }
+        const result = relay.createProject(payload?.name);
+        if (result.kind === 'created') return send(res, 201, { token: result.token, relay: relay.status() });
+        return send(res, result.kind === 'conflict' ? 409 : result.kind === 'invalid' ? 400 : 500, { error: result.error });
+      }
       if (req.url === '/api/relay/projects' && req.method === 'POST') {
         let payload: Record<string, unknown>;
         try { payload = await readJson(req); } catch { return send(res, 400, { error: 'invalid JSON' }); }

@@ -180,6 +180,7 @@ export interface RelayStatus {
   /** Harness rows that the introduction reply lists. */
   harnesses: Array<{ id: string; name: string; enabled: boolean }>;
   discoveryRoot: string;
+  projects: Array<{ name: string; token: string }>;
   pending: number;
   sessions: number;
 }
@@ -208,5 +209,14 @@ export function updateRelayProjects(
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
+  });
+}
+
+
+export function createRelayProject(name: string): Promise<{ token: string; relay: RelayStatus }> {
+  return request('/api/relay/projects/create', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name }),
   });
 }

@@ -15,11 +15,11 @@ Report results and skips and select PR screenshots using [validate](../validate/
 Prefer targeted automated E2E against the existing signed-in profile.
 Use that profile directly for checks and screenshots without confirmation.
 For changes to provider sync or delivery, add or update a test when the
-changed behavior lacks coverage. Use a dedicated test conversation,
-synthetic messages, and an isolated project for real harness runs. Check
-the side effects before running a script. The Muse popout script sends
-`/clear`. Ask before clearing chats, changing account settings, or sending
-messages outside the dedicated test conversation. CI uses mock data.
+changed behavior lacks coverage. Use the current conversation or a test conversation. Live verification can
+send synthetic messages in the signed-in account without asking. Use an
+isolated project for real harness runs. Check the side effects before running
+a script. The Muse popout script sends `/clear`. Ask before clearing chats or
+changing account settings. CI uses mock data.
 
 If automation is blocked, verify by hand when possible and report the
 blocker. Build the checkout and launch with `npm start`. For a custom

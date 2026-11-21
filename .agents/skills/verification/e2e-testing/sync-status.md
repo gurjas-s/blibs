@@ -56,7 +56,7 @@ See [shared setup](README.md#shared-setup).
 
 7. For vendor sync changes, use the
    [authenticated profile](../SKILL.md#authenticated-provider-checks).
-   Open a dedicated test conversation in the provider and check that its
+   Open the current conversation in the provider and check that its
    messages appear once in the matching blibs thread after sync.
 
 ## Diagnostics

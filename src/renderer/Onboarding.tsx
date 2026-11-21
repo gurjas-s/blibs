@@ -7,6 +7,7 @@ import { Avatar } from './components/Avatar';
 import { Button } from './components/Button';
 import { Card } from './components/Card';
 import { CheckboxField } from './components/CheckboxField';
+import { SelectField } from './components/SelectField';
 import { TextField } from './components/TextField';
 
 export interface OnboardingProps {
@@ -18,6 +19,8 @@ export interface OnboardingProps {
   saving: boolean;
   error: string;
   onToggleHarness: (enabled: boolean) => void;
+  onClearError: () => void;
+  onCreateProject: (name: string) => Promise<string | undefined>;
   onChangeFolder: (folder: string) => Promise<boolean>;
   /** Open the agents screen to sign in to another assistant. */
   onConnectAnother: () => void;
@@ -40,16 +43,28 @@ export default function Onboarding({
   error,
   onToggleHarness,
   onChangeFolder,
+  onClearError,
+  onCreateProject,
   onConnectAnother,
   onStart,
   onBack,
 }: OnboardingProps) {
   const [editingFolder, setEditingFolder] = useState(false);
   const [folderDraft, setFolderDraft] = useState('');
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [projectName, setProjectName] = useState('');
+  const [selectedProject, setSelectedProject] = useState('');
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return;
+      if (creatingProject) {
+        if (!saving) {
+          onClearError();
+          setCreatingProject(false);
+        }
+        return;
+      }
       if (editingFolder) {
         if (saving) return;
         setEditingFolder(false);
@@ -60,9 +75,10 @@ export default function Onboarding({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [editingFolder, onBack, onStart, saving]);
+  }, [creatingProject, editingFolder, onBack, onClearError, onStart, saving]);
 
   function startFolderEdit(): void {
+    onClearError();
     setFolderDraft(relay?.discoveryRoot ?? '');
     setEditingFolder(true);
   }
@@ -71,6 +87,16 @@ export default function Onboarding({
     event.preventDefault();
     if (!folderDraft.trim() || saving) return;
     if (await onChangeFolder(folderDraft)) setEditingFolder(false);
+  }
+
+  async function saveProject(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (!projectName.trim() || saving) return;
+    const token = await onCreateProject(projectName);
+    if (token) {
+      setSelectedProject(token);
+      setCreatingProject(false);
+    }
   }
 
   const headingId = 'onboarding-title';
@@ -166,10 +192,53 @@ export default function Onboarding({
               <>
                 <span className="connections-folder-label">Shared folder</span>
                 <code className="connections-folder-path">{relay?.discoveryRoot ?? 'Unavailable'}</code>
-                <Button variant="ghost" size="sm" disabled={!relay || saving} onClick={startFolderEdit}>
+                <Button variant="ghost" size="sm" disabled={!relay || saving || creatingProject} onClick={startFolderEdit}>
                   Change folder
                 </Button>
               </>
+            )}
+            {relay && !editingFolder && (
+              creatingProject ? (
+                <form className="connections-folder-form" onSubmit={saveProject}>
+                  <TextField
+                    label="Project name"
+                    value={projectName}
+                    onChange={(event) => setProjectName(event.target.value)}
+                    maxLength={80}
+                    autoComplete="off"
+                    autoFocus
+                  />
+                  <Button variant="primary" type="submit" disabled={saving || !projectName.trim()}>
+                    Create project
+                  </Button>
+                  <Button variant="ghost" disabled={saving} onClick={() => {
+                    onClearError();
+                    setCreatingProject(false);
+                  }}>
+                    Cancel
+                  </Button>
+                </form>
+              ) : (
+                <div className="connections-folder-form">
+                  <SelectField
+                    label="Project"
+                    value={relay.projects.some(({ token }) => token === selectedProject) ? selectedProject : ''}
+                    onChange={(event) => setSelectedProject(event.target.value)}
+                  >
+                    <option value="">{relay.projects.length ? 'Choose a project' : 'No projects'}</option>
+                    {relay.projects.map(({ name, token }) => (
+                      <option key={token} value={token}>{name === token ? name : `${name} ($${token})`}</option>
+                    ))}
+                  </SelectField>
+                  <Button variant="ghost" size="sm" disabled={saving} onClick={() => {
+                    onClearError();
+                    setProjectName('');
+                    setCreatingProject(true);
+                  }}>
+                    New project
+                  </Button>
+                </div>
+              )
             )}
             {error && <p role="alert">{error}</p>}
           </div>

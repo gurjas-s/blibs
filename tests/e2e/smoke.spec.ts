@@ -539,6 +539,20 @@ test(
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     assert.equal(await folder.innerText(), previousFolder);
 
+    await page.getByRole('button', { name: 'New project', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Project name' }).fill('picker-test');
+    assertImage(await app.screenshot('new-project-dark.png'));
+    await setTheme(page, 'light');
+    assertImage(await app.screenshot('new-project-light.png'));
+    await setTheme(page, 'dark');
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'New project', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Project name' }).fill('picker-test');
+    await page.getByRole('button', { name: 'Create project', exact: true }).click();
+    await page.locator('option[value="picker-test"]').waitFor({ state: 'attached' });
+    assert.equal(await page.getByRole('combobox', { name: 'Project', exact: true }).inputValue(), 'picker-test');
+    assert.deepEqual(readdirSync(path.join(previousFolder, 'picker-test')), []);
+
     await page.getByRole('button', { name: 'Start chatting' }).click();
     await page.locator('.shell').waitFor({ state: 'visible' });
     assert.equal(await page.locator('.onboarding-screen').count(), 0);
@@ -913,22 +927,30 @@ test(
   },
 );
 
-test(
-  'scripted Muse creates a file in the requested project from the composer',
+for (const createProject of [false, true]) test(
+  createProject
+    ? 'scripted Muse creates a project and writes a file from the composer'
+    : 'scripted Muse creates a file in the requested project from the composer',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async (t) => {
     const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-composer-projects-'));
     t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
     const alpha = path.join(projectsDir, 'alpha');
     const beta = path.join(projectsDir, 'beta');
-    mkdirSync(alpha);
-    mkdirSync(beta);
+    if (!createProject) {
+      mkdirSync(alpha);
+      mkdirSync(beta);
+    }
     const content = 'Hello from blibs.';
     const task = 'Create hello.txt with exactly ' + content;
-    const request = 'Use OpenCode to create hello.txt. Write exactly: ' + content;
+    const request = (createProject
+      ? 'Create a project named alpha and use OpenCode to create hello.txt. Write exactly: '
+      : 'Use OpenCode to create hello.txt. Write exactly: ') + content;
     const museChatHtml = `<!doctype html>
       <main>
         <div role="log"></div>
+        <button id="create" disabled>Create alpha</button>
+        <button id="repeat" disabled>Redeliver creation</button>
         <button id="choose" disabled>Choose alpha</button>
         <form><textarea aria-label="Message"></textarea><button type="submit">Send</button></form>
       </main>
@@ -942,6 +964,18 @@ test(
           row.textContent = text;
           log.append(row);
         }
+        const create = document.querySelector('#create');
+        const repeat = document.querySelector('#repeat');
+        let created = false;
+        create.addEventListener('click', () => {
+          append('assistant', '@opencode /new-project alpha');
+          created = true;
+          create.disabled = true;
+        });
+        repeat.addEventListener('click', () => {
+          append('assistant', '@opencode /new-project alpha');
+          repeat.disabled = true;
+        });
         const choose = document.querySelector('#choose');
         choose.addEventListener('click', () => {
           append('assistant', '@opencode /select ' + choose.dataset.requestId + ' $alpha');
@@ -952,8 +986,11 @@ test(
           const text = composer.value;
           composer.value = '';
           append('user', text);
+          if (created && text.startsWith("Sent from user's harness")) repeat.disabled = false;
           if (text === ${JSON.stringify(request)}) append('assistant', '@opencode ' + ${JSON.stringify(task)});
-          if (text.startsWith('blibs choices') && text.includes('- $alpha') && text.includes('- $beta')) {
+          if (text.startsWith('blibs choices') && text.includes('No projects are available')) create.disabled = false;
+          if (text.startsWith('blibs choices') && (text.includes('Project created. Project ID: $alpha.')
+            || (text.includes('- $alpha') && text.includes('- $beta')))) {
             choose.dataset.requestId = text.split('/select ')[1].split(' ')[0];
             choose.disabled = false;
           }
@@ -983,15 +1020,33 @@ test(
       await muse.getByRole('textbox', { name: 'Message' }).fill(request);
       await muse.getByRole('button', { name: 'Send' }).click();
       const log = muse.getByRole('log');
-      await log.getByText('Pick a project for your task:', { exact: false }).waitFor({ timeout: 30_000 });
+      if (createProject) {
+        await log.getByText('No projects are available', { exact: false }).waitFor({ timeout: 30_000 });
+        assert.deepEqual(readdirSync(projectsDir), []);
+        await muse.getByRole('button', { name: 'Create alpha' }).click();
+        await log.getByText('Project created. Project ID: $alpha.', { exact: false }).waitFor({ timeout: 30_000 });
+      } else {
+        await log.getByText('Pick a project for your task:', { exact: false }).waitFor({ timeout: 30_000 });
+        assert.deepEqual(readdirSync(beta), []);
+      }
       assert.deepEqual(readdirSync(alpha), []);
-      assert.deepEqual(readdirSync(beta), []);
       await muse.getByRole('button', { name: 'Choose alpha' }).click();
       await log.getByText(/^@opencode \/select [a-f0-9]{12} \$alpha$/).waitFor({ timeout: 30_000 });
       await log.getByText("Sent from user's harness (OpenCode).", { exact: false }).waitFor({ timeout: 30_000 });
       assert.equal(muse.url(), threadUrl);
       assert.deepEqual(readFileSync(path.join(alpha, 'hello.txt')), Buffer.from(content));
-      assert.deepEqual(readdirSync(beta), []);
+      if (createProject) {
+        await muse.getByRole('button', { name: 'Redeliver creation' }).click();
+        await log.getByText('A file or folder with that name already exists.', { exact: false }).waitFor({ timeout: 30_000 });
+        assert.deepEqual(readdirSync(projectsDir), ['alpha']);
+        assert.deepEqual(readFileSync(path.join(alpha, 'hello.txt')), Buffer.from(content));
+      } else {
+        assert.deepEqual(readdirSync(beta), []);
+      }
+    } catch (error) {
+      const response = await fetch(testApp.backendUrl + '/api/outbox');
+      const outbox = await response.text();
+      throw new Error(`${String(error)}\nMock Muse outbox: ${outbox}`, { cause: error });
     } finally {
       await testApp.close();
     }
