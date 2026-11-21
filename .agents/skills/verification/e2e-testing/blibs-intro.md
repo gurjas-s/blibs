@@ -32,10 +32,6 @@ Smoke screenshots: `blibs-intro.png` and `harness-reply.png`.
 - `tests/relay.test.ts`, test `project replies ask the assistant to choose,
   and the blibs introduction explains routing`, covers the updated
   introduction and project reply.
-- `tests/e2e/live-login.spec.ts`, test
-  `live Muse sign-in with an email code and the @blibs introduction` is an
-  opt-in live check. It needs `BLIBS_LIVE_LOGIN=1` and account values in the
-  ignored `.env` file. It does not run in CI.
 - The project selection check is in
   [project-selection.md](project-selection.md).
 

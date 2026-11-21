@@ -31,15 +31,14 @@ export interface LaunchOptions {
   /** Maximum time to wait for the panel, in milliseconds. */
   timeoutMs?: number;
   /**
-   * Use the deterministic in-app sign-in steps. Defaults to true. A live
-   * vendor login test sets this to false and loads the real vendor pages.
+   * Use the deterministic in-app sign-in steps. Defaults to true. The live Muse
+   * check sets this to false to load the provider website.
    */
   mockLogin?: boolean;
   /** Serve a scripted chat document from the Muse partition. */
   museChatHtml?: string;
   /**
-   * Keep the Electron profile in this directory. A live sign-in check uses a
-   * stable ignored directory so a remembered device survives a second run.
+   * Use an existing Electron profile for an authenticated check.
    */
   profileDir?: string;
   /**

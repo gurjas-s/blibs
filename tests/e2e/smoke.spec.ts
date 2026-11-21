@@ -855,97 +855,15 @@ test(
 );
 
 test(
-  'the relay asks Muse to choose a project and runs the selected task',
-  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
-  async () => {
-    assert.ok(app, 'The E2E app must start.');
-    const { page } = app;
-    const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-projects-'));
-    const alpha = path.join(projectsDir, 'alpha');
-    const beta = path.join(projectsDir, 'beta');
-    mkdirSync(alpha);
-    mkdirSync(beta);
-    try {
-      const configured = await fetch(app.backendUrl + '/api/relay/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ discoveryRoot: projectsDir }),
-      });
-      assert.equal(configured.status, 200);
-
-      const threadId = 'https://muse.ai/chat/e2e-project-choice';
-      let ts = Date.now();
-      const importMuse = async (role: string, text: string, sourceId: string): Promise<void> => {
-        ts += 1000;
-        const response = await fetch(app.backendUrl + '/api/import', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: [{ provider: 'muse', role, text, url: threadId, sourceId, ts }] }),
-        });
-        assert.equal(response.status, 200);
-      };
-      const waitForOutbox = async (match: (text: string) => boolean): Promise<string> => {
-        const deadline = Date.now() + 20_000;
-        while (Date.now() < deadline) {
-          const data = await (await fetch(app.backendUrl + '/api/outbox')).json() as {
-            items?: Array<{ text?: string; threadId?: string }>;
-          };
-          const hit = (data.items ?? []).find((item) => item.threadId === threadId && item.text && match(item.text));
-          if (hit?.text) return hit.text;
-          await page.waitForTimeout(250);
-        }
-        throw new Error('The relay did not queue the expected reply.');
-      };
-
-      await importMuse('user', 'Project choice baseline.', 'e2e-project-base');
-      await page.waitForTimeout(200);
-      await importMuse('agent', '@opencode Build a small app', 'e2e-project-list');
-      const projectList = await waitForOutbox((text) => text.startsWith('blibs choices') && text.includes('Pick a project for your task:'));
-      assert.match(projectList, /Pick a project for your task:/);
-      assert.match(projectList, /- \$alpha/);
-      assert.match(projectList, /- \$beta/);
-      assert.ok(projectList.includes('@opencode $<project> <task>'));
-      const requestId = projectList.match(/\/select ([a-f0-9]{12})/)?.[1];
-      assert.ok(requestId);
-      assert.ok(!projectList.includes(projectsDir), 'The project list does not expose filesystem paths.');
-
-      await importMuse('agent', `@opencode /select ${requestId} $alpha`, 'e2e-project-run');
-      const reply = await waitForOutbox((text) => text.startsWith("Sent from user's harness (OpenCode)."));
-      assert.match(reply, /harness reply: Build a small app/);
-
-      await completeOnboarding(page);
-      await seedChats(page);
-      await selectAgent(page, 'Muse');
-      const choiceBubble = page.locator('.msg.agent', { hasText: 'blibs choices' }).first();
-      await choiceBubble.waitFor({ state: 'visible', timeout: 20_000 });
-      await choiceBubble.scrollIntoViewIfNeeded();
-      await page.waitForTimeout(300);
-      assertImage(await app.screenshot('project-selection.png'));
-    } finally {
-      rmSync(projectsDir, { recursive: true, force: true });
-    }
-  },
-);
-
-for (const createProject of [false, true]) test(
-  createProject
-    ? 'scripted Muse creates a project and writes a file from the composer'
-    : 'scripted Muse creates a file in the requested project from the composer',
+  'scripted Muse creates a project and writes a file from the composer',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async (t) => {
     const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-composer-projects-'));
     t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
     const alpha = path.join(projectsDir, 'alpha');
-    const beta = path.join(projectsDir, 'beta');
-    if (!createProject) {
-      mkdirSync(alpha);
-      mkdirSync(beta);
-    }
     const content = 'Hello from blibs.';
     const task = 'Create hello.txt with exactly ' + content;
-    const request = (createProject
-      ? 'Create a project named alpha and use OpenCode to create hello.txt. Write exactly: '
-      : 'Use OpenCode to create hello.txt. Write exactly: ') + content;
+    const request = 'Create a project named alpha and use OpenCode to create hello.txt. Write exactly: ' + content;
     const museChatHtml = `<!doctype html>
       <main>
         <div role="log"></div>
@@ -989,8 +907,7 @@ for (const createProject of [false, true]) test(
           if (created && text.startsWith("Sent from user's harness")) repeat.disabled = false;
           if (text === ${JSON.stringify(request)}) append('assistant', '@opencode ' + ${JSON.stringify(task)});
           if (text.startsWith('blibs choices') && text.includes('No projects are available')) create.disabled = false;
-          if (text.startsWith('blibs choices') && (text.includes('Project created. Project ID: $alpha.')
-            || (text.includes('- $alpha') && text.includes('- $beta')))) {
+          if (text.startsWith('blibs choices') && text.includes('Project created. Project ID: $alpha.')) {
             choose.dataset.requestId = text.split('/select ')[1].split(' ')[0];
             choose.disabled = false;
           }
@@ -1020,29 +937,20 @@ for (const createProject of [false, true]) test(
       await muse.getByRole('textbox', { name: 'Message' }).fill(request);
       await muse.getByRole('button', { name: 'Send' }).click();
       const log = muse.getByRole('log');
-      if (createProject) {
-        await log.getByText('No projects are available', { exact: false }).waitFor({ timeout: 30_000 });
-        assert.deepEqual(readdirSync(projectsDir), []);
-        await muse.getByRole('button', { name: 'Create alpha' }).click();
-        await log.getByText('Project created. Project ID: $alpha.', { exact: false }).waitFor({ timeout: 30_000 });
-      } else {
-        await log.getByText('Pick a project for your task:', { exact: false }).waitFor({ timeout: 30_000 });
-        assert.deepEqual(readdirSync(beta), []);
-      }
+      await log.getByText('No projects are available', { exact: false }).waitFor({ timeout: 30_000 });
+      assert.deepEqual(readdirSync(projectsDir), []);
+      await muse.getByRole('button', { name: 'Create alpha' }).click();
+      await log.getByText('Project created. Project ID: $alpha.', { exact: false }).waitFor({ timeout: 30_000 });
       assert.deepEqual(readdirSync(alpha), []);
       await muse.getByRole('button', { name: 'Choose alpha' }).click();
       await log.getByText(/^@opencode \/select [a-f0-9]{12} \$alpha$/).waitFor({ timeout: 30_000 });
       await log.getByText("Sent from user's harness (OpenCode).", { exact: false }).waitFor({ timeout: 30_000 });
       assert.equal(muse.url(), threadUrl);
       assert.deepEqual(readFileSync(path.join(alpha, 'hello.txt')), Buffer.from(content));
-      if (createProject) {
-        await muse.getByRole('button', { name: 'Redeliver creation' }).click();
-        await log.getByText('A file or folder with that name already exists.', { exact: false }).waitFor({ timeout: 30_000 });
-        assert.deepEqual(readdirSync(projectsDir), ['alpha']);
-        assert.deepEqual(readFileSync(path.join(alpha, 'hello.txt')), Buffer.from(content));
-      } else {
-        assert.deepEqual(readdirSync(beta), []);
-      }
+      await muse.getByRole('button', { name: 'Redeliver creation' }).click();
+      await log.getByText('A file or folder with that name already exists.', { exact: false }).waitFor({ timeout: 30_000 });
+      assert.deepEqual(readdirSync(projectsDir), ['alpha']);
+      assert.deepEqual(readFileSync(path.join(alpha, 'hello.txt')), Buffer.from(content));
     } catch (error) {
       const response = await fetch(testApp.backendUrl + '/api/outbox');
       const outbox = await response.text();

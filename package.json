@@ -14,7 +14,7 @@
     "e2e": "npm run build && npm run e2e:built",
     "e2e:built": "node --import tsx --test tests/e2e/smoke.spec.ts",
     "mock:desktop": "node --import tsx tests/e2e/mock-desktop.ts",
-    "e2e:live": "npm run build && node --import tsx --test tests/e2e/live-login.spec.ts",
+    "e2e:live": "npm run build && node --import tsx --test tests/e2e/live-muse.spec.ts",
     "postinstall": "node scripts/check-electron.mjs",
     "prestart": "node scripts/check-electron.mjs",
     "start": "electron .",
