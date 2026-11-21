@@ -118,7 +118,6 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
     harness: harnessKind(relayConfig.harnessId).create({
       command: relayConfig.command,
       cwd: relayConfig.cwd,
-      timeoutMs: relayConfig.timeoutMs,
     }),
     stateDir: dataDir,
     enqueue: (provider, text, threadId) => { enqueueOutbox(provider, text, threadId); },

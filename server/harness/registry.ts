@@ -11,7 +11,6 @@ import type { Harness } from './types.js';
 export interface HarnessOptions {
   command: string;
   cwd: string;
-  timeoutMs: number;
 }
 
 /** One harness blibs can drive. */

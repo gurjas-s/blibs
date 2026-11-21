@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HistoryMessage } from './history.js';
 import { DEFAULT_DISCOVERY_ROOT, DEFAULT_RELAY_MODEL } from './relay-defaults.js';
-import type { Harness, HarnessResult, HarnessRun } from './harness/types.js';
+import type { Harness, HarnessRun } from './harness/types.js';
 import { extractMentionBody, isUserTurn, sanitizeReply, startsWithMention } from './harness/mention.js';
 import { stripVendorLabel } from '../shared/vendor-label.js';
 import { BLIBS_MENTION, isBlibsMention, isIntroMessage, introMessage } from './harness/intro.js';
@@ -49,7 +49,6 @@ import {
 } from './harness/projects.js';
 
 export const RELAY_QUEUE_LIMIT = 20;
-export const DEFAULT_RELAY_TIMEOUT_MS = 120_000;
 export const RELAY_PROVIDER = 'muse';
 /** Environment override for the harness command. Tests and e2e stub the harness with it. */
 export const RELAY_COMMAND_ENV = 'BLIBS_RELAY_COMMAND';
@@ -72,7 +71,6 @@ export interface RelayConfig {
   harnessId: string;
   command: string;
   cwd: string;
-  timeoutMs: number;
   /** Default harness model in provider/model form. Empty means the harness default. */
   model?: string;
   /** Directory whose immediate subfolders are the projects. */
@@ -82,7 +80,7 @@ export interface RelayConfig {
 export interface RelayStatus {
   enabled: boolean;
   provider: string;
-  harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
+  harness: { id: string; command: string; cwd: string; model?: string };
   /** Harnesses supported by the configured provider. */
   harnesses: HarnessChoice[];
   discoveryRoot: string;
@@ -105,6 +103,18 @@ interface RelayItem {
   threadId: string;
   /** Empty requests the project list. Null clears the chat context. */
   body: string | null;
+}
+
+interface RelayWork {
+  item: RelayItem;
+  task: string;
+  projectPath: string;
+}
+
+interface ActiveWork {
+  item: RelayItem;
+  startedAt: number;
+  run?: HarnessRun;
 }
 
 interface PendingProjectTask {
@@ -160,7 +170,6 @@ export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig
     enabled: true,
     provider: RELAY_PROVIDER,
     cwd: path.join(dataDir, 'harness'),
-    timeoutMs: DEFAULT_RELAY_TIMEOUT_MS,
     ...overrides,
     model: overrides.model ?? DEFAULT_RELAY_MODEL,
     discoveryRoot: overrides.discoveryRoot ?? envProjectsDir ?? DEFAULT_DISCOVERY_ROOT,
@@ -229,9 +238,9 @@ export class RelayService {
   private readonly pendingProjectTasks = new Map<string, PendingProjectTask>();
   /** Trigger text per thread. A re-scraped message gets a new message id. */
   private readonly recentTriggers = new Map<string, number>();
-  private active: HarnessRun | null = null;
+  private readonly workQueue: RelayWork[] = [];
+  private readonly active = new Map<string, ActiveWork>();
   private closed = false;
-  private draining = false;
 
   constructor(options: RelayServiceOptions) {
     this.config = options.config;
@@ -306,7 +315,7 @@ export class RelayService {
     return true;
   }
 
-  private log(event: string, messageId: string, details: Record<string, string | number> = {}): void {
+  private log(event: string, messageId: string, details: Record<string, string | number | boolean | null> = {}): void {
     console.info(JSON.stringify({ time: new Date().toISOString(), component: 'blibs-relay', event, messageId, ...details }));
   }
 
@@ -550,7 +559,7 @@ export class RelayService {
 
   private queueItem(message: HistoryMessage, body: string): boolean {
     if (!this.canDispatch(message)) return false;
-    if (this.queue.length >= RELAY_QUEUE_LIMIT) {
+    if (this.queue.length + this.workQueue.length >= RELAY_QUEUE_LIMIT) {
       this.log('skipped', message.id, { reason: 'queue-full' });
       const now = Date.now();
       this.state.lastRun = { state: 'skipped', messageId: message.id, startedAt: now, endedAt: now, error: 'relay queue is full; message dropped' };
@@ -652,31 +661,58 @@ export class RelayService {
       }
     }
     if (changed) this.save();
-    if (queued) void this.drain();
+    if (queued) this.drain();
   }
 
-  private async drain(): Promise<void> {
-    if (this.draining) return;
-    this.draining = true;
-    try {
-      while (this.queue.length && !this.closed) {
-        const item = this.queue.shift();
-        if (!item) break;
-        try {
-          await this.runOne(item);
-        } catch {
-          this.log('relay-error', item.id);
-          this.tellFailure(item, 'blibs could not process this harness request.');
-          this.finishRun(item.id, Date.now(), false, 'unexpected relay error');
-        }
+  private drain(): void {
+    while (this.queue.length && !this.closed) {
+      const item = this.queue.shift()!;
+      try {
+        this.runOne(item);
+      } catch {
+        this.failDispatch(item);
       }
-    } finally {
-      this.draining = false;
+    }
+    this.dispatchWork();
+  }
+
+  private failDispatch(item: RelayItem): void {
+    this.log('relay-error', item.id);
+    this.tellFailure(item, 'blibs could not process this harness request.');
+    this.finishRun(item.id, Date.now(), false, 'unexpected relay error');
+  }
+
+  private dispatchWork(): void {
+    while (!this.closed) {
+      const index = this.workQueue.findIndex(({ projectPath }) => !this.active.has(projectPath));
+      if (index === -1) return;
+      const [{ item, task, projectPath }] = this.workQueue.splice(index, 1);
+      try {
+        if (!this.canDispatch(item)) continue;
+        if (path.dirname(projectPath) !== this.config.discoveryRoot
+          || !fs.lstatSync(projectPath, { throwIfNoEntry: false })?.isDirectory()) {
+          const error = 'The selected project is no longer available. Send a new task.';
+          this.tellFailure(item, error);
+          this.finishRun(item.id, Date.now(), false, error);
+          continue;
+        }
+      } catch {
+        this.failDispatch(item);
+        continue;
+      }
+      const work = { item, startedAt: Date.now() };
+      this.active.set(projectPath, work);
+      void this.runWork(work, task, projectPath).catch(() => {
+        if (!this.closed) this.failDispatch(item);
+      }).finally(() => {
+        this.active.delete(projectPath);
+        this.dispatchWork();
+      });
     }
   }
 
   /** Resolve a task or a selection against the current project list. */
-  private async runOne(item: RelayItem): Promise<void> {
+  private runOne(item: RelayItem): void {
     if (item.body === null) {
       this.pendingProjectTasks.delete(item.threadId);
       return;
@@ -685,9 +721,6 @@ export class RelayService {
     const pending = this.pendingProjectTasks.get(item.threadId);
     if (pending?.body === item.body) return;
     const startedAt = Date.now();
-    this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
-    this.save();
-
     const body = item.body.trim();
     const [command, requestId, token, extra] = body.split(/\s+/, 4);
     if (command.toLowerCase() === '/new-project') {
@@ -713,7 +746,8 @@ export class RelayService {
       const selected = !extra && pending.choices.find((choice) => `$${choice.token}` === token?.toLowerCase());
       if (selected && allChoices.some((choice) => choice.path === selected.path)) {
         this.pendingProjectTasks.delete(item.threadId);
-        return this.runWork(item, pending.task, selected.path, startedAt);
+        this.workQueue.push({ item, task: pending.task, projectPath: selected.path });
+        return;
       }
       const available = pending.choices.filter((choice) => allChoices.some((current) => current.path === choice.path));
       return this.finishChoices(item, formatProjectList(available.slice(0, PROJECT_CHOICE_LIMIT), {
@@ -733,7 +767,8 @@ export class RelayService {
         return this.finishChoices(item, formatMissingTask(match.choice.token, options), startedAt);
       }
       this.pendingProjectTasks.delete(item.threadId);
-      return this.runWork(item, task, match.choice.path, startedAt);
+      this.workQueue.push({ item, task, projectPath: match.choice.path });
+      return;
     }
 
     const task = match.kind === 'unknown' ? taskAfterUnknownProject(item.body) : item.body.trim();
@@ -750,37 +785,34 @@ export class RelayService {
     this.finishRun(item.id, startedAt, sent, sent ? undefined : 'outbox write failed');
   }
 
-  /** Await one run and keep it visible as the active run while it settles. */
-  private async awaitRun(run: HarnessRun): Promise<HarnessResult> {
-    this.active = run;
-    try {
-      return await run.promise;
-    } finally {
-      this.active = null;
-    }
-  }
+  private async runWork(work: ActiveWork, task: string, projectPath: string): Promise<void> {
+    const { item, startedAt } = work;
+    this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
+    this.save();
 
-  private async runWork(
-    item: RelayItem,
-    task: string,
-    projectPath: string,
-    startedAt: number,
-  ): Promise<void> {
-    this.log('harness-start', item.id, { harness: this.config.harnessId });
+    const reuseSession = Boolean(this.storedSession(item.threadId, projectPath));
+    this.log('harness-start', item.id, {
+      harness: this.config.harnessId,
+      model: this.config.model ?? 'default',
+      reuseSession,
+    });
     const run = this.harness.start(buildPrompt(task), {
       sessionId: this.sessionFor(item.threadId, projectPath),
       cwd: projectPath,
       model: this.config.model,
+      onProgress: (diagnostics) => this.log('harness-progress', item.id, { ...diagnostics }),
     });
+    work.run = run;
     let ok = false;
     let error: string | undefined;
     try {
-      const result = await this.awaitRun(run);
+      const result = await run.promise;
       if (this.closed) return;
       error = result.error;
       this.log('harness-result', item.id, {
-        outcome: result.ok ? 'ok' : result.error?.startsWith('harness timed out') ? 'timeout' : 'failed',
+        outcome: result.ok ? 'ok' : 'failed',
         exitCode: result.code ?? 'unavailable',
+        ...result.diagnostics,
       });
       if (result.ok) {
         const reply = harnessMessage(result.reply, harnessKind(this.config.harnessId).name);
@@ -819,7 +851,6 @@ export class RelayService {
         id: this.config.harnessId,
         command: this.config.command,
         cwd: this.config.cwd,
-        timeoutMs: this.config.timeoutMs,
         ...(this.config.model ? { model: this.config.model } : {}),
       },
       harnesses: this.harnesses(),
@@ -828,8 +859,8 @@ export class RelayService {
         name: path.basename(projectPath),
         token,
       })),
-      pending: this.queue.length + (this.active ? 1 : 0),
-      running: this.active !== null,
+      pending: this.queue.length + this.workQueue.length + this.active.size,
+      running: this.active.size > 0,
       processed: this.state.processed.length,
       watermark: this.state.watermark,
       sessions: Object.keys(this.state.sessions).length,
@@ -841,8 +872,13 @@ export class RelayService {
     if (this.closed) return;
     this.closed = true;
     this.queue.length = 0;
-    this.active?.kill();
-    this.active = null;
+    this.workQueue.length = 0;
+    for (const { item, startedAt, run } of this.active.values()) {
+      run?.kill();
+      this.log('harness-interrupted', item.id, { elapsedMs: Date.now() - startedAt });
+      this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
+    }
+    this.active.clear();
     if (this.interruptLastRun('relay stopped before the harness finished')) this.save();
   }
 }

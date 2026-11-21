@@ -34,6 +34,12 @@ const args = process.argv.slice(2);
 const prompt = args.at(-1) || '';
 fs.appendFileSync(path.join('__LOG_DIR__', 'runs.jsonl'), JSON.stringify({ args, prompt, cwd: process.cwd() }) + '\\n');
 if (prompt.includes('FAIL_HARNESS')) process.exit(3);
+if (prompt.includes('WAIT_HARNESS')) {
+  process.stderr.write('private diagnostic text');
+  while (!fs.existsSync(path.join('__LOG_DIR__', 'release'))) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
 process.stdout.write('harness reply: ' + prompt + '\\n');
 `;
 
@@ -45,7 +51,7 @@ async function startRelay(): Promise<RelayServer> {
   mkdirSync(alpha);
   mkdirSync(path.join(projectsDir, 'beta'));
   const fake = path.join(harnessDir, 'fake-harness.mjs');
-  writeFileSync(fake, FAKE_HARNESS.replace("'__LOG_DIR__'", JSON.stringify(harnessDir)));
+  writeFileSync(fake, FAKE_HARNESS.replaceAll("'__LOG_DIR__'", JSON.stringify(harnessDir)));
   const seed = new HistoryStore(dataDir);
   seed.import([{ provider: 'muse', role: 'user', text: 'Earlier message.', ts: 1, url: 'https://muse.ai/chat/relay-test', sourceId: 'seed-user', identity: 'source-id' }]);
   seed.close();
@@ -54,7 +60,6 @@ async function startRelay(): Promise<RelayServer> {
     provider: 'muse',
     command: JSON.stringify([process.execPath, fake]),
     cwd: harnessDir,
-    timeoutMs: 5000,
     discoveryRoot: projectsDir,
   } });
   server.listen(0, '127.0.0.1');
@@ -211,6 +216,62 @@ test('a harness failure sends a visible reason to the chat', async () => {
     await sleep(25);
   }
   assert.match(items.at(-1)?.text ?? '', /harness failed/i);
+});
+
+test('different projects run together and same-project tasks wait and reuse the session', async (t) => {
+  const logs = t.mock.method(console, 'info', () => {});
+  const server = await startRelay();
+  await importMuse(server, '@opencode $alpha WAIT_HARNESS', 'waiting-run');
+  await waitForRunCount(server, 1);
+  await importMuse(server, '@opencode $alpha next task', 'queued-run');
+  assert.equal(runs(server).length, 1);
+  const waiting = await (await fetch(server.base + '/api/relay')).json();
+  assert.equal(waiting.pending, 2);
+  assert.equal(waiting.running, true);
+  await importMuse(server, '@opencode $beta independent task', 'parallel-run');
+  await waitForRunCount(server, 2);
+  assert.match(runs(server)[1].prompt, /independent task/);
+  const deadline = Date.now() + 5000;
+  while (!(await outbox(server)).length && Date.now() < deadline) await sleep(25);
+  assert.equal((await outbox(server)).length, 1);
+  assert.match((await outbox(server))[0].text, /independent task/);
+
+  writeFileSync(path.join(server.harnessDir, 'release'), '');
+  while ((await outbox(server)).length < 3 && Date.now() < deadline) await sleep(25);
+  const items = await outbox(server);
+  assert.equal(items.length, 3);
+  assert.match(items[1].text, /WAIT_HARNESS/);
+  assert.match(items[2].text, /next task/);
+  const sessionArg = (run: ReturnType<typeof runs>[number]) => run.args[run.args.indexOf('--session') + 1];
+  const [first, independent, followUp] = runs(server);
+  assert.equal(sessionArg(first), sessionArg(followUp));
+  assert.notEqual(sessionArg(first), sessionArg(independent));
+
+  const lines = logs.mock.calls.map(({ arguments: [line] }) => String(line));
+  const events = lines.map((line) => JSON.parse(line));
+  const start = events.find((event) => event.event === 'harness-start');
+  const result = events.find((event) => event.event === 'harness-result' && event.messageId === start.messageId);
+  assert.equal(result.messageId, start.messageId);
+  assert.equal(result.outcome, 'ok');
+  assert.equal(result.spawned, true);
+  assert.equal(result.processExited, true);
+  assert.equal(result.stderrBytes, Buffer.byteLength('private diagnostic text'));
+  assert.ok(result.stdoutBytes > 0);
+  assert.ok(lines.every((line) => !line.includes('WAIT_HARNESS') && !line.includes('private diagnostic text')));
+});
+
+test('five projects can run at the same time', async () => {
+  const server = await startRelay();
+  for (const project of ['gamma', 'delta', 'epsilon']) mkdirSync(path.join(server.projectsDir, project));
+  for (const project of ['alpha', 'beta', 'gamma', 'delta', 'epsilon']) {
+    await importMuse(server, `@opencode $${project} WAIT_HARNESS`, `cap-${project}`);
+  }
+  await waitForRunCount(server, 5);
+  assert.equal((await outbox(server)).length, 0);
+  const waiting = await (await fetch(server.base + '/api/relay')).json();
+  assert.equal(waiting.pending, 5);
+  assert.equal(waiting.running, true);
+  writeFileSync(path.join(server.harnessDir, 'release'), '');
 });
 
 function selectAlpha(reply: string): string {
