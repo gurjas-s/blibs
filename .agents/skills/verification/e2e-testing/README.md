@@ -21,7 +21,13 @@ with `npm run mock:desktop`.
 - For checks, evidence, and display requirements, see
   [validate](../../validate/SKILL.md).
 
-Smoke test names in these guides refer to `npm run e2e:built` after a build.
+After building, run `npm run e2e:built` for the smoke suite. To run one
+check, pass its name before the spec path:
+
+```sh
+node --import tsx --test --test-name-pattern='part of the test name' tests/e2e/smoke.spec.ts
+```
+
 The spec saves screenshots in `tests/e2e/artifacts/`.
 
 ## Feature map
@@ -29,7 +35,7 @@ The spec saves screenshots in `tests/e2e/artifacts/`.
 | User-facing feature | Document | Main automated check |
 | --- | --- | --- |
 | Onboarding and first run | [onboarding.md](onboarding.md) | `smoke.spec.ts`: `first run shows the connections matrix and does not reappear` |
-| Connections and assistant chat | [connections-chat.md](connections-chat.md) | `smoke.spec.ts`: `panel shows a selected chat and a readable message thread`; `an unconnected assistant shows an inline setup card and a disabled composer`; `connections.test.ts` |
+| Connections and assistant chat | [connections-chat.md](connections-chat.md) | `smoke.spec.ts`: `Connections applies the saved folder and harness setting to Muse requests`; `panel shows a selected chat and a readable message thread`; `connections.test.ts` |
 | blibs introduction and harness replies | [blibs-intro.md](blibs-intro.md) | `smoke.spec.ts`: `an @blibs mention shows the introduction and a harness reply says which harness sent it`; `relay.test.ts` |
 | OpenCode project selection | [project-selection.md](project-selection.md) | `smoke.spec.ts`: `the relay asks Muse to choose a project and runs the selected task`; `relay.test.ts` |
 | Vendor login and sessions | [vendor-login.md](vendor-login.md) | `smoke.spec.ts`: `vendor sign-in entry point shows mocked steps and returns home` |
