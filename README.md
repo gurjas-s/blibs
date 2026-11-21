@@ -105,11 +105,7 @@ that fails posts a short failure note into the chat.
 Start blibs from a terminal with `npm start` to see the relay logs. Search for
 `blibs-relay` to see whether blibs skipped a request, matched a project,
 started a harness, or queued a reply. Search for `blibs-outbox` to see if the
-app acknowledged a send. OpenCode runs until it finishes or blibs stops the
-relay. Different projects can run at the same time. Tasks for the same
-project run in order. The relay logs process
-status and stream byte counts when the run ends. Match
-these events by `messageId`. The logs omit chat text, prompts, and harness output.
+app acknowledged a send. The logs omit chat text, prompts, and harness output.
 
 ## Scripts
 
