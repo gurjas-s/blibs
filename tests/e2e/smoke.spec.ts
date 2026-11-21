@@ -6,7 +6,7 @@
 // screenshots to the ignored artifact directory.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
@@ -872,6 +872,71 @@ test(
       assertImage(await app.screenshot('project-selection.png'));
     } finally {
       rmSync(projectsDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'scripted Muse creates a file in the requested project from the composer',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async (t) => {
+    const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-composer-projects-'));
+    t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
+    const alpha = path.join(projectsDir, 'alpha');
+    const beta = path.join(projectsDir, 'beta');
+    mkdirSync(alpha);
+    mkdirSync(beta);
+    const content = 'Hello from blibs.';
+    const task = 'Create hello.txt with exactly ' + content;
+    const request = 'Use OpenCode to create hello.txt in the project named alpha. Write exactly: ' + content;
+    const museChatHtml = `<!doctype html>
+      <main>
+        <div role="log"></div>
+        <form><textarea aria-label="Message"></textarea><button type="submit">Send</button></form>
+      </main>
+      <script>
+        const log = document.querySelector('[role="log"]');
+        const composer = document.querySelector('textarea');
+        function append(role, text) {
+          const row = document.createElement('div');
+          row.dataset.messageAuthorRole = role;
+          row.style.whiteSpace = 'pre-wrap';
+          row.textContent = text;
+          log.append(row);
+        }
+        document.querySelector('form').addEventListener('submit', (event) => {
+          event.preventDefault();
+          const text = composer.value;
+          composer.value = '';
+          append('user', text);
+          if (text === ${JSON.stringify(request)}) append('assistant', '@opencode');
+          if (text.startsWith('blibs choices') && text.includes('- $alpha') && text.includes('- $beta')) {
+            append('assistant', '@opencode $alpha ' + ${JSON.stringify(task)});
+          }
+        });
+      </script>`;
+    const testApp = await launch({ projectsDir, museChatHtml });
+    try {
+      const deadline = Date.now() + 15_000;
+      let muse: Page | undefined;
+      while (!muse && Date.now() < deadline) {
+        muse = testApp.browser.contexts().flatMap((context) => context.pages())
+          .find((page) => page.url() === 'https://muse.ai/');
+        if (!muse) await delay(100);
+      }
+      assert.ok(muse, 'The Muse vendor view must start.');
+      const threadUrl = 'https://muse.ai/chat/e2e-project-file';
+      await muse.goto(threadUrl);
+      await muse.getByRole('textbox', { name: 'Message' }).fill(request);
+      await muse.getByRole('button', { name: 'Send' }).click();
+      const log = muse.getByRole('log');
+      await log.getByText('@opencode $alpha ' + task, { exact: true }).waitFor({ timeout: 30_000 });
+      await log.getByText("Sent from user's harness (OpenCode).", { exact: false }).waitFor({ timeout: 30_000 });
+      assert.equal(muse.url(), threadUrl);
+      assert.deepEqual(readFileSync(path.join(alpha, 'hello.txt')), Buffer.from(content));
+      assert.deepEqual(readdirSync(beta), []);
+    } finally {
+      await testApp.close();
     }
   },
 );
