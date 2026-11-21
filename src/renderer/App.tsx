@@ -34,7 +34,10 @@ import {
   fetchOutboxStatuses,
   queueOutbox,
   retryOutbox as retryOutboxItem,
+  fetchRelayStatus,
   updateRelayHarnesses,
+  updateRelayProjects,
+  type RelayStatus,
 } from './client';
 import {
   HARNESSES,
@@ -46,8 +49,6 @@ import {
   readConnectionState,
   resolveSetupStatus,
   setAssistantSetup,
-  setHarnessEnabled,
-  setSharedFolder,
   writeConnectionState,
 } from './connections';
 import type { ConnectionState } from './connections';
@@ -75,9 +76,6 @@ const ONBOARDING_DONE = 'done';
 
 /** Search debounce in milliseconds. */
 const SEARCH_DEBOUNCE_MS = 250;
-
-/** The assistant whose chat the relay reads and answers. */
-const RELAY_ASSISTANT_PROVIDER = 'muse';
 
 /** The main pane that the shell shows. */
 type View = 'chat' | 'results' | 'settings' | 'login' | 'connections';
@@ -163,7 +161,12 @@ export default function App() {
   const searchId = useRef(0);
   const debounceTimer = useRef<number | null>(null);
   const pendingCaret = useRef(false);
-  const lastHarnessReport = useRef('');
+  const relaySave = useRef(false);
+  const [relay, setRelay] = useState<RelayStatus>();
+  const [relaySaving, setRelaySaving] = useState(false);
+  const [relaySaveError, setRelayError] = useState('');
+  const [relayLoadFailed, setRelayLoadFailed] = useState(false);
+  const relayError = relaySaveError || (relayLoadFailed ? 'Could not load the relay settings.' : '');
 
   const active = agents.find((a) => a.id === activeId) ?? agents[0];
   const meta = providerFor(active);
@@ -195,22 +198,18 @@ export default function App() {
   }, [connections]);
 
   useEffect(() => {
-    const relayAgent = agents.find((agent) => agent.provider === RELAY_ASSISTANT_PROVIDER);
-    if (!relayAgent) return;
-    const connection = connectionFor(connections, relayAgent.id);
-    const report = HARNESSES.map((harness) => ({
-      id: harness.id,
-      name: harness.name,
-      enabled: connection.harnesses[harness.id],
-    }));
-    const signature = JSON.stringify(report);
-    if (signature === lastHarnessReport.current) return;
-    lastHarnessReport.current = signature;
-    void updateRelayHarnesses(report).catch(() => {
-      // The next connection change reports again.
-      lastHarnessReport.current = '';
+    if (relaySave.current) return;
+    const controller = new AbortController();
+    void fetchRelayStatus(controller.signal).then((status) => {
+      if (!controller.signal.aborted && !relaySave.current) {
+        setRelay(status);
+        setRelayLoadFailed(false);
+      }
+    }).catch(() => {
+      if (!controller.signal.aborted && !relaySave.current) setRelayLoadFailed(true);
     });
-  }, [connections, agents]);
+    return () => controller.abort();
+  }, [view]);
   useEffect(() => {
     localStorage.setItem(LS_AUTOPULL, JSON.stringify(autoPull));
   }, [autoPull]);
@@ -575,12 +574,29 @@ export default function App() {
     setView('connections');
   }
 
-  function toggleHarness(assistantId: string, harnessId: (typeof HARNESSES)[number]['id'], enabled: boolean): void {
-    setConnections((current) => setHarnessEnabled(current, assistantId, harnessId, enabled));
+  async function saveRelay(update: () => Promise<RelayStatus>): Promise<boolean> {
+    if (relaySave.current) return false;
+    relaySave.current = true;
+    setRelaySaving(true);
+    setRelayError('');
+    try {
+      setRelay(await update());
+      setRelayLoadFailed(false);
+      return true;
+    } catch (error) {
+      setRelayError((error as Error).message);
+      return false;
+    } finally {
+      relaySave.current = false;
+      setRelaySaving(false);
+    }
   }
 
-  function changeFolder(folder: string): void {
-    setConnections((current) => setSharedFolder(current, folder));
+  function toggleHarness(enabled: boolean): void {
+    const choice = relay?.harnesses[0];
+    if (relay?.enabled && choice) {
+      void saveRelay(() => updateRelayHarnesses([{ ...choice, enabled }]));
+    }
   }
 
   function reportLoginError(vendorId: string, error: unknown): void {
@@ -630,9 +646,11 @@ export default function App() {
       <Onboarding
         assistants={PROVIDERS}
         harnesses={HARNESSES}
-        state={connections}
+        relay={relay}
+        saving={relaySaving}
+        error={relayError}
         onToggleHarness={toggleHarness}
-        onChangeFolder={changeFolder}
+        onChangeFolder={(discoveryRoot) => saveRelay(() => updateRelayProjects({ discoveryRoot }))}
         onConnectAnother={connectAnother}
         onStart={startChat}
         onBack={view === 'connections' ? () => setView('chat') : undefined}
@@ -931,8 +949,8 @@ export default function App() {
               </div>
               <p className="preview-caption">
                 {lastActivity
-                  ? `${harnessName(lastActivity.harness)} · ${connections.folder}`
-                  : `Shared folder · ${connections.folder}`}
+                  ? `${harnessName(lastActivity.harness)} · ${relay?.discoveryRoot ?? 'Unavailable'}`
+                  : `Shared folder · ${relay?.discoveryRoot ?? 'Unavailable'}`}
               </p>
             </Card>
 
@@ -941,14 +959,18 @@ export default function App() {
               {HARNESSES.map((harness) => (
                 <div className="context-row" key={harness.id}>
                   <span>{harness.name}</span>
-                  <CheckboxField
-                    variant="switch"
-                    checked={activeConnection.harnesses[harness.id]}
-                    label={`${harness.name} for ${active.name}`}
-                    onChange={(event) => toggleHarness(active.id, harness.id, event.target.checked)}
-                  />
+                  {relay?.provider === active.provider && relay.harness.id === harness.id ? (
+                    <CheckboxField
+                      variant="switch"
+                      checked={relay.harnesses[0]?.enabled ?? false}
+                      disabled={!relay.enabled || relaySaving}
+                      label={`${harness.name} for ${active.name}`}
+                      onChange={(event) => toggleHarness(event.target.checked)}
+                    />
+                  ) : <span>{relay ? 'Unsupported' : 'Unavailable'}</span>}
                 </div>
               ))}
+              {relayError && <p role="alert">{relayError}</p>}
             </div>
 
             <div className="context-section">

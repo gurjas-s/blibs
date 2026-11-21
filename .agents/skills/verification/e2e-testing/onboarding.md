@@ -25,22 +25,20 @@ Shared setup: see [README.md](README.md).
    `Connect your AI assistants to this Mac`. The chat sidebar is not present.
 
 2. Read the matrix.
-   Expected: the rows are `Claude Code`, `Codex`, and `OpenCode`. The columns are
-   `Muse`, `Dots`, and `Grok`. The matrix has nine switches. Each switch has a
-   name such as `Claude Code for Muse`. All switches are on.
+   Expected result. OpenCode for Muse is the only switch. It is on in a fresh
+   profile. The other eight cells show `Unsupported`.
 
-3. Read the screen controls.
-   Expected: `Shared folder` shows `~/Projects`. `Change folder`, `Connect
-   another assistant`, and `Start chatting` are visible.
+3. Read the shared folder.
+   Expected result. The path matches `discoveryRoot` at
+   `http://127.0.0.1:8899/api/relay`. The folder editor and navigation
+   controls are available.
 
-4. Focus the `Codex for Muse` switch and press Space.
-   Expected: the switch turns off. The key `blibs-connections-v1` in
-   `localStorage` has `assistants.muse.harnesses.codex` set to `false`.
+4. Focus `OpenCode for Muse` and press Space. Reload the page.
+   Expected result. The switch stays off. Press Space again to turn it on.
 
-5. Select `Change folder`. Enter `~/Work`. Select `Save`.
-   Expected: the shared folder shows `~/Work`. The key `blibs-connections-v1`
-   contains `~/Work`. Open the folder editor again and select `Cancel`. The
-   folder stays `~/Work`.
+5. Select `Change folder`. Enter the path to an existing file. Select `Save`.
+   Expected result. The editor shows an error and stays open. Select `Cancel`.
+   The previous folder remains selected.
 
 6. Press Escape.
    Expected: the chat shell shows. The connections screen does not show again
