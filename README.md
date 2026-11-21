@@ -37,8 +37,8 @@ correctly`. After changing `package-lock.json`, use `npm install` locally and
 commit the updated lockfile; everyone else and CI use `npm ci`.
 
 The first start opens the **Connections** screen. It shows one row for each
-local harness and one column for each assistant. Turn on the harnesses that each
-assistant can use. Set the shared folder. Select **Start chatting**.
+local harness and one column for each assistant. Turn on a supported harness. This build supports OpenCode for Muse. The other
+combinations show as unsupported. Set the shared folder. Select **Start chatting**.
 
 Select **Connect another assistant** on the Connections screen to sign in to
 Muse, Dots, or Grok (once each). The **Agents** item in the sidebar and the
@@ -205,13 +205,10 @@ directory.
 
 ## Limits (honest POC notes)
 
-**Connections:** The harness choice, the shared folder, and the setup state are
-local to this window. The app saves them in `localStorage`. The app does not
-start a harness run, open the shared folder, or resolve the connect link yet.
-The activity list and the chat action card appear only when a backend reports
-work. Until then, the context column shows an honest empty state. The setup card
-uses the saved login status for Muse, Dots, and Grok. A status change updates
-the card and the assistant list.
+**Connections:** The relay stores the OpenCode switch and the shared folder.
+When the switch is off, the relay starts no OpenCode work. The `@blibs`
+introduction uses the same setting. Open **Connections** to see the folder that
+the relay uses. A folder save error appears beside the folder editor.
 
 **Conversation search:** Use the search bar in the topbar. It searches all
 retained conversations after a short pause, and Enter runs the search at once.

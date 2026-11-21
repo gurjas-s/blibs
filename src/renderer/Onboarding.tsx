@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { ConnectionState, HarnessMeta } from './connections';
-import { connectionFor } from './connections';
-import type { HarnessId, ProviderMeta } from './types';
+import type { RelayStatus } from './client';
+import type { HarnessMeta } from './connections';
+import type { ProviderMeta } from './types';
 import { Avatar } from './components/Avatar';
 import { Button } from './components/Button';
 import { Card } from './components/Card';
@@ -14,9 +14,11 @@ export interface OnboardingProps {
   assistants: ProviderMeta[];
   /** Local coding harnesses, in display order. */
   harnesses: HarnessMeta[];
-  state: ConnectionState;
-  onToggleHarness: (assistantId: string, harnessId: HarnessId, enabled: boolean) => void;
-  onChangeFolder: (folder: string) => void;
+  relay?: RelayStatus;
+  saving: boolean;
+  error: string;
+  onToggleHarness: (enabled: boolean) => void;
+  onChangeFolder: (folder: string) => Promise<boolean>;
   /** Open the agents screen to sign in to another assistant. */
   onConnectAnother: () => void;
   /** Leave the connections screen and open the chat. */
@@ -33,7 +35,9 @@ export interface OnboardingProps {
 export default function Onboarding({
   assistants,
   harnesses,
-  state,
+  relay,
+  saving,
+  error,
   onToggleHarness,
   onChangeFolder,
   onConnectAnother,
@@ -41,12 +45,13 @@ export default function Onboarding({
   onBack,
 }: OnboardingProps) {
   const [editingFolder, setEditingFolder] = useState(false);
-  const [folderDraft, setFolderDraft] = useState(state.folder);
+  const [folderDraft, setFolderDraft] = useState('');
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return;
       if (editingFolder) {
+        if (saving) return;
         setEditingFolder(false);
         return;
       }
@@ -55,18 +60,17 @@ export default function Onboarding({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [editingFolder, onBack, onStart]);
+  }, [editingFolder, onBack, onStart, saving]);
 
   function startFolderEdit(): void {
-    setFolderDraft(state.folder);
+    setFolderDraft(relay?.discoveryRoot ?? '');
     setEditingFolder(true);
   }
 
-  function saveFolder(event: FormEvent<HTMLFormElement>): void {
+  async function saveFolder(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (!folderDraft.trim()) return;
-    onChangeFolder(folderDraft);
-    setEditingFolder(false);
+    if (!folderDraft.trim() || saving) return;
+    if (await onChangeFolder(folderDraft)) setEditingFolder(false);
   }
 
   const headingId = 'onboarding-title';
@@ -93,7 +97,7 @@ export default function Onboarding({
       <main className="connections-center">
         <div className="connections-hero">
           <h1 id={headingId}>Connect your AI assistants to this Mac</h1>
-          <p>Turn on the coding tools each assistant can use.</p>
+          {relay && !relay.enabled && <p>The relay is off.</p>}
         </div>
 
         <Card className="connections-matrix">
@@ -119,21 +123,19 @@ export default function Onboarding({
                 {harnesses.map((harness) => (
                   <tr key={harness.id}>
                     <th scope="row">{harness.name}</th>
-                    {assistants.map((assistant) => {
-                      const connection = connectionFor(state, assistant.id);
-                      return (
-                        <td key={assistant.id}>
+                    {assistants.map((assistant) => (
+                      <td key={assistant.id}>
+                        {relay?.provider === assistant.id && relay.harness.id === harness.id ? (
                           <CheckboxField
                             variant="switch"
-                            checked={connection.harnesses[harness.id]}
+                            checked={relay.harnesses[0]?.enabled ?? false}
+                            disabled={!relay.enabled || saving}
                             label={`${harness.name} for ${assistant.product}`}
-                            onChange={(event) =>
-                              onToggleHarness(assistant.id, harness.id, event.target.checked)
-                            }
+                            onChange={(event) => onToggleHarness(event.target.checked)}
                           />
-                        </td>
-                      );
-                    })}
+                        ) : relay ? 'Unsupported' : 'Unavailable'}
+                      </td>
+                    ))}
                   </tr>
                 ))}
               </tbody>
@@ -153,22 +155,23 @@ export default function Onboarding({
                   autoComplete="off"
                   spellCheck={false}
                 />
-                <Button variant="primary" type="submit" disabled={!folderDraft.trim()}>
+                <Button variant="primary" type="submit" disabled={saving || !folderDraft.trim()}>
                   Save
                 </Button>
-                <Button variant="ghost" onClick={() => setEditingFolder(false)}>
+                <Button variant="ghost" disabled={saving} onClick={() => setEditingFolder(false)}>
                   Cancel
                 </Button>
               </form>
             ) : (
               <>
                 <span className="connections-folder-label">Shared folder</span>
-                <code className="connections-folder-path">{state.folder}</code>
-                <Button variant="ghost" size="sm" onClick={startFolderEdit}>
+                <code className="connections-folder-path">{relay?.discoveryRoot ?? 'Unavailable'}</code>
+                <Button variant="ghost" size="sm" disabled={!relay || saving} onClick={startFolderEdit}>
                   Change folder
                 </Button>
               </>
             )}
+            {error && <p role="alert">{error}</p>}
           </div>
           <Button variant="secondary" onClick={onConnectAnother}>
             Connect another assistant

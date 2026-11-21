@@ -189,7 +189,7 @@ export function fetchRelayStatus(signal?: AbortSignal): Promise<RelayStatus> {
   return request<RelayStatus>('/api/relay', { signal });
 }
 
-/** Report the harness toggles for the relay assistant. The introduction reply uses them. */
+/** Save the harness setting for the configured relay assistant. */
 export function updateRelayHarnesses(
   harnesses: Array<{ id: string; name: string; enabled: boolean }>,
 ): Promise<RelayStatus> {

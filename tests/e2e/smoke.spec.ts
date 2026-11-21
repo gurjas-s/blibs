@@ -6,8 +6,9 @@
 // screenshots to the ignored artifact directory.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import type { Page } from 'playwright-core';
 import {
@@ -169,8 +170,8 @@ test(
     assert.equal(await page.locator('.context').isVisible(), true);
     assert.equal(await page.locator('.context-toggle').getAttribute('aria-expanded'), 'true');
     assert.equal(
-      await page.getByRole('checkbox', { name: 'Claude Code for Grok' }).isVisible(),
-      true,
+      await page.locator('.context').getByText('Unsupported', { exact: true }).count(),
+      3,
     );
     await page.getByRole('button', { name: 'Close context' }).click();
     assert.equal(await page.locator('.context').isVisible(), false);
@@ -489,51 +490,39 @@ test(
       'Connect your AI assistants to this Mac',
     );
     assert.equal(await page.locator('.sidebar').count(), 0, 'Onboarding has no chat sidebar.');
-    assert.equal(await page.locator('.connections-matrix input[type="checkbox"]').count(), 9);
-    assert.equal(
-      await page.getByRole('checkbox', { name: 'Claude Code for Muse' }).isChecked(),
-      true,
-    );
-    assert.equal(await page.locator('.connections-folder-path').innerText(), '~/Projects');
-    assert.equal(await page.getByRole('button', { name: 'Change folder' }).isVisible(), true);
-    assert.equal(
-      await page.getByRole('button', { name: 'Connect another assistant' }).isVisible(),
-      true,
-    );
+    const switchControl = page.getByRole('checkbox', { name: 'OpenCode for Muse' });
+    await switchControl.waitFor();
+    assert.equal(await switchControl.isChecked(), true);
+    assert.equal(await page.locator('.connections-matrix input[type="checkbox"]').count(), 1);
+    assert.equal(await page.locator('.connections-matrix').getByText('Unsupported', { exact: true }).count(), 8);
+    const folder = page.locator('.connections-folder-path');
+    const previousFolder = await folder.innerText();
+    assert.equal(statSync(previousFolder).isDirectory(), true);
+    assert.equal(await page.getByRole('button', { name: 'Change folder' }).isEnabled(), true);
+    assert.equal(await page.getByRole('button', { name: 'Connect another assistant' }).isVisible(), true);
     assert.equal(await page.getByRole('button', { name: 'Start chatting' }).isVisible(), true);
     assertImage(await app.screenshot('onboarding-dark.png'));
     await setTheme(page, 'light');
     assertImage(await app.screenshot('onboarding-light.png'));
     await setTheme(page, 'dark');
 
-    // The matrix keeps a keyboard toggle and saves the choice.
-    await page.getByRole('checkbox', { name: 'Codex for Muse' }).focus();
+    await switchControl.focus();
     await page.keyboard.press('Space');
-    assert.equal(
-      await page.getByRole('checkbox', { name: 'Codex for Muse' }).isChecked(),
-      false,
-    );
-    await page.waitForFunction(
-      (key) => {
-        const raw = localStorage.getItem(key);
-        if (!raw) return false;
-        const state = JSON.parse(raw) as {
-          assistants?: Record<string, { harnesses?: Record<string, boolean> }>;
-        };
-        return state.assistants?.muse?.harnesses?.codex === false;
-      },
-      CONNECTIONS_STORAGE_KEY,
-    );
+    await page.locator('.connections-matrix input:not(:checked):enabled').waitFor();
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await switchControl.waitFor();
+    assert.equal(await switchControl.isChecked(), false);
+    await switchControl.click();
+    await page.locator('.connections-matrix input:checked:enabled').waitFor();
 
-    // Change folder keeps the path in the connection state.
     await page.getByRole('button', { name: 'Change folder' }).click();
-    await page.getByLabel('Shared folder path').fill('~/Work');
+    const filePath = path.join(previousFolder, 'not-a-directory.txt');
+    writeFileSync(filePath, '');
+    await page.getByLabel('Shared folder path').fill(filePath);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    assert.equal(await page.locator('.connections-folder-path').innerText(), '~/Work');
-    await page.waitForFunction(
-      (key) => (localStorage.getItem(key) ?? '').includes('~/Work'),
-      CONNECTIONS_STORAGE_KEY,
-    );
+    await page.getByRole('alert').filter({ hasText: 'Could not save the projects folder' }).waitFor();
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    assert.equal(await folder.innerText(), previousFolder);
 
     await page.getByRole('button', { name: 'Start chatting' }).click();
     await page.locator('.shell').waitFor({ state: 'visible' });
@@ -646,8 +635,8 @@ test(
 
     // The context column holds the harness toggles and an honest empty activity.
     assert.equal(
-      await page.getByRole('checkbox', { name: 'Claude Code for Grok' }).isVisible(),
-      true,
+      await page.locator('.context').getByText('Unsupported', { exact: true }).count(),
+      3,
     );
     assert.equal(await page.locator('.context-empty').isVisible(), true);
     assertImage(await app.screenshot('chat-setup-light.png'));
@@ -656,20 +645,6 @@ test(
     await page.getByRole('button', { name: 'Copy the Grok connect link' }).click();
     await page.waitForFunction(
       () => document.querySelector('.setup-card [role="status"]')?.textContent === 'Copied',
-    );
-
-    // A harness toggle in the context column persists for this assistant.
-    await page.getByRole('checkbox', { name: 'Codex for Grok' }).uncheck();
-    await page.waitForFunction(
-      (key) => {
-        const raw = localStorage.getItem(key);
-        if (!raw) return false;
-        const state = JSON.parse(raw) as {
-          assistants?: Record<string, { harnesses?: Record<string, boolean> }>;
-        };
-        return state.assistants?.grok?.harnesses?.codex === false;
-      },
-      CONNECTIONS_STORAGE_KEY,
     );
 
     // Open assistant starts the in-app sign-in attempt.
@@ -705,32 +680,14 @@ test(
     const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-intro-projects-'));
     mkdirSync(path.join(projectsDir, 'alpha'));
     try {
-      // The panel reports its harness toggles. Muse has Codex off, so the
-      // introduction must not list Codex as enabled.
       await completeOnboarding(page);
-      await seedConnections(page, mockConnections({
-        harnesses: { muse: { 'claude-code': true, codex: false, opencode: true } },
-      }));
-      const harnessDeadline = Date.now() + 15_000;
-      let reported = false;
-      while (Date.now() < harnessDeadline) {
-        const status = (await (await fetch(`${app.backendUrl}/api/relay`)).json()) as {
-          harnesses?: Array<{ id: string; enabled: boolean }>;
-        };
-        if (status.harnesses?.some((entry) => entry.id === 'codex' && entry.enabled === false)) {
-          reported = true;
-          break;
-        }
-        await page.waitForTimeout(200);
-      }
-      assert.equal(reported, true, 'the panel reports the harness toggles to the relay');
-
-      const registry = await fetch(`${app.backendUrl}/api/relay/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ discoveryRoot: projectsDir }),
-      });
-      assert.equal(registry.status, 200);
+      await seedConnections(page, mockConnections({ setup: { muse: 'connected' } }));
+      await page.getByRole('button', { name: 'Connections', exact: true }).click();
+      await page.getByRole('button', { name: 'Change folder' }).click();
+      await page.getByLabel('Shared folder path').fill(projectsDir);
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      await page.locator('.connections-folder-path').filter({ hasText: realpathSync(projectsDir) }).waitFor();
+      await page.getByRole('button', { name: 'Back to chats' }).click();
 
       const threadId = 'https://muse.ai/chat/e2e-intro';
       const importMuse = async (item: Record<string, unknown>): Promise<void> => {
@@ -766,12 +723,8 @@ test(
       const intro = page.locator('.msg.agent', { hasText: 'blibs introduction' }).first();
       await intro.waitFor({ state: 'visible', timeout: 20_000 });
       const introText = await intro.locator('.msg-bubble p').innerText();
-      assert.match(introText, /Available harnesses: Claude Code, Codex, OpenCode\./);
-      assert.match(introText, /Enabled for this assistant: Claude Code, OpenCode\./);
-      assert.ok(
-        !/Enabled for this assistant:[^.]*Codex/.test(introText),
-        'a disabled harness is not listed as enabled',
-      );
+      assert.match(introText, /Available harnesses: OpenCode\./);
+      assert.match(introText, /Enabled for this assistant: OpenCode\./);
       assert.match(introText, /How tagging works:/);
       assert.match(introText, /sends that task to OpenCode/);
       assert.doesNotMatch(introText, /project|\$<project>/i);
@@ -919,6 +872,109 @@ test(
       assertImage(await app.screenshot('project-selection.png'));
     } finally {
       rmSync(projectsDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'Connections applies the saved folder and harness setting to Muse requests',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page, backendUrl } = app;
+    const root = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-connections-'));
+    const oldFolder = path.join(root, 'old');
+    const newFolder = path.join(root, 'new');
+    const oldFile = path.join(oldFolder, 'alpha', 'hello.txt');
+    const newFile = path.join(newFolder, 'alpha', 'hello.txt');
+    mkdirSync(path.dirname(oldFile), { recursive: true });
+    mkdirSync(path.dirname(newFile), { recursive: true });
+    const threadId = 'https://muse.ai/chat/e2e-connections';
+    const prompt = 'Create hello.txt in alpha with exactly Hello from blibs.';
+    const task = '$alpha Create hello.txt with exactly Hello from blibs.';
+    const status = async () => await (await fetch(backendUrl + '/api/relay')).json() as {
+      lastRun: unknown;
+      watermark: number;
+    };
+    let timestamp = Math.max(Date.now(), (await status()).watermark);
+    const post = async (route: string, body: unknown): Promise<void> => {
+      const response = await fetch(backendUrl + route, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 200);
+    };
+    const importTurn = (provider: string, role: string, text: string, sourceId: string) =>
+      post('/api/import', { items: [{
+        provider, role, text, sourceId, ts: ++timestamp,
+        url: provider === 'muse' ? threadId : 'https://grok.com/chat/e2e-connections',
+      }] });
+    const waitForQueuedText = async (text: string, thread?: string, count = 1): Promise<void> => {
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        const data = await (await fetch(backendUrl + '/api/outbox')).json() as {
+          items: Array<{ text: string; threadId?: string }>;
+        };
+        const matches = data.items.filter((item) =>
+          item.text.includes(text) && (!thread || item.threadId === thread));
+        if (matches.length >= count) return;
+        await delay(50);
+      }
+      assert.fail(`The relay did not queue the expected text: ${text}`);
+    };
+    const sendRequest = async (sourceId: string, count: number): Promise<void> => {
+      await page.getByLabel('Message Muse').fill(prompt);
+      await page.getByRole('button', { name: 'Send', exact: true }).click();
+      await waitForQueuedText(prompt, undefined, count);
+      await importTurn('muse', 'user', prompt, sourceId);
+    };
+    const openConnections = () => page.getByRole('button', { name: 'Connections', exact: true }).click();
+    const back = () => page.getByRole('button', { name: 'Back to chats' }).click();
+    const openCode = page.getByRole('checkbox', { name: 'OpenCode for Muse' });
+
+    try {
+      await post('/api/relay/projects', { discoveryRoot: oldFolder });
+      await seedConnections(page, mockConnections({ setup: { muse: 'connected' } }));
+      await selectAgent(page, 'Muse');
+      await openConnections();
+      await page.locator('.connections-folder-path').filter({ hasText: realpathSync(oldFolder) }).waitFor();
+      await page.getByRole('button', { name: 'Change folder' }).click();
+      await page.getByLabel('Shared folder path').fill(newFolder);
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      await page.locator('.connections-folder-path').filter({ hasText: realpathSync(newFolder) }).waitFor();
+
+      await openCode.click();
+      await page.locator('.connections-matrix input:not(:checked):enabled').waitFor();
+      await back();
+      const previousRun = (await status()).lastRun;
+      await sendRequest('connections-user-disabled', 1);
+      await importTurn('muse', 'user', '@blibs Which tools can you use?', 'connections-intro-disabled');
+      await waitForQueuedText('Enabled for this assistant: no harness yet.', threadId);
+      await importTurn('muse', 'agent', '@opencode ' + task, 'connections-disabled');
+      await waitForQueuedText('OpenCode harness is disabled', threadId);
+      assert.deepEqual((await status()).lastRun, previousRun);
+      assert.equal(existsSync(newFile), false);
+      assert.equal(existsSync(oldFile), false);
+
+      await openConnections();
+      await openCode.click();
+      await page.locator('.connections-matrix input:checked:enabled').waitFor();
+      await back();
+      await sendRequest('connections-user-enabled', 2);
+      await importTurn('grok', 'user', prompt, 'connections-grok-user');
+      await importTurn('grok', 'agent', '@opencode ' + task, 'connections-grok-opencode');
+      await importTurn('muse', 'agent', '@codex ' + task, 'connections-muse-codex');
+      assert.deepEqual((await status()).lastRun, previousRun);
+      assert.equal(existsSync(newFile), false);
+      assert.equal(existsSync(oldFile), false);
+
+      await importTurn('muse', 'agent', '@opencode ' + task, 'connections-enabled');
+      await waitForQueuedText("Sent from user's harness (OpenCode).", threadId);
+      assert.equal(readFileSync(newFile, 'utf8'), 'Hello from blibs.');
+      assert.equal(existsSync(oldFile), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   },
 );
