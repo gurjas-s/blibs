@@ -7,6 +7,12 @@
 //           'blibs:send' {reqId, text} -> replies 'blibs:send-result'
 import { ipcRenderer } from 'electron';
 
+if (process.argv.includes('--blibs-provider-pane')) {
+  window.addEventListener('keydown', (event) => {
+    if (event.isTrusted && event.key === 'Escape') ipcRenderer.send('blibs:provider-pane:escape');
+  }, { capture: true });
+}
+
 const PROVIDER_BY_HOST: Array<[RegExp, string]> = [
   [/muse\.ai$/, 'muse'],
   [/chatgpt\.com$/, 'dots'],

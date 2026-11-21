@@ -1,7 +1,6 @@
 import type { AssistantSetup } from '../connections';
 import type { Agent } from '../types';
 import { Avatar } from './Avatar';
-import { LinkButton } from './LinkButton';
 import { cx } from './cx';
 
 export interface AgentListItemProps {
@@ -47,16 +46,6 @@ export function AgentListItem({
           <span className="adetail">{detail}</span>
         </span>
       </button>
-      <LinkButton
-        href={agent.site}
-        target="_blank"
-        rel="noreferrer"
-        title={`Open ${agent.name} in a new tab`}
-        aria-label={`Open ${agent.name} in a new tab`}
-        className="open-tab"
-      >
-        ↗
-      </LinkButton>
     </div>
   );
 }

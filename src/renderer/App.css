@@ -155,6 +155,11 @@
   background: var(--color-bg);
 }
 
+.provider-pane {
+  flex: 1;
+  min-height: 0;
+}
+
 .chat-head {
   display: flex;
   align-items: center;

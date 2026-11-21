@@ -1,8 +1,7 @@
 // Preload bridge for the blibs panel.
 //
-// The panel has no direct Electron access. It can ask the main process to open
-// a vendor sign-in window and it receives the step for that window. The vendor
-// window and its session stay in the main process.
+// The panel has no direct Electron access. It asks the main process to show a
+// provider website in the center pane and receives sign-in status events.
 import { contextBridge, ipcRenderer } from 'electron';
 import type { IpcRendererEvent } from 'electron';
 
@@ -32,6 +31,17 @@ interface DesktopLoginApi {
   onStatus: (listener: (status: LoginStatus) => void) => () => void;
 }
 
+interface DesktopClipboardApi {
+  writeText: (value: string) => Promise<void>;
+}
+
+interface DesktopProviderPaneApi {
+  onBack: (listener: () => void) => () => void;
+  show: (providerId: string, source?: string) => Promise<void>;
+  hide: () => Promise<void>;
+  setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void;
+}
+
 const login: DesktopLoginApi = {
   open: (vendorId) => ipcRenderer.invoke('blibs:login:open', vendorId) as Promise<LoginStatus>,
   cancel: (vendorId) => ipcRenderer.invoke('blibs:login:cancel', vendorId) as Promise<LoginStatus>,
@@ -47,4 +57,19 @@ const login: DesktopLoginApi = {
   },
 };
 
-contextBridge.exposeInMainWorld('blibsDesktop', { login });
+const clipboard: DesktopClipboardApi = {
+  writeText: (value) => ipcRenderer.invoke('blibs:clipboard:write', value) as Promise<void>,
+};
+
+const providerPane: DesktopProviderPaneApi = {
+  onBack: (listener) => {
+    const handler = (): void => listener();
+    ipcRenderer.on('blibs:provider-pane:back', handler);
+    return () => ipcRenderer.removeListener('blibs:provider-pane:back', handler);
+  },
+  show: (providerId, source) => ipcRenderer.invoke('blibs:provider-pane:show', providerId, source) as Promise<void>,
+  hide: () => ipcRenderer.invoke('blibs:provider-pane:hide') as Promise<void>,
+  setBounds: (bounds) => ipcRenderer.send('blibs:provider-pane:bounds', bounds),
+};
+
+contextBridge.exposeInMainWorld('blibsDesktop', { login, clipboard, providerPane });

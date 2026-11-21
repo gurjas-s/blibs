@@ -137,6 +137,15 @@ test(
       ['Grok', 'You', 'Grok'],
     );
     assert.equal(await page.locator('.msg-meta time').count(), 3);
+    const userMessage = page.locator('.msg', { has: page.getByRole('button', { name: 'Copy your message' }) });
+    const text = await userMessage.locator('.msg-bubble p').textContent();
+    await userMessage.getByRole('button', { name: 'Copy your message' }).click();
+    await userMessage.getByText('Copied', { exact: true }).waitFor();
+    const composer = page.getByRole('textbox', { name: 'Message Grok' });
+    await composer.press('ControlOrMeta+v');
+    assert.equal(await composer.inputValue(), text);
+    await composer.clear();
+
 
     // A long URL must wrap inside its bubble instead of clipping.
     const clipped = await page.evaluate(
@@ -258,6 +267,7 @@ test(
             provider: 'muse',
             role: 'user',
             sourceId: 'e2e-atlas-1',
+            url: 'https://muse.ai/atlas',
             threadId: 'https://muse.example/atlas',
             text: 'The Atlas storage decision is Postgres.',
             ts: Date.now() - 120_000,
@@ -409,6 +419,11 @@ test(
       { timeout: 15_000 },
     );
 
+    await page.getByRole('link', { name: 'Open thread', exact: true }).click();
+    await page.getByRole('button', { name: 'Back to results' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.history-result').length === 3);
+    assert.equal(await input.inputValue(), 'Atlas storage');
+
     // Selecting an agent returns to the open chat and clears the bar.
     await page.locator('.agent-main', { hasText: 'Muse' }).first().click();
     await page.locator('.thread').waitFor();
@@ -552,7 +567,7 @@ test(
 
     // A login attempt reports inline progress and the mobile-code next step.
     await page.getByRole('button', { name: 'Sign in to Muse' }).click();
-    await page.getByText(/mobile verification code in the Muse window/).waitFor({ timeout: 10_000 });
+    await page.getByText(/mobile verification code in the Muse website/).waitFor({ timeout: 10_000 });
     assert.equal(
       await page.getByRole('button', { name: 'Check Muse sign-in again' }).isVisible(),
       true,
@@ -569,7 +584,7 @@ test(
 
     // A second attempt can pass the verification step and sign in.
     await page.getByRole('button', { name: 'Sign in to Muse' }).click();
-    await page.getByText(/mobile verification code in the Muse window/).waitFor({ timeout: 10_000 });
+    await page.getByText(/mobile verification code in the Muse website/).waitFor({ timeout: 10_000 });
     await page.getByRole('button', { name: 'Check Muse sign-in again' }).click();
     await page.getByText(/Signed in to Muse/).waitFor({ timeout: 10_000 });
 
@@ -581,6 +596,27 @@ test(
     assertImage(await app.screenshot('home-after-login-dark.png'));
     await selectTheme(page, 'light');
     assertImage(await app.screenshot('home-after-login-light.png'));
+
+    // The provider page has its own keyboard focus and returns to the local chat.
+    const isMuseWebsite = (candidate: Page): boolean =>
+      candidate.url().includes(encodeURIComponent('<title>Muse</title>'));
+    const existingWebsite = app.context.pages().find(isMuseWebsite);
+    const providerPage = existingWebsite ?? app.context.waitForEvent('page', {
+      predicate: isMuseWebsite,
+      timeout: 5_000,
+    });
+    await page.getByRole('button', { name: 'Open website', exact: true }).click();
+    const website = await providerPage;
+    const message = website.getByLabel('Message');
+    await message.fill('Text to copy');
+    await message.press('ControlOrMeta+a');
+    await message.press('ControlOrMeta+c');
+    await message.fill('');
+    await message.press('ControlOrMeta+v');
+    assert.equal(await message.inputValue(), 'Text to copy');
+    assertImage(await app.screenshot('provider-controls.png'));
+    await message.press('Escape');
+    await page.locator('.thread').waitFor({ state: 'visible', timeout: 5_000 });
 
     // The in-app Back control returns home too.
     await page.getByRole('button', { name: 'Agents', exact: true }).click();

@@ -10,7 +10,7 @@
 //
 // The checks:
 // 1. Sign in to Proton with the same mailbox that receives the Muse code.
-// 2. Open the Muse sign-in window and submit the account email.
+// 2. Open the Muse sign-in pane and submit the account email.
 // 3. Read the newest Meta code from the Proton inbox and submit it.
 // 4. Send @blibs from the panel and check the generated introduction.
 // 5. Import a provider @opencode hi and check the harness reply header.
@@ -236,7 +236,7 @@ async function submitMuseCode(page: Page, code: string): Promise<void> {
     }
     await sleep(1_000);
   }
-  throw new Error('The Muse sign-in window did not show the chat after the code step.');
+  throw new Error('The Muse sign-in pane did not show the chat after the code step.');
 }
 
 /** Poll the panel until the main process reports the Muse session. */
@@ -245,12 +245,10 @@ async function waitForSignedIn(page: Page): Promise<void> {
   while (Date.now() < deadline) {
     const signed = page.getByText(/Signed in to Muse/);
     if (await signed.isVisible().catch(() => false)) return;
-    const check = page.getByRole('button', { name: 'Check Muse sign-in again' });
+    const check = page.getByRole('button', { name: 'Check again', exact: true });
     if (await check.isVisible().catch(() => false)) await check.click().catch(() => undefined);
     await sleep(5_000);
-    await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => undefined);
-    await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 }).catch(() => undefined);
-    await page.getByRole('button', { name: 'Agents', exact: true }).click().catch(() => undefined);
+
   }
   throw new Error('The panel did not report the Muse sign-in.');
 }
@@ -275,42 +273,41 @@ async function waitForOutbox(
   );
 }
 
-/** Open the Muse sign-in window, which is also the visible chat popout. */
-async function openMusePopout(app: E2EApp): Promise<{ popout: Page; composer: ReturnType<Page['locator']> }> {
+/** Open the Muse sign-in pane, which also shows the chat. */
+async function openMusePane(app: E2EApp): Promise<{ website: Page; composer: ReturnType<Page['locator']> }> {
   await app.page.getByRole('button', { name: 'Agents', exact: true }).click();
   const pages = () => app.browser.contexts().flatMap((context) => context.pages());
   const before = new Set(pages());
   await app.page.getByRole('button', { name: 'Sign in to Muse' }).click();
-  const popout = await waitFor(
-    'the Muse popout window',
+  const website = await waitFor(
+    'the Muse provider pane',
     async () => pages().find(
       (candidate) => !before.has(candidate) && candidate.url().includes('muse.ai'),
     ),
     30_000,
     500,
   );
-  await popout.bringToFront();
-  const composer = popout.locator('textarea[aria-label="Message"], div[contenteditable="true"]').first();
+  const composer = website.locator('textarea[aria-label="Message"], div[contenteditable="true"]').first();
   await waitFor(
     'the Muse composer. Sign in to Muse in the app once, then retry.',
     async () => (await composer.isVisible().catch(() => false) ? true : undefined),
     60_000,
     1_000,
   );
-  return { popout, composer };
+  return { website, composer };
 }
 
 /** Type into the Muse composer and use its Send button when it is present. */
-async function sendPopout(
-  popout: Page,
+async function sendFromPane(
+  website: Page,
   composer: ReturnType<Page['locator']>,
   text: string,
 ): Promise<void> {
   await composer.fill(text);
-  const send = popout.getByRole('button', { name: 'Send', exact: true });
+  const send = website.getByRole('button', { name: 'Send', exact: true });
   if (await send.isVisible()) await send.click();
   else await composer.press('Enter');
-  await popout.getByRole('log').getByText(text, { exact: false }).last().waitFor({ timeout: 30_000 });
+  await website.getByRole('log').getByText(text, { exact: false }).last().waitFor({ timeout: 30_000 });
 }
 
 
@@ -339,13 +336,17 @@ test(
 
       // Open the real sign-in window. It shares the partition of the hidden view.
       await page.getByRole('button', { name: 'Agents', exact: true }).click();
-      const pagesBefore = new Set(app.context.pages());
+      const pages = () => app.browser.contexts().flatMap((context) => context.pages());
+      const pagesBefore = new Set(pages());
       await page.getByRole('button', { name: 'Sign in to Muse' }).click();
-      await sleep(6_000);
-      const signIn = app.context.pages().find(
-        (candidate) => !pagesBefore.has(candidate) && candidate.url().includes('muse.ai'),
+      const signIn = await waitFor(
+        'the Muse sign-in pane',
+        async () => pages().find(
+          (candidate) => !pagesBefore.has(candidate) && candidate.url().includes('muse.ai'),
+        ),
+        30_000,
+        500,
       );
-      assert.ok(signIn, 'The Muse sign-in window must open.');
 
       const emailField = signIn.getByLabel('Mobile number or email');
       if (await emailField.isVisible().catch(() => false)) {
@@ -376,9 +377,8 @@ test(
       }
       await waitForSignedIn(page);
 
-      // Return to the chat shell. The sign-in window can close at any time.
-      const back = page.getByRole('button', { name: 'Back to chats' });
-      if (await back.isVisible().catch(() => false)) await back.click();
+      await page.getByRole('button', { name: 'Back to Agents' }).click();
+      await page.getByRole('button', { name: 'Back to chats' }).click();
       await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
 
       // Reload the hidden view so the shared session reaches the sync view.
@@ -559,20 +559,20 @@ test(
         assert.equal(configured.status, 200);
       }
 
-      const { popout, composer } = await openMusePopout(app);
-      const log = popout.locator('[role="log"]');
+      const { website, composer } = await openMusePane(app);
+      const log = website.locator('[role="log"]');
       const replies = log.getByText(LIVE_HEADER, { exact: false });
       const replyCount = await replies.count();
       const existingIds = new Set((await outboxItems(app)).map((item) => item.id));
       const content = 'blibs-test-' + randomUUID();
-      await sendPopout(
-        popout,
+      await sendFromPane(
+        website,
         composer,
         'Use my local OpenCode harness to create hello.txt in the project named alpha. ' +
         'Write exactly ' + content + ' with no trailing newline. Leave all other files and projects untouched.',
       );
 
-      const threadId = popout.url();
+      const threadId = website.url();
       await waitFor('Muse to issue an OpenCode task for the test file', async () => {
         const response = await fetch(app.backendUrl + '/api/imports');
         assert.equal(response.status, 200);

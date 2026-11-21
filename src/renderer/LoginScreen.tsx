@@ -24,7 +24,7 @@ function needsNextStep(status: LoginStatus | undefined): boolean {
 }
 
 function defaultMessage(status: LoginStatus | undefined): string {
-  if (!status) return 'Not signed in. Select Sign in to open the vendor window.';
+  if (!status) return 'Not signed in. Select Sign in to open the provider website in blibs.';
   return status.message;
 }
 
@@ -112,11 +112,11 @@ export default function LoginScreen({
                     <Button
                       variant={next ? 'secondary' : 'primary'}
                       aria-label={next
-                        ? `Open the ${vendor.product} sign-in window`
+                        ? `Open the ${vendor.product} website`
                         : `Sign in to ${vendor.product}`}
                       onClick={() => onSignIn(vendor.id)}
                     >
-                      {next ? 'Open window' : signedIn ? 'Sign in again' : 'Sign in'}
+                      {next ? 'Open website' : signedIn ? 'Sign in again' : 'Sign in'}
                     </Button>
                     {next && (
                       <Button
