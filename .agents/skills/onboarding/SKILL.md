@@ -1,57 +1,14 @@
 ---
 name: onboarding
-description: Set up a fresh blibs checkout and start the app. Use on a new machine, a new clone, or when the app does not start.
+description: Set up a fresh blibs checkout or troubleshoot startup with an isolated mock launch.
 ---
 
-# Onboard a fresh checkout
+# Set up a contributor checkout
 
-Follow these steps from the repository root.
+Use Node.js 24. Run `npm ci`, then `npm run build`. Run
+`npm run mock:desktop` and confirm that Connections opens. Quit blibs or
+press Ctrl+C to clean up the session.
 
-## 1. Check Node.js
-
-Run `node -v`.
-
-The output must start with `v24.`.
-
-Electron 34 does not install with a newer Node.js release. Use `fnm use 24`
-or `nvm use 24` before you install.
-
-## 2. Install
-
-Run `npm ci`.
-
-If npm blocks Electron's install script, run
-`npm install-scripts approve electron`, then run `npm ci` again.
-
-Check that `node_modules/electron/path.txt` exists. If it does not exist,
-delete `node_modules`, then run `npm ci` again.
-
-## 3. Build
-
-Run `npm run build`.
-
-## 4. Start
-
-Run `npm start`.
-
-## 5. Log in to the vendor sessions
-
-Use **Agents → Log in to Muse / Dots / Grok** one time for each vendor.
-
-The login window shares cookies with the hidden sync view. You can close the
-login window after the login. Syncing continues in the background.
-
-## Boundary: no vendor login for contributors
-
-Do not ask a contributor, a reviewer, or CI to log in to a vendor.
-
-Do not commit credentials, cookies, session data, or screenshots of a
-logged-in vendor session. Keep sessions in Electron's persistent partitions.
-
-Stop and ask the user to sign in when a vendor needs credentials or a CAPTCHA.
-
-## 6. Check the checkout
-
-Run `npm run lint` and `npm test`.
-
-Then use the `validate` skill for each change.
+See [README troubleshooting](../../../README.md#troubleshooting) for setup
+errors and [validate](../validate/SKILL.md#before-review) for headless startup
+checks.

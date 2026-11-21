@@ -1,6 +1,6 @@
 # Verify theme and app shell
 
-## Scope and non-goals
+## Scope
 
 This document covers the theme control, the saved theme choice, the system
 theme follow, the design tokens, the shell layout, the sidebar toggle, the
@@ -10,9 +10,9 @@ It does not cover the brand mark, the favicon, or the window title. Use
 [icon-branding.md](icon-branding.md). It does not cover chat content or search
 results.
 
-## Preconditions and setup
+## Setup
 
-Shared setup: see [README.md](README.md).
+See [shared setup](README.md#shared-setup).
 
 ## Test steps
 
@@ -90,38 +90,11 @@ Shared setup: see [README.md](README.md).
     text, and text on the accent color. Expected: each pair meets WCAG AA or
     better.
 
-## Failure signals and artifacts
-
-- A required token is empty, or both themes use the same background or text
-  value.
-- The saved choice is missing after a reload, or the first paint uses the wrong
-  theme.
-- The system preference does not update the page without a reload.
-- The layout scrolls sideways at 1024 or 1440 pixels.
-- The search bar center is more than 1 pixel from the chat pane center, or the
-  search bar overlaps the sync state.
-- The chat view shows a provider title, a caption, an open link, or a visible
-  status line below the composer.
-- A short chat leaves a large gap above the composer, or a long chat moves the
-  composer or clips the thread.
-- The message column and the composer do not share one width.
-- The page has a second vertical scrollbar, or a view breaks its content width
-  or gutter.
-- The sidebar is hidden at 800 pixels and the `Chats` button is missing.
-- A control has no focus ring or a focus trap.
-- A text pair fails WCAG AA.
+## Diagnostics
 
 Artifacts: `tests/e2e/artifacts/panel-dark.png` and `panel-light.png`.
 
-## Cleanup
-
-1. Quit the mock app. On macOS, press `Cmd+Q`. On Linux or Windows, close the
-   window. Press `Ctrl+C` in the terminal when the process stays open.
-2. Remove the temporary directory: `rm -rf "$TMP"`.
-3. Attach the screenshots to the pull request body with
-   `gh pr edit <number> --attach <path>`. Never commit them.
-
-## Automated tests that cover it
+## Automated coverage
 
 - `tests/e2e/smoke.spec.ts`, test
   `theme control follows the system preference and persists the choice`, covers

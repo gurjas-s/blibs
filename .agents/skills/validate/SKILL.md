@@ -1,71 +1,49 @@
 ---
 name: validate
-description: Check a blibs change before review. Run build, lint, unit tests, the e2e smoke spec, and the verification document for the changed feature. Add a screenshot when the change is visible.
+description: Select and run the checks for a blibs change before review. Record the results and capture relevant PR screenshots.
 ---
 
 # Validate a change
 
-Run these steps in this order from the repository root.
+## Cover new behavior
 
-## 1. Build
+Exercise distinct outcomes through the normal entry point. Use unit or
+integration tests when they cover the behavior. Use desktop E2E when it
+depends on Electron or the provider. For a manual check, record the action,
+expected result, and reason it needs a person.
 
-Run `npm run build`.
+## Before review
 
-The command must pass.
+| Change | Checks |
+| --- | --- |
+| Documentation or skills only | Check changed links, paths, and commands. Exercise any new or changed workflow commands. |
+| Code | Run `npm run build`, `npm run lint`, and `npm run test:built`. |
+| App startup, first run, or backend health route | Run the relevant mock smoke tests with `npm run e2e:built`. |
+| Panel behavior | Run the relevant desktop checks for the changed behavior. Use mocks for states that are hard to reproduce with the provider. |
+| Build outputs or build scripts | Also run `npm run verify:clean-build`. |
+| Provider sign-in persistence, sync, delivery, or relay | Run the [authenticated provider workflow](../verification/SKILL.md#authenticated-provider-checks). |
+| User-facing behavior | Use the [verification skill](../verification/SKILL.md) for the changed behavior. |
 
-## 2. Lint
+Reuse one fresh build for the `:built` commands. Lint must pass without
+warnings. On headless Linux, run
+`xvfb-run -a npm run e2e:built` after the build.
 
-Run `npm run lint`.
+Fix failures introduced by the change. If a failure appears unrelated,
+check the base revision when practical. Report the failing check, the
+evidence about its cause, and any checks that could not run.
 
-The command must pass with no warnings.
+## Evidence
 
-## 3. Unit tests
+Report commands, results, and skipped steps in the pull request or task
+thread. For a visible change, capture the affected screen or state. Prefer
+screenshots from the authenticated app when the ticket depends on real
+provider behavior. Screenshots of the provider UI are allowed. Keep
+credentials, cookies, and private chat contents out of the capture. Use mock
+data when it fits the ticket. For an onboarding or sign-in change, capture the relevant
+onboarding, sign-in, and post-sign-in states. Use both themes when the
+change affects appearance in both. The smoke spec saves screenshots under
+`tests/e2e/artifacts/`.
 
-Run `npm test`.
-
-The command must pass.
-
-A failing test is acceptable only when the unit that the change modifies is
-the cause of the failure. Do not accept a failure in another unit. Write the
-failure, the cause, and the plan in the PR.
-
-## 4. End-to-end test
-
-Run `npm run e2e` when the change affects the panel, the app startup path, or
-the backend health route.
-
-The command builds the app, starts Electron with a remote debugging port, and
-runs the smoke spec through `playwright-core` over CDP. It writes
-`tests/e2e/artifacts/panel-dark.png` and `tests/e2e/artifacts/panel-light.png`.
-
-The check needs a display. On Linux without `DISPLAY` or `WAYLAND_DISPLAY`, the
-spec skips with a message. Use `xvfb-run -a npm run e2e` on a headless Linux
-machine.
-
-## 5. Feature verification
-
-Use the `verification` skill in
-`.agents/skills/verification/SKILL.md`.
-
-Choose the document for the changed feature from
-`.agents/skills/verification/e2e-testing/README.md`. Follow the document.
-
-Write these items in the PR body or the worker report:
-
-1. The verification commands that you ran.
-2. The result that you saw.
-3. Each manual boundary that you did not run, and the reason.
-
-Do not commit a reproduction note or an evidence report.
-
-## 6. Screenshot
-
-If the change changes what a user sees, attach a screenshot to the PR body with
-`gh pr edit <number> --attach <path>`. Use mocked data. Never commit the
-screenshot, an evidence file, or a note.
-
-## 7. PR text
-
-Write the PR title, PR description, review comments, commit messages, and
-user-facing docs in English. Use ASD-STE100 Simplified Technical English.
-Use short sentences. Use active voice. Put one idea in each sentence.
+When a pull request exists, attach the relevant screenshots to its body with
+`gh pr edit <number> --attach <path>`. Otherwise, give the artifact paths
+in the task thread.

@@ -67,6 +67,8 @@ export interface E2EApp {
   backendUrl: string;
   /** `http://127.0.0.1:<CDP port>` */
   cdpUrl: string;
+  /** Temporary projects directory created for the test. */
+  projectsDir: string;
   /** Take a PNG screenshot into the ignored artifact directory. */
   screenshot(name: string): Promise<string>;
   /** Stop Electron and remove the temporary profile and history. */
@@ -574,6 +576,7 @@ app.whenReady().then(() => {
       panelUrl,
       backendUrl,
       cdpUrl,
+      projectsDir,
       screenshot: (name: string) => screenshot(page, name),
       close,
     };

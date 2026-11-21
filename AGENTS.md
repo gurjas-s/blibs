@@ -1,178 +1,69 @@
 # Working on blibs
 
-blibs is an Electron app that collects chats from persistent vendor sessions
-and queues replies for those sessions. Read `README.md` before making changes.
+blibs is an Electron app that syncs chats from persistent provider sessions
+and queues replies. Read [README.md](README.md) before making changes.
 
 ## Architecture
 
-- `src/main/`: Electron windows, vendor views, IPC, local servers, and sync
-  timers. `login.ts` owns vendor sign-in windows and their step events.
-- `src/preload/`: DOM collection and message delivery inside vendor sessions.
-  `panel.ts` is the narrow sign-in bridge for the panel.
-- `src/renderer/`: React panel. This code has browser APIs, but no Node access.
-  `Onboarding.tsx` owns the first-run steps. `LoginScreen.tsx` is the agents
-  screen and the in-app sign-in entry point.
-- `server/`: Local HTTP backend, import store, and send outbox.
-- `tests/`: Unit tests, HTTP route tests, and the CDP end-to-end harness and
-  specs in `tests/e2e/`.
-- `scripts/`: Build helpers and checks.
-- `assets/`: The icon source, the generated PNG sizes and macOS `.icns`, and
-  the generator. Run `npm run icons` on macOS after you change
-  `assets/icon.svg`, then commit the output.
+- `src/main/` owns windows, vendor sessions, IPC, and sync timers. `login.ts`
+  owns sign-in windows and events.
+- `src/preload/` collects and sends messages inside vendor views.
+  `panel.ts` exposes the narrow desktop bridge.
+- `src/renderer/` is the React panel. Route data and storage through
+  `client.ts` and desktop actions through `desktop.ts`. Use typed props and
+  callbacks. Keep Node, Electron, backend imports, and direct data access
+  out of components. Show sign-in events inline and preserve Back, Cancel,
+  and Escape.
+- `server/` owns local HTTP routes, imports, and the outbox. It uses ES
+  modules. The main process and preloads build to CommonJS.
+- `tests/` contains unit, HTTP, and desktop tests. `tests/e2e/` contains the
+  desktop harness and specs.
 
-The package uses ES modules. The main process and preloads compile to CommonJS;
-the build writes their `package.json` markers. The backend remains an ES module.
+## Development rules
 
-## Frontend
+- Use Node.js 24 and the committed lockfile. Keep changes typed and focused
+  on one issue per branch and commit. Explain the behavior and validation in
+  the PR.
+- Add or extend automated tests for each new feature. Cover the main flow
+  and branches with distinct outcomes. Test changes to delivery, storage,
+  and session state.
+- Keep vendor access in the main process and preload. Validate IPC senders
+  and payloads. Keep session credentials in Electron's persistent partitions
+  and expose only scoped desktop actions and navigation.
+- Keep credentials, cookies, session data, and real chats out of the
+  repository, logs, and artifacts. Keep screenshots and one-time evidence
+  out of Git. Leave generated `build/`, `dist/`, and `node_modules/` files to
+  their scripts.
+- Keep the `blibs` name in the menu, About panel, and window title. Use the
+  icon from `assets/` for the Dock and window. After editing
+  `assets/icon.svg`, run `npm run icons` on macOS and commit its output.
+- Keep `--force` in the TypeScript build so it regenerates missing output
+  with the incremental cache present.
 
-The renderer is decoupled from the backend. Data access goes through one typed
-client module: `src/renderer/client.ts`. A component does not call `fetch`, read
-`localStorage`, or import a backend module. Use typed props and typed callbacks
-instead.
+## Skills
 
-Desktop actions go through `src/renderer/desktop.ts`. That module calls the
-narrow `window.blibsDesktop` bridge from `src/preload/panel.ts`. Do not add
-Electron imports or broad IPC to the renderer. A sign-in step is an event from
-the main process. The panel shows it inline, and every login screen keeps Back,
-Cancel, and Escape available.
+| Task | Skill |
+| --- | --- |
+| Set up a checkout or fix startup | [onboarding](.agents/skills/onboarding/SKILL.md) |
+| Change renderer UI | [design](.agents/skills/design/SKILL.md) |
+| Check a change before review or after updating a PR | [validate](.agents/skills/validate/SKILL.md) |
+| Verify changed user-facing behavior | [verification](.agents/skills/verification/SKILL.md) |
+| Update a feature's verification steps or test references | [write-verification-guide](.agents/skills/write-verification-guide/SKILL.md) |
 
-Reuse the components in `src/renderer/components/` before you add a control.
-Extend a component with a typed prop when the new state is a real variant. Do
-not add a second button, input, card, or status pill.
+Use the existing signed-in blibs profile for provider checks and screenshots
+without asking for confirmation.
+Follow the [authenticated workflow](.agents/skills/verification/SKILL.md#authenticated-provider-checks)
+for automation, test data, and account boundaries.
 
-Styles come from the design tokens in `src/renderer/styles/tokens.css`. Define
-each color, space, font size, radius, and elevation one time. Add both a light
-value and a dark value. Do not write a raw color or an ad-hoc space value in a
-component.
+## Review
 
-Keep the UI plain and quiet:
+Check behavior through the normal entry point and preserve caller contracts.
+For delivery and session changes, check failures, retries, and restarts for
+duplicate sends or inconsistent state. For storage changes, check existing
+data and recovery from partial failure. Confirm that applicable checks and
+evidence are in the PR. Require both Linux and Windows `Build, lint, and test`
+checks on the default branch.
 
-- Keep the flat slate theme with one accent color.
-- Do not use a gradient.
-- Do not add an unnecessary chip, badge, or pill.
-- Do not add a caption that explains the screen.
-
-Make every control accessible:
-
-- Give each control a name with a label or `aria-label`.
-- Keep a visible keyboard focus state.
-- Keep full keyboard access.
-- Keep text contrast at WCAG AA or better in both themes.
-
-Tests and screenshots use mocked data by default. Use `tests/e2e/harness.ts`
-to start the app with a temporary profile. The harness sets
-`BLIBS_MOCK_LOGIN=1`, so a sign-in attempt uses fixed steps and needs no
-account or verification code. A live vendor login is allowed only when the
-user explicitly authorizes it for that run. Never write a credential, a
-cookie, or session data to the repo, a log, or an artifact. Add
-the onboarding, sign-in, and post-sign-in screenshots when the change is
-visible. Attach a screenshot for a visible change to the PR body with
-`gh pr edit <number> --attach <path>`. Never commit a screenshot, an evidence
-file, or a note. Read the `design` skill in `.agents/skills/design/` before you
-add UI.
-
-## Commands
-
-Use Node.js 24 and the committed lockfile.
-
-```sh
-npm ci
-npm run build
-npm run lint
-npm test
-npm run e2e
-npm run verify:clean-build
-```
-
-`npm run lint` runs the ESLint flat config in `eslint.config.js` and fails on
-warnings. `npm test` builds the app, runs unit and HTTP tests, and runs the
-desktop harness without a display. Tests must use temporary stores and their own
-ports. `npm run e2e` builds the app, starts the real Electron app with a remote
-debugging port, and runs a smoke spec through `playwright-core` over CDP. It
-writes a screenshot to `tests/e2e/artifacts/`, which Git ignores. The e2e check
-needs a display; on Linux without `DISPLAY` or `WAYLAND_DISPLAY` it skips with a
-message, and you can run it with `xvfb-run -a npm run e2e`.
-`verify:clean-build` deletes generated output while keeping TypeScript's
-incremental cache, rebuilds, and checks that all required output exists.
-Keep `--force` in the TypeScript build command.
-
-## Contributions
-
-- Use one branch and a focused commit for each issue. Explain the behavior and the validation in the PR.
-- Keep new logic typed. Test changes that affect delivery, storage, or session state.
-- Write a code comment only when the behavior is not clear from the code itself.
-- Use plain, task-oriented language. Follow the Google developer documentation style guide when project usage does not answer a writing question.
-- Use the repository skills in `.agents/skills/` for onboarding and validation.
-- Keep the flat slate theme with one accent color.
-- Do not edit or commit `build/`, `dist/`, `node_modules/`, real chat data, or credentials.
-- Keep vendor session access in the main process and preload. Validate IPC senders and do not expose arbitrary IPC or navigation to the renderer.
-- Keep session credentials in Electron's persistent partitions. Ask the user to sign in when a vendor requires credentials or a CAPTCHA.
-- Keep the `blibs` name in the menu bar, the About panel, and the window title. Keep the `blibs` icon in the Dock and the window. Read the icon from `assets/`; do not add a second icon source.
-
-## Writing
-
-Write all project text in English. Use ASD-STE100 Simplified Technical English
-for PR titles, PR descriptions, review comments, and user-facing docs.
-
-Use short sentences. Use active voice. Put one idea in each sentence. Define
-each technical term once, at its first use. Do not use an idiom or a metaphor
-in place of a clear instruction.
-
-This rule applies to:
-
-- PR titles and PR descriptions.
-- Review comments and review feedback.
-- Commit messages and code comments.
-- User-facing documentation, including `README.md` and `docs/`.
-
-## Validation
-
-Run these commands before you open a PR and after you change the PR:
-
-```sh
-npm run build
-npm run lint
-npm test
-```
-
-- `npm run lint` must pass with no warnings.
-- `npm test` must pass. A failing test is acceptable only when the unit that
-  the change modifies is the cause of the failure. In that case, write the
-  failure, the cause, and the plan in the PR.
-- Run `npm run e2e` when a change affects the panel, the app startup path, or
-  the backend health route. The command needs a display.
-- Use the `verification` skill for the end-to-end check. Choose the feature
-  document from `.agents/skills/verification/e2e-testing/`. Write the result of
-  the run in the PR body or the worker report.
-- If the change changes what a user sees, attach a screenshot to the PR body
-  with `gh pr edit <number> --attach <path>`. Do not commit the screenshot.
-
-## Evidence
-
-Do not commit evidence reports, reproduction notes, verification logs, or
-screenshots. Attach a screenshot for the PR body with
-`gh pr edit <number> --attach <path>`. Put repeatable steps in the verification
-documents under `.agents/skills/verification/`. Put the worker report in the
-task thread.
-
-CI runs `npm run build`, `npm run lint`, `npm test`, and
-`npm run verify:clean-build` on Linux and Windows. A local check does not
-replace the CI result.
-
-## Review checklist
-
-A reviewer must confirm each item before approval:
-
-- [ ] The PR title, PR description, review comments, commit messages, code comments, and user-facing docs are in English and follow ASD-STE100 Simplified Technical English.
-- [ ] `npm run lint` and `npm test` pass.
-- [ ] The PR describes the verification run and the result.
-- [ ] A visible change has a screenshot attached to the PR body with `gh pr edit <number> --attach <path>`.
-- [ ] The change does not add credentials, cookies, or session data.
-
-Do not approve a PR that has non-English text in its comments or PR text.
-
-## CI
-
-The `CI` workflow runs the checks on Linux and Windows for pushes and PRs.
-Repository admins must require both `Build, lint, and test` checks in the
-default branch's protection rules to prevent merging a failing PR.
+Write project text in English. Use ASD-STE100 Simplified Technical English
+in PRs, reviews, commits, comments, and docs. Use short, active sentences.
+Use comments to explain behavior the code does not make clear.
