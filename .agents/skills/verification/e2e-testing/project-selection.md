@@ -8,8 +8,6 @@ OpenCode session for each project in one chat thread.
 
 The relay tests use a harness stub. The live check uses a signed-in Muse
 session and OpenCode.
-Add a check with an empty project list after [issue #39](https://github.com/gurjas-s/blibs/issues/39)
-adds provider-led project creation.
 
 ## Setup
 
@@ -48,11 +46,11 @@ See [shared setup](README.md#shared-setup).
    ```
 
    Expected: the newest outbox message says `Pick a project for your task:`.
-   It lists `$alpha` and `$beta`. It says
-   `Reply with @opencode $<project> <task>.` The relay does not start the
-   harness.
+   It lists `$alpha` and `$beta` and supplies a request ID. The relay waits
+   for a selection before it starts the harness.
 
-4. Run `send_muse agent project-run '@opencode $alpha Build a small app'`.
+4. Copy the request ID into `REQUEST_ID`. Run
+   `send_muse agent project-run "@opencode /select $REQUEST_ID \$alpha"`.
    Expected: the harness runs in the `alpha` folder. The outbox reply contains
    `harness reply: Build a small app`.
 
@@ -60,8 +58,8 @@ See [shared setup](README.md#shared-setup).
    Expected: the harness reuses the session ID from step 4.
 
 6. Run `send_muse agent missing-project '@opencode $missing Build it'`.
-   Expected: blibs says that the project does not exist and gives
-   `blibs new-project <name>`. The harness does not run.
+   Expected: blibs says that the project is unavailable and offers the
+   available project IDs. The harness does not run.
 
 7. Open the Muse chat in the panel. Expected: the project list and harness
    replies appear once in the thread.
@@ -75,5 +73,7 @@ The live check stops Electron and removes its temporary projects when it ends. U
 
 ## Automated coverage
 
-- `tests/relay.test.ts`: `project matcher lists only immediate folders and resolves names, tokens, and paths`; `a task without a project asks Muse to choose, then runs in the selected project`; `the relay reuses one session per project and thread`; `an unknown project gets the create-project instruction without a harness run`. Run with `node --import tsx --test tests/relay.test.ts`.
+- `tests/relay.test.ts` covers direct tasks, short selection replies, duplicate
+  delivery, stale choices, ambiguous requests, and unknown and empty project
+  lists. Run with `node --import tsx --test tests/relay.test.ts`.
 - `tests/e2e/live-muse.spec.ts` checks the provider composer, relay, and file contents in step 1.

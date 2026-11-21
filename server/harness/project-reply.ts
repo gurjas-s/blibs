@@ -1,9 +1,3 @@
-// Project reply text for the provider chat.
-//
-// The relay answers with one of these messages when it cannot start work. The
-// provider reads the list, picks a project, and sends the task again. This
-// module owns the `$` tokens and the reply text. The relay supplies the
-// harness mention and the projects directory.
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { CHOICES_HEADER, startsWithChoicesHeader } from '../../shared/choices.js';
@@ -11,8 +5,6 @@ import { stripVendorLabel } from '../../shared/vendor-label.js';
 
 export { CHOICES_HEADER };
 
-/** Placeholder command for the create-project state. */
-export const NEW_PROJECT_COMMAND = 'blibs new-project <name>';
 export const PROJECT_CHOICE_LIMIT = 40;
 
 const TOKEN_LIMIT = 80;
@@ -87,46 +79,42 @@ export function displayPath(target: string): string {
   return target;
 }
 
-function instruction(options: ReplyOptions): string {
-  return `Reply with ${options.mention} $<project> <task>.`;
+export function projectTaskFormat(mention: string): string {
+  return `${mention} $<project> <task>`;
 }
 
-function projectLines(choices: ProjectChoice[]): string[] {
-  return choices.map((choice) => `- $${choice.token}`);
+export function projectSelectionFormat(mention: string, requestId = '<request-id>'): string {
+  return `${mention} /select ${requestId} $<project>`;
 }
 
-function createLine(): string {
-  return `To create a new project, run \`${NEW_PROJECT_COMMAND}\`.`;
-}
-
-/** The project list. The provider reads the tokens and sends one back. */
+/** Show the available project IDs and how to continue. */
 export function formatProjectList(
   choices: ProjectChoice[],
-  options: ReplyOptions & { note?: string },
+  options: ReplyOptions & { note?: string; requestId?: string; total?: number },
 ): string {
-  const lines = [CHOICES_HEADER, '', 'Pick a project for your task:'];
-  if (!choices.length) {
-    lines.push(`No projects are available in ${displayPath(options.root)}.`);
-    lines.push('');
-    lines.push(createLine());
-    return lines.join('\n');
-  }
-  lines.push(...projectLines(choices));
+  const lines = [CHOICES_HEADER];
   if (options.note) lines.push('', options.note);
-  lines.push('');
-  lines.push(instruction(options));
+  if (!choices.length) {
+    lines.push(
+      '',
+      `No projects are available in ${displayPath(options.root)}.`,
+      'Ask the user to add a project folder there or change the folder in Connections.',
+    );
+  } else {
+    lines.push('', 'Pick a project for your task:', ...choices.map(({ token }) => `- $${token}`));
+    if (options.total && options.total > choices.length) {
+      lines.push(`Showing the first ${choices.length} of ${options.total} projects.`);
+    }
+    if (options.requestId) {
+      lines.push('', `Reply with ${projectSelectionFormat(options.mention, options.requestId)} to use the saved task.`);
+    }
+  }
+  lines.push('', `To send a new task, use ${projectTaskFormat(options.mention)}.`);
   return lines.join('\n');
 }
 
-/** The reply when the task names a project that does not exist. */
-export function formatUnknownProject(name: string, options: ReplyOptions): string {
-  return [
-    CHOICES_HEADER,
-    '',
-    `The project "${name.slice(0, REASON_LIMIT)}" does not exist in ${displayPath(options.root)}.`,
-    '',
-    createLine(),
-  ].join('\n');
+export function unknownProjectNote(name: string, options: ReplyOptions): string {
+  return `The project "${name.slice(0, REASON_LIMIT)}" is unavailable in ${displayPath(options.root)}.`;
 }
 
 /** The reply when a project is named without a task. */
@@ -136,6 +124,6 @@ export function formatMissingTask(token: string, options: ReplyOptions): string 
     '',
     `Add a task after $${token}.`,
     '',
-    instruction(options),
+    `Use ${projectTaskFormat(options.mention)}.`,
   ].join('\n');
 }

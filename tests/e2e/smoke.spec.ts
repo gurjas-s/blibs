@@ -763,8 +763,7 @@ test(
       assert.match(introText, /Enabled for this assistant: OpenCode\./);
       assert.match(introText, /How tagging works:/);
       assert.match(introText, /sends that task to OpenCode/);
-      assert.doesNotMatch(introText, /project|\$<project>/i);
-      assert.ok(introText.endsWith('To try it, send @opencode followed by a task.'));
+      assert.ok(introText.includes('@opencode $<project> <task>'));
       await intro.scrollIntoViewIfNeeded();
       await page.waitForTimeout(300);
       assertImage(await app.screenshot('blibs-intro.png'));
