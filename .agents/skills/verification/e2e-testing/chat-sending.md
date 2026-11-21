@@ -1,6 +1,6 @@
 # Verify chat and sending
 
-## Scope and non-goals
+## Scope
 
 This document covers chat selection in the sidebar, the message thread, role
 labels, timestamps, long-text wrapping, the current-chat search field, the
@@ -11,11 +11,10 @@ It does not cover conversation search across retained history. Use
 [conversation-search.md](conversation-search.md). It does not cover sync timing.
 Use [sync-status.md](sync-status.md).
 
-## Preconditions and setup
+## Setup
 
-Shared setup: see [README.md](README.md).
+See [shared setup](README.md#shared-setup).
 
-- The mock chat fixture in step 2.
 - No vendor session. A queued send reaches the hidden signed-out view, fails,
   and shows `Not delivered`. This is the expected path without a live login.
 
@@ -74,32 +73,16 @@ Shared setup: see [README.md](README.md).
    Expected: the composer sends it. Press `Tab` through the page.
    Expected: each control has a visible focus state.
 
-10. Manual boundary: a `Sent` receipt needs a signed-in vendor session and a
-    vendor page with a composer. Do not use a live account in a review or in
-    CI. The headless harness covers the view send and the acknowledgement with
-    a fake view.
+10. For delivery changes, use the
+    [authenticated profile](../SKILL.md#authenticated-provider-checks).
+    Send one synthetic message from blibs in a dedicated test conversation.
+    Expected: blibs shows `Sent` and the provider shows the message once.
 
-## Failure signals and artifacts
+## Diagnostics
 
-- The thread shows no messages after the seeded reload.
-- A role label is wrong, a timestamp is missing, or a long URL clips.
-- The current-chat search does not filter or does not reset.
-- `Send` is enabled with an empty or whitespace-only field.
-- The user message disappears when the queue fails.
-- The receipt stays on `Sending…` after the view fails, or `Retry` is missing.
-- A sent message appears two times after a sync.
+Smoke screenshot: `panel-selected-chat.png`. Inspect the mock outbox for delivery failures.
 
-Artifacts: `tests/e2e/artifacts/panel-selected-chat.png` and the temp outbox
-data under `$TMP/history`.
-
-## Cleanup
-
-1. Quit the mock app. On macOS, press `Cmd+Q`. On Linux or Windows, close the
-   window. Press `Ctrl+C` in the terminal when the process stays open.
-2. Remove the temporary directory: `rm -rf "$TMP"`.
-3. Keep the screenshot only for the pull request body.
-
-## Automated tests that cover it
+## Automated coverage
 
 - `tests/e2e/smoke.spec.ts`, test
   `panel shows a selected chat and a readable message thread`, covers the
@@ -111,4 +94,3 @@ data under `$TMP/history`.
   the view send with a fake view. Run `npm test`.
 - `tests/search-desktop.cjs` covers a delayed echo and the merge of a sent
   message. Run `npm run test:desktop`.
-- No test sends into a live vendor session. This is intentional.

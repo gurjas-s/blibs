@@ -1,6 +1,6 @@
 # Verify OpenCode project selection
 
-## Scope and non-goals
+## Scope
 
 This document covers the project selection flow for OpenCode. The relay uses
 only immediate folders in the configured projects directory. It reuses one
@@ -9,20 +9,13 @@ OpenCode session for each project in one chat thread.
 It does not cover a real model run or a live vendor session. Use the mock app
 and a temporary projects directory.
 
-## Preconditions and setup
+## Setup
 
-Shared setup: see [README.md](README.md).
-
-- Use the shared mock command. It sets `BLIBS_MOCK_LOGIN=1`.
-- Start the app with a fake harness and temporary history store.
-- Create a temporary projects directory with `alpha` and `beta` subfolders.
+See [shared setup](README.md#shared-setup).
 
 ## Test steps
 
-1. Start the mock app with the shared command. Set `BLIBS_RELAY_COMMAND` to
-   the fake harness command and `BLIBS_RELAY_PROJECTS_DIR` to the temporary
-   projects directory. Expected: the panel opens and the relay uses that
-   directory.
+1. Start the mock app with the shared command. Expected: the panel opens.
 
 2. Send a baseline message. Then import `@opencode Build a small app` as an
    assistant message:
@@ -31,7 +24,7 @@ Shared setup: see [README.md](README.md).
    TS=$(( $(date +%s) * 1000 ))
    send_muse() {
      TS=$((TS + 1000))
-     curl -s -X POST http://127.0.0.1:8899/api/import \
+     curl -s -X POST "$BLIBS_BACKEND_URL/api/import" \
        -H 'Content-Type: application/json' \
        -d "{\"items\":[{\"provider\":\"muse\",\"role\":\"$1\",\"url\":\"https://muse.ai/chat/project-check\",\"sourceId\":\"$2\",\"ts\":$TS,\"text\":\"$3\"}]}"
    }
@@ -58,24 +51,11 @@ Shared setup: see [README.md](README.md).
 6. Open the Muse chat in the panel. Expected: the project list and harness
    replies appear once in the thread.
 
-## Failure signals and artifacts
-
-- A task without a project starts the harness.
-- The project list includes paths outside the configured directory.
-- The selected project does not match the task token.
-- A follow-up task starts a new session for the same project and thread.
-- An unknown project starts a harness run.
-- The panel shows a duplicate project list reply.
+## Diagnostics
 
 Artifact: `tests/e2e/artifacts/project-selection.png`.
 
-## Cleanup
-
-1. Stop the mock app.
-2. Remove the temporary directory with `rm -rf "$TMP"`.
-3. Do not commit a screenshot, an evidence file, or a note.
-
-## Automated tests that cover it
+## Automated coverage
 
 - `tests/relay.test.ts`: `project matcher lists only immediate folders and resolves names, tokens, and paths`; `a task without a project asks Muse to choose, then runs in the selected project`; `the relay reuses one session per project and thread`; `an unknown project gets the create-project instruction without a harness run`. Run with `node --import tsx --test tests/relay.test.ts`.
 - `tests/e2e/smoke.spec.ts`: `the relay asks Muse to choose a project and runs the selected task`. Run with `npm run e2e`.

@@ -1,6 +1,6 @@
 # Verify connections and the assistant chat
 
-## Scope and non-goals
+## Scope
 
 This document covers the connected assistant chat, the context column, the
 harness switches, the recent activity list, the inline setup card for an
@@ -11,9 +11,9 @@ It does not cover the first-run connections screen. Use
 sign-in. Use [vendor-login.md](vendor-login.md) for the mock sign-in steps. It
 does not cover sending a message that reaches a vendor.
 
-## Preconditions and setup
+## Setup
 
-Shared setup: see [README.md](README.md).
+See [shared setup](README.md#shared-setup).
 
 - A completed first run: `blibs-onboarding-v1` is `done`.
 - No action card is required. The action card is part of the message data. The
@@ -56,12 +56,12 @@ The state is local mock data. Do not use a real chat, a cookie, or a credential.
    is enabled. The context column shows at a wide window.
 
 3. Read the context column.
-   Expected result. Recent activity lists `Fixed login button`. The folder in
+   Expected: Recent activity lists `Fixed login button`. The folder in
    the preview matches the relay's projects folder. Muse has one switch for
    OpenCode. Claude Code and Codex show `Unsupported`.
 
 4. Turn OpenCode off in the context column. Open Connections.
-   Expected result. The OpenCode switch for Muse is off. Turn it on again.
+   Expected: The OpenCode switch for Muse is off. Turn it on again.
 
 5. Set the window to 1024 pixels wide.
    Expected: the context column is not visible. The `Context` button is visible.
@@ -89,42 +89,13 @@ The state is local mock data. Do not use a real chat, a cookie, or a credential.
     Expected: the connections screen shows. Select `Back to chats`. The chat
     returns.
 
-11. Run the scripted Muse request check.
+## Diagnostics
 
-    ```sh
-    npm run build
-    node --import tsx --test --test-name-pattern='Connections applies the saved folder' tests/e2e/smoke.spec.ts
-    ```
-
-    Expected result. The test saves a new projects folder in Connections. It
-    sends a request from the Muse composer and imports scripted Muse turns.
-    Disabled OpenCode and unsupported combinations start no work. Enabled
-    OpenCode creates `alpha/hello.txt` with the exact text `Hello from blibs.`
-    in the new folder. The old folder stays unchanged.
-
-## Failure signals and artifacts
-
-- The assistant list shows `Connected` for an assistant with `setup: 'setup'`
-  and no signed-in session, or the opposite.
-- The context column does not show at a wide window, or it covers the chat at a
-  wide window.
-- The harness switch does not change the saved state.
-- The composer is enabled for an unconnected assistant.
-- A control is unreachable at 800 or 1024 pixels.
 - The console shows a React or storage error.
-- A screenshot is missing from `tests/e2e/artifacts/`.
 
-Artifacts: `tests/e2e/artifacts/chat-connected-dark.png` and
-`chat-setup-light.png`.
+Smoke screenshots: `chat-connected-dark.png` and `chat-setup-light.png`.
 
-## Cleanup
-
-1. Quit the mock app. On macOS, press `Cmd+Q`. On Linux or Windows, close the
-   window. Press `Ctrl+C` in the terminal when the process stays open.
-2. Remove the temporary directory: `rm -rf "$TMP"`.
-3. Keep screenshots only for the pull request body.
-
-## Automated tests that cover it
+## Automated coverage
 
 `tests/e2e/smoke.spec.ts`, test
 `panel shows a selected chat and a readable message thread`, covers the action
@@ -134,11 +105,11 @@ sidebar toggle, and both chat screenshots. Test
 covers the `Setup` pill, the three steps, the connect link, the card controls,
 and the disabled composer. Test
 `Connections applies the saved folder and harness setting to Muse requests`
-covers the scripted request and folder save. `tests/connections.test.ts` covers the state module
-and the setup derivation.
+covers the request after saving a new projects folder. Disabled OpenCode
+and unsupported combinations start no work. Enabled OpenCode creates
+`alpha/hello.txt` with `Hello from blibs.` in the new folder. The old
+folder stays unchanged.
 
-Run the check with:
-
-```sh
-npm run e2e
-```
+`tests/connections.test.ts` covers the state module and setup derivation.
+Use the [authenticated workflow](../SKILL.md#authenticated-provider-checks)
+for changes to the real provider path.

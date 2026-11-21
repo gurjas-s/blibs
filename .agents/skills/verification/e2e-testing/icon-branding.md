@@ -1,6 +1,6 @@
 # Verify icon and branding
 
-## Scope and non-goals
+## Scope
 
 This document covers the `b` brand mark, the `blibs` wordmark, the document
 title, the window title, the favicon, the static icon file, the vendor product
@@ -9,9 +9,9 @@ names, the monogram avatars, the external link labels, and the app menu labels.
 It does not cover a packaged installer icon. The repository has no packaging
 step for a native app icon. It does not cover a redesign or a new color.
 
-## Preconditions and setup
+## Setup
 
-Shared setup: see [README.md](README.md).
+See [shared setup](README.md#shared-setup).
 
 ## Test steps
 
@@ -34,9 +34,9 @@ Shared setup: see [README.md](README.md).
    shell keeps one brand block in the top bar. No Vite or React logo shows.
 
 4. Fetch the favicon from the panel server:
-   `curl -sI http://127.0.0.1:5199/favicon.svg`.
+   `curl -sI "$BLIBS_PANEL_URL/favicon.svg"`.
    Expected: status `200 OK` and `Content-Type: image/svg+xml`. Fetch the start
-   with `curl -s http://127.0.0.1:5199/favicon.svg | head -c 60`.
+   with `curl -s "$BLIBS_PANEL_URL/favicon.svg" | head -c 60`.
    Expected: the output starts with `<svg` and contains a `viewBox`.
 
 5. Select `Agents`.
@@ -58,29 +58,13 @@ Shared setup: see [README.md](README.md).
    Do not sign in during a review. Do not commit a screenshot of a signed-in
    vendor page.
 
-## Failure signals and artifacts
+## Diagnostics
 
-- `dist/favicon.svg` or `dist/icons.svg` is missing.
-- The favicon request returns 404 or the wrong content type.
-- The document title is empty, generic, or from a template.
-- The page shows a Vite or React logo.
-- The `b` mark or the `blibs` wordmark is missing.
-- A vendor product name or vendor name is wrong.
-- An avatar is exposed to assistive technology as content.
 - A vendor link navigates the panel or opens an unapproved host.
-- The `Agents` or `View` menu is missing.
 
-Artifacts: `tests/e2e/artifacts/panel-dark.png` and `panel-light.png`, the
-`/favicon.svg` response headers, and the first bytes of the file.
+Smoke screenshots: `panel-dark.png` and `panel-light.png`. Inspect the favicon response and app menu.
 
-## Cleanup
-
-1. Quit the mock app. On macOS, press `Cmd+Q`. On Linux or Windows, close the
-   window. Press `Ctrl+C` in the terminal when the process stays open.
-2. Remove the temporary directory: `rm -rf "$TMP"`.
-3. Keep the screenshots only for the pull request body.
-
-## Automated tests that cover it
+## Automated coverage
 
 - `tests/e2e/smoke.spec.ts`, test
   `panel shows a selected chat and a readable message thread`, asserts that the
