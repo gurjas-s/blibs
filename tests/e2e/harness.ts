@@ -35,6 +35,8 @@ export interface LaunchOptions {
    * vendor login test sets this to false and loads the real vendor pages.
    */
   mockLogin?: boolean;
+  /** Serve a scripted chat document from the Muse partition. */
+  museChatHtml?: string;
   /**
    * Keep the Electron profile in this directory. A live sign-in check uses a
    * stable ignored directory so a remembered device survives a second run.
@@ -65,6 +67,8 @@ export interface E2EApp {
   backendUrl: string;
   /** `http://127.0.0.1:<CDP port>` */
   cdpUrl: string;
+  /** Temporary projects directory created for the test. */
+  projectsDir: string;
   /** Take a PNG screenshot into the ignored artifact directory. */
   screenshot(name: string): Promise<string>;
   /** Stop Electron and remove the temporary profile and history. */
@@ -519,9 +523,24 @@ process.stdout.write('harness reply: ' + (prompt.split('\\n').at(-1) || '') + '\
   delete env.BLIBS_NO_AUTOSTART;
   delete env.ELECTRON_RUN_AS_NODE;
 
+  let appEntry = repoRoot;
+  if (options.museChatHtml !== undefined) {
+    appEntry = path.join(tempDir, 'mock-muse.cjs');
+    writeFileSync(appEntry, `const { app, session } = require('electron');
+const html = ${JSON.stringify(options.museChatHtml)};
+app.whenReady().then(() => {
+  session.fromPartition('persist:muse').protocol.handle('https', (request) => {
+    if (new URL(request.url).hostname !== 'muse.ai') return new Response(null, { status: 404 });
+    return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  });
+  require(${JSON.stringify(path.join(repoRoot, 'build', 'main', 'index.js'))});
+});
+`);
+  }
+
   const child = spawn(
     electronPath,
-    [repoRoot, `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profileDir}`],
+    [appEntry, `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profileDir}`],
     { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
   );
   const output = collectOutput(child);
@@ -557,6 +576,7 @@ process.stdout.write('harness reply: ' + (prompt.split('\\n').at(-1) || '') + '\
       panelUrl,
       backendUrl,
       cdpUrl,
+      projectsDir,
       screenshot: (name: string) => screenshot(page, name),
       close,
     };

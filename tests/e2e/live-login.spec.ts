@@ -14,21 +14,19 @@
 // 3. Read the newest Meta code from the Proton inbox and submit it.
 // 4. Send @blibs from the panel and check the generated introduction.
 // 5. Import a provider @opencode hi and check the harness reply header.
-// 6. Ignore a user @opencode tag in the authenticated popout, then list
-//    projects and run a task in the selected project.
-//
-// The sign-in check keeps the deterministic e2e stub. The popout checks use
-// OpenCode and the configured projects directory, so they can take a few minutes.
+// 6. Ask Muse to create a file in a temporary project through OpenCode.
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
 import type { BrowserContext } from 'playwright-core';
-import { stripVendorLabel } from '../../shared/vendor-label.ts';
+import { extractMentionTask, isUserEcho } from '../../server/harness/mention.ts';
 import {
   ARTIFACT_DIR,
   completeOnboarding,
@@ -111,26 +109,13 @@ function relaySkipReason(): string | false {
   return false;
 }
 
-interface LiveRelaySettings {
-  discoveryRoot: string;
-  model?: string;
-}
-
-/** Registry and model from the live app state, with the documented defaults as a fallback. */
-function liveRelaySettings(): LiveRelaySettings {
-  const settings: LiveRelaySettings = {
-    discoveryRoot: path.join(os.homedir(), 'Projects'),
-    model: process.env.BLIBS_LIVE_MODEL?.trim() || undefined,
-  };
+function liveRelayModel(): string | undefined {
+  const override = process.env.BLIBS_LIVE_MODEL?.trim();
+  if (override) return override;
   try {
-    const state = JSON.parse(readFileSync(LIVE_STATE, 'utf8')) as {
-      discoveryRoot?: unknown;
-      model?: unknown;
-    };
-    if (typeof state.discoveryRoot === 'string' && state.discoveryRoot) settings.discoveryRoot = state.discoveryRoot;
-    if (!settings.model && typeof state.model === 'string' && state.model) settings.model = state.model;
-  } catch { /* fall back to the documented defaults */ }
-  return settings;
+    const state = JSON.parse(readFileSync(LIVE_STATE, 'utf8')) as { model?: unknown };
+    if (typeof state.model === 'string' && state.model) return state.model;
+  } catch { /* use the default model */ }
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -288,135 +273,43 @@ async function waitForOutbox(
   );
 }
 
-/** Wait for one imported history row that matches a predicate. */
-async function waitForImport(
-  app: E2EApp,
-  predicate: (item: { ts: number; text: string }) => boolean,
-  timeoutMs: number,
-): Promise<{ ts: number; text: string }> {
-  return waitFor(
-    'an imported history row',
-    async () => {
-      const data = (await (await fetch(`${app.backendUrl}/api/imports`)).json()) as {
-        imports?: Array<{ ts: number; text: string }>;
-      };
-      return (data.imports ?? []).find(predicate);
-    },
-    timeoutMs,
-    2_000,
-  );
-}
-
-/** True when a vendor row is the `/clear` command, with or without a vendor label. */
-function isClearImport(text: string): boolean {
-  return /^\/clear\b/i.test(stripVendorLabel(text));
-}
-
-/** Print the relay and popout state when a live wait fails. */
-async function diagnoseLive(app: E2EApp, popout: Page, label: string): Promise<void> {
-  try {
-    const outbox = await outboxItems(app);
-    const imports = (await (await fetch(`${app.backendUrl}/api/imports`)).json()) as {
-      imports?: Array<{ ts: number; text: string }>;
-    };
-    const status = await (await fetch(`${app.backendUrl}/api/relay`)).json();
-    const log = await popout.locator('[role="log"]').innerText().catch(() => '');
-    console.error(`[live] ${label} status: ${JSON.stringify(status)}`);
-    console.error(`[live] ${label} outbox: ${JSON.stringify(outbox.map((item) => [item.ts, item.status, item.text.slice(0, 80)]))}`);
-    console.error(`[live] ${label} imports: ${JSON.stringify((imports.imports ?? []).slice(-12).map((item) => [item.ts, item.text.slice(0, 80)]))}`);
-    console.error(`[live] ${label} popout: ${JSON.stringify(log.slice(-1200))}`);
-  } catch (error) {
-    console.error(`[live] ${label} diagnostics failed: ${(error as Error).message}`);
-  }
-}
-
-/** Open the Muse sign-in pane, which is also the visible chat popout. */
-async function openMusePane(app: E2EApp): Promise<{ popout: Page; composer: ReturnType<Page['locator']> }> {
+/** Open the Muse sign-in pane, which also shows the chat. */
+async function openMusePane(app: E2EApp): Promise<{ website: Page; composer: ReturnType<Page['locator']> }> {
   await app.page.getByRole('button', { name: 'Agents', exact: true }).click();
-  const before = new Set(app.context.pages());
+  const pages = () => app.browser.contexts().flatMap((context) => context.pages());
+  const before = new Set(pages());
   await app.page.getByRole('button', { name: 'Sign in to Muse' }).click();
-  const popout = await waitFor(
-    'the Muse website pane',
-    async () => app.context.pages().find(
+  const website = await waitFor(
+    'the Muse provider pane',
+    async () => pages().find(
       (candidate) => !before.has(candidate) && candidate.url().includes('muse.ai'),
     ),
     30_000,
     500,
   );
-  const composer = popout.locator('textarea[aria-label="Message"], div[contenteditable="true"]').first();
+  const composer = website.locator('textarea[aria-label="Message"], div[contenteditable="true"]').first();
   await waitFor(
     'the Muse composer. Sign in to Muse in the app once, then retry.',
     async () => (await composer.isVisible().catch(() => false) ? true : undefined),
     60_000,
     1_000,
   );
-  return { popout, composer };
+  return { website, composer };
 }
 
 /** Type into the Muse composer and use its Send button when it is present. */
-async function sendPopout(
-  popout: Page,
+async function sendFromPane(
+  website: Page,
   composer: ReturnType<Page['locator']>,
   text: string,
-  verify = true,
 ): Promise<void> {
-  const log = popout.locator('[role="log"]');
-  const before = await log.getByText(text, { exact: false }).count();
   await composer.fill(text);
-  await sleep(300);
-  const send = popout.getByRole('button', { name: 'Send', exact: true });
-  if (await send.isVisible().catch(() => false)) await send.click();
+  const send = website.getByRole('button', { name: 'Send', exact: true });
+  if (await send.isVisible()) await send.click();
   else await composer.press('Enter');
-  if (verify) {
-    await waitFor(
-      `the Muse log to show ${JSON.stringify(text)}`,
-      async () => ((await log.getByText(text, { exact: false }).count()) > before ? true : undefined),
-      30_000,
-      1_000,
-    );
-  }
-  await sleep(1_000);
+  await website.getByRole('log').getByText(text, { exact: false }).last().waitFor({ timeout: 30_000 });
 }
 
-/** Reset the Muse context and wait until the vendor and the relay both see it. */
-async function clearMuseContext(
-  app: E2EApp,
-  popout: Page,
-  composer: ReturnType<Page['locator']>,
-): Promise<void> {
-  const initialImports = (await (await fetch(`${app.backendUrl}/api/imports`)).json()) as {
-    imports?: Array<{ text: string }>;
-  };
-  const clearImportsBefore = (initialImports.imports ?? [])
-    .filter((item) => isClearImport(item.text)).length;
-  let cleared = false;
-  for (let attempt = 0; attempt < 3 && !cleared; attempt++) {
-    const clearSentAt = Date.now();
-    const vendorClearBefore = await popout.getByText('Conversation cleared.').count();
-    await sendPopout(popout, composer, '/clear', false);
-    const vendorCleared = await waitFor(
-      'Muse to clear the conversation',
-      async () => ((await popout.getByText('Conversation cleared.').count()) > vendorClearBefore ? true : undefined),
-      30_000,
-      1_000,
-    ).then(() => true).catch(() => false);
-    if (!vendorCleared) continue;
-    cleared = await waitForImport(
-      app,
-      (item) => item.ts >= clearSentAt && isClearImport(item.text),
-      30_000,
-    ).then(async () => {
-      const data = (await (await fetch(`${app.backendUrl}/api/imports`)).json()) as {
-        imports?: Array<{ text: string }>;
-      };
-      const count = (data.imports ?? []).filter((item) => isClearImport(item.text)).length;
-      return count > clearImportsBefore;
-    }).catch(() => false);
-  }
-  assert.ok(cleared, 'The relay did not observe the /clear command. Check the Muse popout and retry.');
-  // Let the first popout scrape settle so old rows do not mask the new triggers.
-  await sleep(15_000);
-}
 
 test(
   'live Muse sign-in with an email code and the @blibs introduction',
@@ -441,13 +334,14 @@ test(
       await completeOnboarding(app.page);
       const { page } = app;
 
-      // Open the real sign-in pane. It shares the partition of the hidden view.
+      // Open the real sign-in window. It shares the partition of the hidden view.
       await page.getByRole('button', { name: 'Agents', exact: true }).click();
-      const pagesBefore = new Set(app.context.pages());
+      const pages = () => app.browser.contexts().flatMap((context) => context.pages());
+      const pagesBefore = new Set(pages());
       await page.getByRole('button', { name: 'Sign in to Muse' }).click();
       const signIn = await waitFor(
         'the Muse sign-in pane',
-        async () => app.context.pages().find(
+        async () => pages().find(
           (candidate) => !pagesBefore.has(candidate) && candidate.url().includes('muse.ai'),
         ),
         30_000,
@@ -643,84 +537,60 @@ test(
 
 
 test(
-  'live provider pane: ignore a user tag, list projects, and run a selected project task',
+  'live Muse creates a file in the requested project from the composer',
   { skip: relaySkipReason() },
-  async () => {
-    const settings = liveRelaySettings();
-    assert.ok(existsSync(settings.discoveryRoot), 'The live check needs the configured projects directory.');
-    const app = await launch({
-      mockLogin: false,
-      profileDir: LIVE_PROFILE,
-      relayCommand: null,
-      projectsDir: null,
-      timeoutMs: 60_000,
-    });
+  async (t) => {
+    const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-live-projects-'));
+    t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
+    const alpha = path.join(projectsDir, 'alpha');
+    const beta = path.join(projectsDir, 'beta');
+    mkdirSync(alpha);
+    mkdirSync(beta);
+    const model = liveRelayModel();
+    const app = await launch({ mockLogin: false, profileDir: LIVE_PROFILE, relayCommand: null, projectsDir });
     try {
       await completeOnboarding(app.page);
-      const configured = await fetch(app.backendUrl + '/api/relay/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          discoveryRoot: settings.discoveryRoot,
-          ...(settings.model ? { model: settings.model } : {}),
-        }),
-      });
-      assert.equal(configured.status, 200);
-
-      const { popout, composer } = await openMusePane(app);
-      await clearMuseContext(app, popout, composer);
-      const ignoredAt = Date.now();
-      await sendPopout(popout, composer, '@opencode ignored ' + ignoredAt.toString(36));
-      await sleep(10_000);
-      const afterIgnored = await outboxItems(app);
-      assert.equal(afterIgnored.some((item) => item.ts >= ignoredAt && item.text.startsWith(LIVE_HEADER)), false);
-
-      const importProvider = async (text: string): Promise<void> => {
-        const response = await fetch(app.backendUrl + '/api/import', {
+      if (model) {
+        const configured = await fetch(app.backendUrl + '/api/relay/projects', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: [{
-            provider: 'muse', role: 'agent', url: 'https://muse.ai/',
-            sourceId: 'live-provider-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
-            ts: Date.now(), text,
-          }] }),
+          body: JSON.stringify({ model }),
         });
+        assert.equal(configured.status, 200);
+      }
+
+      const { website, composer } = await openMusePane(app);
+      const log = website.locator('[role="log"]');
+      const replies = log.getByText(LIVE_HEADER, { exact: false });
+      const replyCount = await replies.count();
+      const existingIds = new Set((await outboxItems(app)).map((item) => item.id));
+      const content = 'blibs-test-' + randomUUID();
+      await sendFromPane(
+        website,
+        composer,
+        'Use my local OpenCode harness to create hello.txt in the project named alpha. ' +
+        'Write exactly ' + content + ' with no trailing newline. Leave all other files and projects untouched.',
+      );
+
+      const threadId = website.url();
+      await waitFor('Muse to issue an OpenCode task for the test file', async () => {
+        const response = await fetch(app.backendUrl + '/api/imports');
         assert.equal(response.status, 200);
-      };
-
-      const listSentAt = Date.now();
-      await importProvider('@opencode');
-      const projectList = await waitForOutbox(app, (item) => item.ts >= listSentAt
-        && item.text.startsWith('blibs choices') && item.text.includes('Pick a project for your task:'), 120_000)
-        .catch(async (error: unknown) => {
-          await diagnoseLive(app, popout, 'project list');
-          throw error;
-        });
-      const choice = /^- \$(\S+)/m.exec(projectList.text);
-      assert.ok(choice, 'The project list has a project token.');
-      const token = choice[1];
-      console.log('[live] project choice: ' + token);
-      await sleep(3_000);
-
-      const runSentAt = Date.now();
-      const nonce = runSentAt.toString(36);
-      await importProvider('@opencode $' + token + ' Reply with exactly: live selection ok ' + nonce);
-      const reply = await waitForOutbox(app, (item) => item.ts >= runSentAt
-        && item.text.startsWith(LIVE_HEADER) && item.text.toLowerCase().includes('live selection ok'), 300_000)
-        .catch(async (error: unknown) => {
-          await diagnoseLive(app, popout, 'selected project run');
-          throw error;
-        });
-      assert.ok(reply.text.toLowerCase().includes('live selection ok'));
-      await waitForOutbox(app, (item) => item.text === reply.text && item.status === 'sent', 120_000);
-
-      const headerLine = popout.getByText(LIVE_HEADER).last();
-      if (await headerLine.isVisible().catch(() => false)) await headerLine.scrollIntoViewIfNeeded();
-      await sleep(500);
-      const file = path.join(ARTIFACT_DIR, 'live-project-selection.png');
-      await popout.screenshot({ path: file });
-      assert.ok(existsSync(file));
-      console.log('Screenshot: ' + file);
+        const { imports } = await response.json() as {
+          imports: Array<{ provider: string; role: string; threadId: string; text: string }>;
+        };
+        return imports.find((item) => item.provider === 'muse' && item.role === 'agent'
+          && item.threadId === threadId && !isUserEcho(item.text)
+          && extractMentionTask(item.text)?.includes(content));
+      }, 180_000);
+      const reply = await waitForOutbox(app, (item) => !existingIds.has(item.id)
+        && item.threadId === threadId && item.text.startsWith(LIVE_HEADER) && item.status === 'sent', 300_000);
+      await waitFor('the harness reply to appear in the Muse conversation', async () => {
+        return (await replies.count()) > replyCount && await log.getByText(reply.text, { exact: false }).last()
+          .isVisible().catch(() => false) ? true : undefined;
+      }, 30_000);
+      assert.deepEqual(readFileSync(path.join(alpha, 'hello.txt')), Buffer.from(content));
+      assert.deepEqual(readdirSync(beta), []);
     } finally {
       await app.close();
     }

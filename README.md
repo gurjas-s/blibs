@@ -13,7 +13,12 @@ blibs straight into the real assistant session.
 
 blibs keeps your vendor sessions active so it can sync chats and send replies.
 
-## First run (new developer)
+## Contributor setup
+
+Use the [onboarding skill](.agents/skills/onboarding/SKILL.md) to set up a
+checkout and start blibs with a temporary profile and mock sign-in.
+
+## First run for personal use
 
 Prerequisites: Node.js 24.x (`node -v` must print `v24.…`). Electron 34's
 installer does not work on newer Node.js releases, so switch to Node 24 before
@@ -95,6 +100,9 @@ app acknowledged a send. The logs omit chat text, prompts, and harness output.
 | `npm start` | Launch the app (needs a prior `build`) |
 | `npm test` | Rebuilds, runs unit and HTTP route tests, then runs the desktop harness with temporary stores and ports |
 | `npm run e2e` | Build the app and run end-to-end checks; needs a display |
+| `npm run test:built` | Run unit, HTTP, and headless harness checks against the current build |
+| `npm run e2e:built` | Run desktop smoke checks against the current build |
+| `npm run mock:desktop` | Open the built app with a temporary profile and mock sign-in |
 | `npm run e2e:live` | Opt-in live checks; needs `BLIBS_LIVE_LOGIN=1`. The sign-in check also needs account values in `.env` |
 | `npm run test:desktop` | Test search and citations; needs a display, but no model downloads |
 | `npm run smoke` | Check that the app starts; needs a display |
@@ -143,7 +151,15 @@ The check needs a display. On Linux without `DISPLAY` or `WAYLAND_DISPLAY`, the
 check skips with a message; use `xvfb-run -a npm run e2e` on a headless machine.
 `npm test` does not run the e2e check.
 
-### Live checks
+### Authenticated provider checks
+
+If the provider is already signed in, follow the
+[authenticated provider workflow](.agents/skills/verification/SKILL.md#authenticated-provider-checks)
+to test the changed path in the built app. The automated scripts below
+exercise specific flows and can send commands to a real account. Check their
+side effects before running them.
+
+### Live test scripts
 
 `npm run e2e:live` runs two opt-in checks. Set `BLIBS_LIVE_LOGIN=1` to enable
 them. Do not run these checks in CI.
@@ -155,20 +171,17 @@ them. Do not run these checks in CI.
    harness stub. It keeps its Electron profile in
    `tests/e2e/artifacts/live-profile`, so a remembered device works on the next
    run.
-2. **Provider pane relay check.** It opens the authenticated Muse website in
-   the center pane, sends
-   `/clear`, `@blibs`, and a user `@opencode` tag. blibs ignores that user tag.
-   The check then imports provider choice messages to list projects and run a
-   task in the selected project.
-   It uses the installed app profile and runs the real OpenCode model. Set
-   `BLIBS_LIVE_PROFILE` to use another profile. The check reads the model and
-   projects directory from the app state. Set `BLIBS_LIVE_MODEL` to override the
-   model.
+2. **Project file check.** It sends a plain-language request from the Muse
+   composer. Muse sends a task to OpenCode. The check looks for the harness
+   reply in the same conversation and verifies the exact bytes in
+   `alpha/hello.txt`. It also checks that `beta` stays empty. The check
+   removes both temporary projects when it ends.
+   It uses the signed-in app profile. Set `BLIBS_LIVE_PROFILE` to use a
+   different signed-in profile. Set `BLIBS_LIVE_MODEL` to override the model.
 
-Do not commit the profile, a screenshot of a signed-in session, or a
-credential. The provider pane check writes
-`tests/e2e/artifacts/live-project-selection.png`; Git ignores that
-directory.
+Do not commit a profile, a screenshot of a signed-in session, or a credential.
+See the [project selection verification steps](.agents/skills/verification/e2e-testing/project-selection.md)
+to run the project file check by itself.
 
 ## Troubleshooting
 
