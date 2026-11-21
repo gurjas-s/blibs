@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { writeClipboardText } from '../desktop';
 import { harnessName } from '../connections';
 import type { ChatMessage, HarnessActionStatus } from '../types';
 import { Button } from './Button';
@@ -33,6 +35,16 @@ export function MessageBubble({ message, agentName, onRetry }: MessageBubbleProp
   const roleLabel = message.role === 'user' ? 'You' : (message.senderName ?? agentName);
   const time = new Date(message.ts);
   const fullTime = time.toLocaleString();
+  const [copyStatus, setCopyStatus] = useState('');
+
+  async function copyMessage(): Promise<void> {
+    try {
+      await writeClipboardText(message.text);
+      setCopyStatus('Copied');
+    } catch {
+      setCopyStatus('Copy failed');
+    }
+  }
 
   if (message.action) {
     const action = message.action;
@@ -64,6 +76,10 @@ export function MessageBubble({ message, agentName, onRetry }: MessageBubbleProp
         <time dateTime={time.toISOString()} title={fullTime}>
           {time.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
         </time>
+        <Button variant="ghost" size="sm" aria-label={message.role === 'user' ? 'Copy your message' : `Copy message from ${roleLabel}`} onClick={() => void copyMessage()}>
+          Copy
+        </Button>
+        <span className="sr-only" role="status" aria-live="polite">{copyStatus}</span>
       </div>
       <div className="msg-bubble">
         <p>{message.text}</p>

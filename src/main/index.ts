@@ -9,11 +9,11 @@
 // - Serves the built panel (dist/) over HTTP, forwarding /api/* to the proxy.
 // - Keeps one hidden vendor window per vendor (persisted partitions, so login
 //   survives restarts) that scrapes chats and delivers outbox sends.
-// - The panel's agents screen and Menu > Agents open a sign-in window per
-//   vendor (shared partition, so the hidden view picks up the session).
+// - The panel shows provider websites in a WebContentsView in its center pane.
+//   Each WebContentsView shares its persistent partition with the hidden sync view.
 //
 // Run: npm install && npm run build && npm start
-import { app, BrowserWindow, Menu, ipcMain, nativeImage } from 'electron';
+import { app, WebContentsView, BrowserWindow, Menu, clipboard, ipcMain, nativeImage } from 'electron';
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
@@ -21,12 +21,11 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  beginVendorLogin,
   cancelVendorLogin,
   checkVendorLogin,
-  closeLoginWindows,
   getLoginStatus,
-  getVendorWindow,
-  openVendorLogin,
+  MOCK_LOGIN,
   probeVendorLogin,
   setLoginStatusSink,
 } from './login';
@@ -110,6 +109,10 @@ let staticServer: http.Server | null = null;
 let mainWin: BrowserWindow | null = null;
 /** provider id -> hidden BrowserWindow (alive, real layout viewport) */
 export const _views = new Map<string, BrowserWindow>();
+/** provider id -> embedded website view shown in the center pane */
+const providerPaneViews = new Map<string, WebContentsView>();
+let activeProviderPane: string | null = null;
+let providerPaneBounds: Electron.Rectangle | null = null;
 /** True while the outbox types into a vendor view, so a refresh cannot interrupt it. */
 let vendorSending = false;
 /** True while one outbox drain owns the queue. */
@@ -278,14 +281,9 @@ export function createMainWindow(): BrowserWindow {
     webPreferences: { preload: PANEL_PRELOAD },
   });
   void mainWin.loadURL(`http://127.0.0.1:${UI_PORT}/`);
-  mainWin.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      const target = new URL(url);
-      const vendor = VENDORS.find(v => new URL(v.url).hostname === target.hostname);
-      if (target.protocol === 'https:' && vendor && !target.username && !target.password) openLogin(vendor.id, target.href);
-    } catch { /* Invalid source links do not open a window. */ }
-    return { action: 'deny' };
-  });
+  mainWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWin.webContents.on('did-start-loading', detachProviderPane);
+  mainWin.on('close', closeProviderPanes);
   mainWin.on('closed', () => {
     closeVendorViews();
     mainWin = null;
@@ -306,6 +304,25 @@ function attachVendorViews(): void {
     void view.loadURL(v.url);
     _views.set(v.id, view);
   }
+}
+
+function detachProviderPane(): void {
+  const view = activeProviderPane && providerPaneViews.get(activeProviderPane);
+  if (view && mainWin && !mainWin.isDestroyed()) {
+    const hadFocus = view.webContents.isFocused();
+    mainWin.contentView.removeChildView(view);
+    if (hadFocus) mainWin.webContents.focus();
+  }
+  activeProviderPane = null;
+}
+
+function closeProviderPanes(): void {
+  detachProviderPane();
+  for (const view of providerPaneViews.values()) {
+    if (!view.webContents.isDestroyed()) view.webContents.close();
+  }
+  providerPaneViews.clear();
+  providerPaneBounds = null;
 }
 
 function closeVendorViews(): void {
@@ -372,17 +389,14 @@ async function refreshRelayView(): Promise<void> {
   } catch { /* next pass */ }
 }
 
-/** Visible sign-in window sharing the hidden view's partition (same cookies). */
-function openLogin(vendorId: string, source?: string): void {
-  const v = VENDORS.find((x) => x.id === vendorId);
-  if (!v) return;
-  openVendorLogin(v, source, PRELOAD);
+/** True only for the panel renderer that this process served. */
+function isTrustedPanel(event: IpcMainInvokeEvent | IpcMainEvent): boolean {
+  const { sender, senderFrame } = event;
+  return Boolean(sender === mainWin?.webContents && senderFrame
+    && senderFrame === sender.mainFrame && isTrustedPanelUrl(senderFrame.url));
 }
 
-/** True only for the panel renderer that this process served. */
-function isTrustedPanel(event: IpcMainInvokeEvent): boolean {
-  const url = event.senderFrame?.url;
-  if (!url) return false;
+function isTrustedPanelUrl(url: string): boolean {
   try {
     return new URL(url).origin === PANEL_ORIGIN;
   } catch {
@@ -400,7 +414,7 @@ function registerLoginIpc(): void {
     if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
     const vendor = vendorFor(vendorId);
     if (!vendor) throw new Error('Unknown vendor.');
-    return openVendorLogin(vendor, undefined, PRELOAD);
+    return beginVendorLogin(vendor);
   });
   ipcMain.handle('blibs:login:cancel', (event, vendorId: unknown) => {
     if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
@@ -412,7 +426,7 @@ function registerLoginIpc(): void {
     if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
     const vendor = vendorFor(vendorId);
     if (!vendor) throw new Error('Unknown vendor.');
-    return checkVendorLogin(vendor);
+    return checkVendorLogin(vendor, providerPaneViews.get(vendor.id)?.webContents.getURL());
   });
   ipcMain.handle('blibs:login:status', (event, vendorId: unknown) => {
     if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
@@ -425,6 +439,101 @@ function registerLoginIpc(): void {
     const vendor = vendorFor(vendorId);
     if (!vendor) throw new Error('Unknown vendor.');
     return probeVendorLogin(vendor);
+  });
+}
+
+function registerClipboardIpc(): void {
+  ipcMain.handle('blibs:clipboard:write', (event, value: unknown) => {
+    if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
+    if (typeof value !== 'string' || value.length > 1_000_000) {
+      throw new Error('Invalid clipboard text.');
+    }
+    clipboard.writeText(value);
+  });
+}
+
+function isProviderSource(vendor: Vendor, source: string): boolean {
+  try {
+    const url = new URL(source);
+    return url.origin === new URL(vendor.url).origin && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+function registerProviderPaneIpc(): void {
+  ipcMain.handle('blibs:provider-pane:show', async (event, providerId: unknown, source: unknown) => {
+    if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
+    const vendor = vendorFor(providerId);
+    if (!vendor || !mainWin || mainWin.isDestroyed()) throw new Error('Unknown provider.');
+    if (source !== undefined && (typeof source !== 'string' || !isProviderSource(vendor, source))) {
+      throw new Error('Invalid provider thread URL.');
+    }
+    let view = providerPaneViews.get(vendor.id);
+    if (!view) {
+      view = new WebContentsView({
+        webPreferences: {
+          preload: PRELOAD,
+          partition: vendor.partition,
+          backgroundThrottling: false,
+          additionalArguments: ['--blibs-provider-pane'],
+        },
+      });
+      view.webContents.setWindowOpenHandler(({ url }) => {
+        try {
+          const target = new URL(url);
+          if (target.protocol === 'https:' && !target.username && !target.password) {
+            void view?.webContents.loadURL(target.href).catch(() => undefined);
+          }
+        } catch { /* Ignore invalid URLs. */ }
+        return { action: 'deny' };
+      });
+      view.webContents.on('will-navigate', (navigationEvent, url) => {
+        try {
+          const target = new URL(url);
+          if (target.protocol !== 'https:' || target.username || target.password) {
+            navigationEvent.preventDefault();
+          }
+        } catch { navigationEvent.preventDefault(); }
+      });
+      providerPaneViews.set(vendor.id, view);
+    }
+    detachProviderPane();
+    activeProviderPane = vendor.id;
+    mainWin.contentView.addChildView(view);
+    if (providerPaneBounds) view.setBounds(providerPaneBounds);
+    const contents = view.webContents;
+    if (MOCK_LOGIN) {
+      if (!contents.getURL() && !contents.isLoadingMainFrame()) {
+        const markup = `<title>${vendor.name}</title><label>Message <textarea></textarea></label>`;
+        await contents.loadURL(`data:text/html,${encodeURIComponent(markup)}`);
+      }
+    } else if (source !== undefined || !contents.getURL() || contents.getURL().startsWith('chrome-error:')) {
+      await contents.loadURL(source ?? vendor.url);
+    }
+  });
+  ipcMain.handle('blibs:provider-pane:hide', (event) => {
+    if (!isTrustedPanel(event)) throw new Error('Untrusted panel sender.');
+    detachProviderPane();
+  });
+  ipcMain.on('blibs:provider-pane:escape', (event) => {
+    const view = activeProviderPane && providerPaneViews.get(activeProviderPane);
+    if (!view || event.sender !== view.webContents || event.senderFrame !== event.sender.mainFrame) return;
+    mainWin?.webContents.send('blibs:provider-pane:back');
+  });
+  ipcMain.on('blibs:provider-pane:bounds', (event, bounds: unknown) => {
+    if (!isTrustedPanel(event)) return;
+    if (!bounds || typeof bounds !== 'object') return;
+    const rect = bounds as Partial<Electron.Rectangle>;
+    if (![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite)) return;
+    const safeBounds: Electron.Rectangle = {
+      x: Math.max(0, Math.round(rect.x as number)),
+      y: Math.max(0, Math.round(rect.y as number)),
+      width: Math.max(0, Math.round(rect.width as number)),
+      height: Math.max(0, Math.round(rect.height as number)),
+    };
+    providerPaneBounds = safeBounds;
+    if (activeProviderPane) providerPaneViews.get(activeProviderPane)?.setBounds(safeBounds);
   });
 }
 
@@ -449,13 +558,20 @@ export function buildMenu(): void {
     });
   }
   template.push({
+    label: 'Edit',
+    submenu: [
+      { role: 'undo' },
+      { role: 'redo' },
+      { type: 'separator' },
+      { role: 'cut' },
+      { role: 'copy' },
+      { role: 'paste' },
+      { role: 'selectAll' },
+    ],
+  });
+  template.push({
     label: 'Agents',
     submenu: [
-      ...VENDORS.map((v) => ({
-        label: `Sign in to ${v.name}…`,
-        click: () => openLogin(v.id),
-      })),
-      { type: 'separator' as const },
       {
         label: 'Reload vendor views',
         click: () => { void refreshRelayView(); },
@@ -483,26 +599,20 @@ export function buildMenu(): void {
 
 // ---------- sync protocol ----------
 
-/**
- * The window that blibs types into. The visible sign-in window wins while it
- * is open and on the vendor site, so a user can chat there. The hidden view is
- * the fallback.
- */
-function activeView(provider: string): BrowserWindow | undefined {
-  const loginWindow = getVendorWindow(provider);
-  if (loginWindow?.isFocused()) {
-    const vendor = VENDORS.find((entry) => entry.id === provider);
-    if (vendor) {
-      try {
-        const current = new URL(loginWindow.webContents.getURL());
-        if (current.hostname === new URL(vendor.url).hostname) return loginWindow;
-      } catch { /* still on a blank page */ }
-    }
+/** The visible provider pane wins. The hidden view is the fallback. */
+function activeView(provider: string, threadId?: string): BrowserWindow | WebContentsView | undefined {
+  if (mainWin?.isFocused() && activeProviderPane === provider) {
+    const pane = providerPaneViews.get(provider);
+    const vendor = vendorFor(provider);
+    const current = pane?.webContents.getURL();
+    if (pane && vendor && current && !pane.webContents.isLoadingMainFrame()
+      && new URL(current).origin === new URL(vendor.url).origin
+      && (!threadId || current.split('#')[0] === threadId.split('#')[0])) return pane;
   }
   return _views.get(provider);
 }
 
-function askView(view: BrowserWindow | undefined, channel: string, payload: Record<string, unknown>): Promise<CollectResult | SendResult> {
+function askView(view: BrowserWindow | WebContentsView | undefined, channel: string, payload: Record<string, unknown>): Promise<CollectResult | SendResult> {
   if (!view) return Promise.reject(new Error('no view'));
   const reqId = `r${Date.now().toString(36)}${reqSeq++}`;
   return new Promise((resolve, reject) => {
@@ -563,7 +673,7 @@ export async function drainOutbox(reason: string): Promise<{ drained: number; er
     try {
       for (const item of pending.slice(0, 5)) {
         const provider = String(item.provider || '').toLowerCase();
-        const view = activeView(provider);
+        const view = activeView(provider, item.threadId);
         if (!view) {
           await ackOutbox(item.id, false, `no view for provider "${item.provider}"`);
           continue;
@@ -591,7 +701,7 @@ export async function drainOutbox(reason: string): Promise<{ drained: number; er
 // The vendor page mounts its composer after the load event, so the send waits.
 const THREAD_SETTLE_MS = 2000;
 
-async function ensureThread(view: BrowserWindow, provider: string, threadId?: string): Promise<void> {
+async function ensureThread(view: BrowserWindow | WebContentsView, provider: string, threadId?: string): Promise<void> {
   if (!threadId) return;
   let target: URL;
   try {
@@ -616,7 +726,7 @@ async function ensureThread(view: BrowserWindow, provider: string, threadId?: st
     return;
   }
   if (current.split('#')[0] === threadId.split('#')[0]) return;
-  await view.loadURL(threadId);
+  await view.webContents.loadURL(threadId);
   await new Promise((resolve) => setTimeout(resolve, THREAD_SETTLE_MS));
 }
 
@@ -631,6 +741,8 @@ async function ackOutbox(id: string, ok: boolean, error?: string): Promise<void>
 
 function wireIpc(): void {
   registerLoginIpc();
+  registerClipboardIpc();
+  registerProviderPaneIpc();
   // Preload pushes (page load, DOM mutations, heartbeat).
   ipcMain.on('blibs:scrape', (_e: IpcMainEvent, payload: CollectResult) => {
     void relayScrape(payload).then(() => drainOutbox('scrape'));
@@ -716,7 +828,7 @@ if (!process.env.BLIBS_NO_AUTOSTART) {
 
 // Exported for the headless test harness (BLIBS_NO_AUTOSTART=1).
 export async function shutdown(): Promise<void> {
-  closeLoginWindows();
+  closeProviderPanes();
   closeVendorViews();
   const pending: Promise<void>[] = [];
   if (proxyChild) {

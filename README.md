@@ -36,30 +36,25 @@ local harness and one column for each assistant. Turn on a supported harness. Th
 combinations show as unsupported. Set the shared folder. Select **Start chatting**.
 
 Select **Connect another assistant** on the Connections screen to sign in to
-Muse, Dots, or Grok (once each). The **Agents** item in the sidebar and the
-**Agents** menu are other paths to the same screen. The sign-in window shares
-cookies with the hidden sync view, so after sign-in you can close it — syncing
-continues in the background. If the vendor asks for a mobile code or a CAPTCHA,
-the agents screen shows that step. Select **Check again** after you complete it.
-**Back to chats**, **Cancel**, and **Escape** always return to the panel.
-The sign-in window is also a chat view while it is open. blibs reads the
-messages there and types replies into the window that has focus. Close it to
-continue in the hidden sync view.
+Muse, Dots, or Grok (once each). The **Agents** item in the sidebar opens the
+same sign-in screen. Sign-in opens the provider website in the center pane.
+If the vendor asks for a code or a CAPTCHA, complete that step on the website.
+Select **Check again** to check the connection. Select **Back to Agents** or
+press **Escape** to return to the sign-in screen.
 
-An assistant with no signed-in session shows a setup card in its chat. The card
-lists the steps, gives the connect link, and offers **Check connection** and
-**Open assistant**. The composer stays disabled until the assistant is
-connected. Select **Connections** in the sidebar to change the harnesses or the
-folder later.
+Select an assistant in the sidebar to see its synced messages. Select **Open
+website** in a connected chat to open the provider website in the center pane.
+The website shares its session with the background sync view. Select **Back
+to chats** or press **Escape** to return to the local chat. Select
+**Connections** in the sidebar to change the harnesses or the folder.
 
 Chats flow in automatically: the app pushes seconds after chat content changes
 (plus a 1-minute backup sweep), and the panel auto-pulls every 15s by default.
 The Auto-sync toggle and interval are in Settings.
 
-**Send from blibs:** type in the composer, hit Send. The message is queued on the
-backend, the app types it into the matching session and sends it, and the badge
-under your message flips `Sending…` → `Sent` (or `Not delivered` + Retry).
-The agent's reply syncs back on its own.
+**Send a message:** send it from the local chat or the provider website.
+The provider website supports the system copy and paste shortcuts. Select
+**Copy** on a local message to copy its text.
 
 **Ask blibs about itself:** tag `@blibs` in a chat. blibs sends one generated
 reply into the conversation and shows it in the panel. The reply explains what
@@ -160,7 +155,8 @@ them. Do not run these checks in CI.
    harness stub. It keeps its Electron profile in
    `tests/e2e/artifacts/live-profile`, so a remembered device works on the next
    run.
-2. **Popout relay check.** It opens the authenticated Muse popout, sends
+2. **Provider pane relay check.** It opens the authenticated Muse website in
+   the center pane, sends
    `/clear`, `@blibs`, and a user `@opencode` tag. blibs ignores that user tag.
    The check then imports provider choice messages to list projects and run a
    task in the selected project.
@@ -170,8 +166,8 @@ them. Do not run these checks in CI.
    model.
 
 Do not commit the profile, a screenshot of a signed-in session, or a
-credential. The popout check writes
-`tests/e2e/artifacts/live-project-session-choices.png`; Git ignores that
+credential. The provider pane check writes
+`tests/e2e/artifacts/live-project-selection.png`; Git ignores that
 directory.
 
 ## Troubleshooting

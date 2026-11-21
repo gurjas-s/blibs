@@ -25,9 +25,13 @@ import {
   cancelVendorLogin,
   checkVendorLogin,
   desktopLoginAvailable,
-  openVendorLogin,
   probeVendorLogin,
   subscribeLoginStatus,
+  hideProviderPane,
+  openVendorLogin,
+  subscribeProviderPaneBack,
+  setProviderPaneBounds,
+  showProviderPane,
 } from './desktop';
 import {
   fetchImports,
@@ -78,7 +82,7 @@ const ONBOARDING_DONE = 'done';
 const SEARCH_DEBOUNCE_MS = 250;
 
 /** The main pane that the shell shows. */
-type View = 'chat' | 'results' | 'settings' | 'login' | 'connections';
+type View = 'provider' | 'chat' | 'results' | 'settings' | 'login' | 'connections';
 
 function onboardingComplete(): boolean {
   try {
@@ -156,6 +160,10 @@ export default function App() {
   const [theme, setTheme] = useState<ThemePreference>(readThemePreference);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
+  const providerPane = useRef<HTMLDivElement>(null);
+  const [providerReturn, setProviderReturn] = useState<'chat' | 'login' | 'results'>('chat');
+  const [providerSource, setProviderSource] = useState<string>();
+  const [providerLoadFailed, setProviderLoadFailed] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const searchId = useRef(0);
@@ -271,6 +279,40 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [view]);
+
+  useEffect(() => {
+    if (!onboarded || view !== 'provider') return;
+    const element = providerPane.current;
+    if (!element) return;
+    const updateBounds = (): void => {
+      const rect = element.getBoundingClientRect();
+      setProviderPaneBounds({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+    };
+    const goBack = (): void => setView(providerReturn);
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') goBack();
+    };
+    const unsubscribe = subscribeProviderPaneBack(goBack);
+    const observer = new ResizeObserver(updateBounds);
+    observer.observe(element);
+    window.addEventListener('resize', updateBounds);
+    window.addEventListener('keydown', onKeyDown);
+    updateBounds();
+    let open = true;
+    void showProviderPane(active.provider, providerSource).catch(() => {
+      if (!open) return;
+      setProviderLoadFailed(true);
+      void hideProviderPane();
+    });
+    return () => {
+      open = false;
+      unsubscribe();
+      observer.disconnect();
+      window.removeEventListener('resize', updateBounds);
+      window.removeEventListener('keydown', onKeyDown);
+      void hideProviderPane();
+    };
+  }, [onboarded, view, active.provider, providerReturn, providerSource]);
 
   useEffect(() => {
     if (!contextOpen) return;
@@ -505,10 +547,6 @@ export default function App() {
 
   // Type ahead: one search after the debounce. Tags alone run no search.
   useEffect(() => {
-    if (!query.trim()) {
-      setView('chat');
-      return;
-    }
     if (!parseSearchQuery(query).text) return;
     const timer = window.setTimeout(() => {
       debounceTimer.current = null;
@@ -611,10 +649,24 @@ export default function App() {
     }));
   }
 
+  function openProvider(vendorId: string, returnTo: 'chat' | 'login' | 'results', source?: string): void {
+    if (returnTo !== 'results') {
+      cancelPendingSearch();
+      setQuery('');
+    }
+    setActiveId(vendorId);
+    setProviderSource(source);
+    setProviderReturn(returnTo);
+    setProviderLoadFailed(false);
+    setView('provider');
+    setSidebarOpen(false);
+    setContextOpen(false);
+  }
+
   function startLogin(vendorId: string): void {
     openVendorLogin(vendorId)
       .then((status) => {
-        setLoginStatuses((current) => ({ ...current, [vendorId]: status }));
+        if (!status.mock) openProvider(vendorId, 'login');
       })
       .catch((error: unknown) => reportLoginError(vendorId, error));
   }
@@ -694,7 +746,11 @@ export default function App() {
               label="Search all conversations"
               title="Type #muse, #dots, #grok, or #custom to filter by provider."
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(event) => {
+                const value = event.target.value;
+                if (!value.trim() && view === 'results') exitSearch();
+                else setQuery(value);
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
@@ -785,7 +841,45 @@ export default function App() {
         </aside>
 
         <main className="main">
-          {view === 'login' ? (
+          {view === 'provider' ? (
+            <>
+              <div className="chat-head">
+                <div className="chat-identity">
+                  <h1>{active.name}</h1>
+                </div>
+                <div className="chat-actions">
+                  {providerReturn === 'login' && (
+                    <>
+                      <Button variant="secondary" size="sm" onClick={() => checkLogin(active.id)}>
+                        Check again
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => {
+                        cancelLogin(active.id);
+                        setView('login');
+                      }}>
+                        Cancel
+                      </Button>
+                    </>
+                  )}
+                  <Button variant="secondary" size="sm" onClick={() => setView(providerReturn)}>
+                    {providerReturn === 'results' ? 'Back to results' : providerReturn === 'login' ? 'Back to Agents' : 'Back to chats'}
+                  </Button>
+                </div>
+              </div>
+              {providerLoadFailed ? (
+                <p className="login-status login-status--error" role="alert">
+                  The provider website did not load. Go back and try again.
+                </p>
+              ) : (
+                <>
+                  {providerReturn === 'login' && (
+                    <p className="login-status" role="status">{loginStatuses[active.id]?.message}</p>
+                  )}
+                  <div className="provider-pane" ref={providerPane} />
+                </>
+              )}
+            </>
+          ) : view === 'login' ? (
             <LoginScreen
               vendors={PROVIDERS}
               statuses={loginStatuses}
@@ -810,7 +904,10 @@ export default function App() {
               onBack={closeSettings}
             />
           ) : view === 'results' && searchCommand ? (
-            <SearchPanel command={searchCommand} />
+            <SearchPanel
+              command={searchCommand}
+              onOpenThread={desktopAvailable ? (provider, url) => openProvider(provider, 'results', url) : undefined}
+            />
           ) : <>
             <div className="chat-head">
               <div className="chat-identity">
@@ -821,6 +918,11 @@ export default function App() {
                 </StatusPill>
               </div>
               <div className="chat-actions">
+                {desktopAvailable && connected && (
+                  <Button variant="secondary" size="sm" onClick={() => openProvider(active.id, 'chat')}>
+                    Open website
+                  </Button>
+                )}
                 <Button variant="secondary" size="sm" onClick={openConnections}>
                   Edit tools
                 </Button>

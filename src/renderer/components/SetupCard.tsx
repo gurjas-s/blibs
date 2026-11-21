@@ -1,5 +1,6 @@
 import { useId, useState } from 'react';
 import type { ReactNode } from 'react';
+import { writeClipboardText } from '../desktop';
 import { Button } from './Button';
 import { Card } from './Card';
 
@@ -39,7 +40,7 @@ export function SetupCard({
 
   async function copyLink(): Promise<void> {
     try {
-      await navigator.clipboard.writeText(connectLink);
+      await writeClipboardText(connectLink);
       setCopyStatus('Copied');
     } catch {
       setCopyStatus('Select the link and copy it.');

@@ -30,7 +30,7 @@ Non-obvious facts:
   `BLIBS_UI_PORT` and `PROXY_PORT` values in every URL.
 - The profile is `$TMP/profile`. The history store is `$TMP/history`. Remove
   `$TMP` after the run.
-- `BLIBS_MOCK_LOGIN=1` changes only the in-app sign-in steps. The hidden vendor
+- `BLIBS_MOCK_LOGIN=1` uses fixed sign-in steps and a local provider page. The hidden vendor
   views load the public vendor sites and stay signed out.
 - Do not use a live vendor login, a real chat, a cookie, or a credential.
   Mark a step that needs a live session as a manual boundary and stop.

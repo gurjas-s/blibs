@@ -10,7 +10,7 @@
 //
 // The checks:
 // 1. Sign in to Proton with the same mailbox that receives the Muse code.
-// 2. Open the Muse sign-in window and submit the account email.
+// 2. Open the Muse sign-in pane and submit the account email.
 // 3. Read the newest Meta code from the Proton inbox and submit it.
 // 4. Send @blibs from the panel and check the generated introduction.
 // 5. Import a provider @opencode hi and check the harness reply header.
@@ -251,7 +251,7 @@ async function submitMuseCode(page: Page, code: string): Promise<void> {
     }
     await sleep(1_000);
   }
-  throw new Error('The Muse sign-in window did not show the chat after the code step.');
+  throw new Error('The Muse sign-in pane did not show the chat after the code step.');
 }
 
 /** Poll the panel until the main process reports the Muse session. */
@@ -260,12 +260,10 @@ async function waitForSignedIn(page: Page): Promise<void> {
   while (Date.now() < deadline) {
     const signed = page.getByText(/Signed in to Muse/);
     if (await signed.isVisible().catch(() => false)) return;
-    const check = page.getByRole('button', { name: 'Check Muse sign-in again' });
+    const check = page.getByRole('button', { name: 'Check again', exact: true });
     if (await check.isVisible().catch(() => false)) await check.click().catch(() => undefined);
     await sleep(5_000);
-    await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => undefined);
-    await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 }).catch(() => undefined);
-    await page.getByRole('button', { name: 'Agents', exact: true }).click().catch(() => undefined);
+
   }
   throw new Error('The panel did not report the Muse sign-in.');
 }
@@ -332,20 +330,19 @@ async function diagnoseLive(app: E2EApp, popout: Page, label: string): Promise<v
   }
 }
 
-/** Open the Muse sign-in window, which is also the visible chat popout. */
-async function openMusePopout(app: E2EApp): Promise<{ popout: Page; composer: ReturnType<Page['locator']> }> {
+/** Open the Muse sign-in pane, which is also the visible chat popout. */
+async function openMusePane(app: E2EApp): Promise<{ popout: Page; composer: ReturnType<Page['locator']> }> {
   await app.page.getByRole('button', { name: 'Agents', exact: true }).click();
   const before = new Set(app.context.pages());
   await app.page.getByRole('button', { name: 'Sign in to Muse' }).click();
   const popout = await waitFor(
-    'the Muse popout window',
+    'the Muse website pane',
     async () => app.context.pages().find(
       (candidate) => !before.has(candidate) && candidate.url().includes('muse.ai'),
     ),
     30_000,
     500,
   );
-  await popout.bringToFront();
   const composer = popout.locator('textarea[aria-label="Message"], div[contenteditable="true"]').first();
   await waitFor(
     'the Muse composer. Sign in to Muse in the app once, then retry.',
@@ -444,15 +441,18 @@ test(
       await completeOnboarding(app.page);
       const { page } = app;
 
-      // Open the real sign-in window. It shares the partition of the hidden view.
+      // Open the real sign-in pane. It shares the partition of the hidden view.
       await page.getByRole('button', { name: 'Agents', exact: true }).click();
       const pagesBefore = new Set(app.context.pages());
       await page.getByRole('button', { name: 'Sign in to Muse' }).click();
-      await sleep(6_000);
-      const signIn = app.context.pages().find(
-        (candidate) => !pagesBefore.has(candidate) && candidate.url().includes('muse.ai'),
+      const signIn = await waitFor(
+        'the Muse sign-in pane',
+        async () => app.context.pages().find(
+          (candidate) => !pagesBefore.has(candidate) && candidate.url().includes('muse.ai'),
+        ),
+        30_000,
+        500,
       );
-      assert.ok(signIn, 'The Muse sign-in window must open.');
 
       const emailField = signIn.getByLabel('Mobile number or email');
       if (await emailField.isVisible().catch(() => false)) {
@@ -483,9 +483,8 @@ test(
       }
       await waitForSignedIn(page);
 
-      // Return to the chat shell. The sign-in window can close at any time.
-      const back = page.getByRole('button', { name: 'Back to chats' });
-      if (await back.isVisible().catch(() => false)) await back.click();
+      await page.getByRole('button', { name: 'Back to Agents' }).click();
+      await page.getByRole('button', { name: 'Back to chats' }).click();
       await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
 
       // Reload the hidden view so the shared session reaches the sync view.
@@ -644,7 +643,7 @@ test(
 
 
 test(
-  'live popout: ignore a user tag, list projects, and run a selected project task',
+  'live provider pane: ignore a user tag, list projects, and run a selected project task',
   { skip: relaySkipReason() },
   async () => {
     const settings = liveRelaySettings();
@@ -668,7 +667,7 @@ test(
       });
       assert.equal(configured.status, 200);
 
-      const { popout, composer } = await openMusePopout(app);
+      const { popout, composer } = await openMusePane(app);
       await clearMuseContext(app, popout, composer);
       const ignoredAt = Date.now();
       await sendPopout(popout, composer, '@opencode ignored ' + ignoredAt.toString(36));
@@ -715,7 +714,6 @@ test(
       assert.ok(reply.text.toLowerCase().includes('live selection ok'));
       await waitForOutbox(app, (item) => item.text === reply.text && item.status === 'sent', 120_000);
 
-      await popout.bringToFront();
       const headerLine = popout.getByText(LIVE_HEADER).last();
       if (await headerLine.isVisible().catch(() => false)) await headerLine.scrollIntoViewIfNeeded();
       await sleep(500);

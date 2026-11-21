@@ -82,6 +82,15 @@ export interface DesktopLoginApi {
 declare global {
   interface Window {
     /** Narrow bridge from the panel preload. Browser-only builds have no bridge. */
-    blibsDesktop?: { login: DesktopLoginApi };
+    blibsDesktop?: {
+      login: DesktopLoginApi;
+      clipboard: { writeText: (value: string) => Promise<void> };
+      providerPane: {
+        onBack: (listener: () => void) => () => void;
+        show: (providerId: string, source?: string) => Promise<void>;
+        hide: () => Promise<void>;
+        setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void;
+      };
+    };
   }
 }

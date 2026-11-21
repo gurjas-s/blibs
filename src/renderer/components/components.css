@@ -405,10 +405,6 @@
   white-space: nowrap;
 }
 
-.open-tab {
-  flex-shrink: 0;
-}
-
 /* ---------- Message bubble ---------- */
 .msg {
   display: flex;
