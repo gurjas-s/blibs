@@ -13,6 +13,7 @@ import path from 'node:path';
 import type { Page } from 'playwright-core';
 import {
   CONNECTIONS_STORAGE_KEY,
+  MESSAGES_STORAGE_KEY,
   completeOnboarding,
   displayAvailable,
   launch,
@@ -20,6 +21,7 @@ import {
   NO_DISPLAY_MESSAGE,
   openSettings,
   resetOnboarding,
+  screenshot,
   seedChats,
   seedConnections,
   selectAgent,
@@ -72,6 +74,20 @@ async function horizontalOverflow(page: Page): Promise<number> {
   );
 }
 
+async function mockWebsite(app: E2EApp, name: string): Promise<Page> {
+  const title = encodeURIComponent(`<title>${name}</title>`);
+  const deadline = Date.now() + 5_000;
+  do {
+    const website = app.context.pages().find((candidate) => candidate.url().includes(title));
+    if (website) {
+      await website.getByLabel('Message').waitFor();
+      return website;
+    }
+    await delay(50);
+  } while (Date.now() < deadline);
+  assert.fail(`The ${name} website did not open.`);
+}
+
 before(async () => {
   if (!displayAvailable()) return;
   app = await launch();
@@ -84,7 +100,7 @@ after(async () => {
 });
 
 test(
-  'panel shows a selected chat and a readable message thread',
+  'panel shows the selected assistant website as the only middle pane view',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {
     assert.ok(app, 'The E2E app must start.');
@@ -112,48 +128,18 @@ test(
     // The sidebar works with the keyboard, not only the pointer.
     await page.locator('.agent-main', { hasText: 'Muse' }).first().focus();
     await page.keyboard.press('Enter');
-    await page.locator('.thread[aria-label="Messages with Muse"]').waitFor({ timeout: 5_000 });
-
-    // Harness work appears as an action card with a harness name and a status.
-    assert.equal(await page.locator('.action-card').count(), 1);
-    assert.equal(await page.locator('.action-name').innerText(), 'Claude Code');
-    assert.equal(await page.locator('.action-msg .ui-status-pill').innerText(), 'Completed');
-    assert.match(
-      await page.locator('.action-detail').innerText(),
-      /ran 12 tests/,
-    );
+    const pane = page.locator('.provider-pane');
+    await pane.waitFor({ timeout: 5_000 });
+    assert.deepEqual(await pane.boundingBox(), await page.locator('main').boundingBox());
+    assert.equal(await page.locator('.thread, .composer, .chat-head').count(), 0);
 
     await selectAgent(page, 'Grok');
-    assert.equal(await page.locator('.thread').getAttribute('aria-label'), 'Messages with Grok');
-
+    const grok = await mockWebsite(app, 'Grok');
+    await grok.getByLabel('Message').fill('Draft for Grok');
     const selected = page.locator('.agent-main', { hasText: 'Grok' }).first();
     assert.equal(await selected.getAttribute('aria-current'), 'page');
     const other = page.locator('.agent-main', { hasText: 'Muse' }).first();
     assert.equal(await other.getAttribute('aria-current'), null);
-
-    assert.equal(await page.locator('.msg').count(), 3);
-    assert.deepEqual(
-      await page.locator('.msg-role').allInnerTexts(),
-      ['Grok', 'You', 'Grok'],
-    );
-    assert.equal(await page.locator('.msg-meta time').count(), 3);
-    const userMessage = page.locator('.msg', { has: page.getByRole('button', { name: 'Copy your message' }) });
-    const text = await userMessage.locator('.msg-bubble p').textContent();
-    await userMessage.getByRole('button', { name: 'Copy your message' }).click();
-    await userMessage.getByText('Copied', { exact: true }).waitFor();
-    const composer = page.getByRole('textbox', { name: 'Message Grok' });
-    await composer.press('ControlOrMeta+v');
-    assert.equal(await composer.inputValue(), text);
-    await composer.clear();
-
-
-    // A long URL must wrap inside its bubble instead of clipping.
-    const clipped = await page.evaluate(
-      () => Array.from(document.querySelectorAll('.msg p'))
-        .map((item) => item.scrollWidth - item.clientWidth)
-        .filter((delta) => delta > 1),
-    );
-    assert.deepEqual(clipped, [], 'Message text must wrap inside the bubble.');
 
     await page.setViewportSize({ width: 1024, height: 800 });
     assert.ok(await horizontalOverflow(page) <= 1, 'The 1024 px layout must not scroll sideways.');
@@ -163,7 +149,10 @@ test(
       false,
       'The context column collapses at 1024 px.',
     );
-    assert.equal(await page.locator('.context-toggle').isVisible(), true);
+    const contextButton = page.locator('.context-toggle');
+    const searchBounds = await page.locator('.search').boundingBox();
+    const contextBounds = await contextButton.boundingBox();
+    assert.ok(searchBounds && contextBounds && searchBounds.x + searchBounds.width <= contextBounds.x);
 
     await page.setViewportSize({ width: 800, height: 800 });
     assert.equal(await page.locator('.sidebar').isVisible(), false);
@@ -177,13 +166,15 @@ test(
     // The context controls stay reachable at a narrow width.
     await page.locator('.context-toggle').click();
     assert.equal(await page.locator('.context').isVisible(), true);
-    assert.equal(await page.locator('.context-toggle').getAttribute('aria-expanded'), 'true');
+    assert.equal(await contextButton.getAttribute('aria-expanded'), 'true');
+    assert.equal(await pane.isVisible(), false);
     assert.equal(
       await page.locator('.context').getByText('Unsupported', { exact: true }).count(),
       3,
     );
     await page.getByRole('button', { name: 'Close context' }).click();
     assert.equal(await page.locator('.context').isVisible(), false);
+    await pane.waitFor();
 
     await page.setViewportSize({ width: 1440, height: 900 });
     assert.ok(await horizontalOverflow(page) <= 1, 'The 1440 px layout must not scroll sideways.');
@@ -191,13 +182,16 @@ test(
     assert.equal(await page.locator('.context').isVisible(), true);
     assert.equal(await page.locator('.context-toggle').isVisible(), false);
 
-    // The connected chat in the dark theme keeps the action card and context.
+    // The website and context stay available in both themes.
     await selectAgent(page, 'Muse');
     await selectTheme(page, 'dark');
-    assert.equal(await page.locator('.action-card').isVisible(), true);
-    assertImage(await app.screenshot('chat-connected-dark.png'));
+    const muse = await mockWebsite(app, 'Muse');
+    assertImage(await screenshot(muse, 'mock-provider-page.png'));
+    assertImage(await app.screenshot('assistant-website-dark.png'));
+    await selectTheme(page, 'light');
+    assertImage(await app.screenshot('assistant-website-light.png'));
     await selectAgent(page, 'Grok');
-    assertImage(await app.screenshot('panel-selected-chat.png'));
+    assert.equal(await grok.getByLabel('Message').inputValue(), 'Draft for Grok');
   },
 );
 
@@ -246,7 +240,7 @@ test(
     assertImage(await app.screenshot('settings-sync.png'));
 
     await page.getByRole('button', { name: 'Back', exact: true }).click();
-    await page.locator('.thread').waitFor();
+    await page.locator('.provider-pane').waitFor();
   },
 );
 
@@ -319,7 +313,7 @@ test(
     // A tag with no query text runs no search.
     await page.waitForTimeout(400);
     assert.equal(await page.locator('.history-search').count(), 0);
-    assert.equal(await page.locator('.thread').isVisible(), true);
+    assert.equal(await page.locator('.provider-pane').isVisible(), true);
 
     const bodies: Array<{ query?: string; filters?: { provider?: string } }> = [];
     const recordSearch = (request: Request): void => {
@@ -336,7 +330,7 @@ test(
       { timeout: 15_000 },
     );
     assert.equal(await input.inputValue(), '#muse Atlas storage');
-    assert.equal(await page.locator('.thread').count(), 0);
+    assert.equal(await page.locator('.provider-pane').count(), 0);
     const museBody = bodies.at(-1);
     assert.equal(museBody?.query, 'Atlas storage');
     assert.equal(museBody?.filters?.provider, 'muse');
@@ -356,7 +350,7 @@ test(
 
     // Escape returns to the open chat and clears the bar.
     await input.press('Escape');
-    await page.locator('.thread').waitFor();
+    await page.locator('.provider-pane').waitFor();
     assert.equal(await input.inputValue(), '');
 
     // Enter runs the search immediately.
@@ -367,7 +361,7 @@ test(
 
     // Clearing the bar returns to the open chat.
     await input.fill('');
-    await page.locator('.thread').waitFor();
+    await page.locator('.provider-pane').waitFor();
     assert.equal(await page.locator('.history-search').count(), 0);
 
     // Settings holds the index controls, Ask locally, the advanced filters, and the theme.
@@ -426,7 +420,7 @@ test(
 
     // Selecting an agent returns to the open chat and clears the bar.
     await page.locator('.agent-main', { hasText: 'Muse' }).first().click();
-    await page.locator('.thread').waitFor();
+    await page.locator('.provider-pane').waitFor();
     assert.equal(await page.locator('.history-search').count(), 0);
     assert.equal(await input.inputValue(), '');
     page.off('request', recordSearch);
@@ -605,22 +599,14 @@ test(
     // Escape always returns to the home screen.
     await page.keyboard.press('Escape');
     await page.locator('.login-screen').waitFor({ state: 'detached' });
-    assert.equal(await page.locator('.thread').isVisible(), true);
+    assert.equal(await page.locator('.provider-pane').isVisible(), true);
     await selectTheme(page, 'dark');
     assertImage(await app.screenshot('home-after-login-dark.png'));
     await selectTheme(page, 'light');
     assertImage(await app.screenshot('home-after-login-light.png'));
 
-    // The provider page has its own keyboard focus and returns to the local chat.
-    const isMuseWebsite = (candidate: Page): boolean =>
-      candidate.url().includes(encodeURIComponent('<title>Muse</title>'));
-    const existingWebsite = app.context.pages().find(isMuseWebsite);
-    const providerPage = existingWebsite ?? app.context.waitForEvent('page', {
-      predicate: isMuseWebsite,
-      timeout: 5_000,
-    });
-    await page.getByRole('button', { name: 'Open website', exact: true }).click();
-    const website = await providerPage;
+    // The website opens after sign-in and supports system clipboard shortcuts.
+    const website = await mockWebsite(app, 'Muse');
     const message = website.getByLabel('Message');
     await message.fill('Text to copy');
     await message.press('ControlOrMeta+a');
@@ -630,7 +616,8 @@ test(
     assert.equal(await message.inputValue(), 'Text to copy');
     assertImage(await app.screenshot('provider-controls.png'));
     await message.press('Escape');
-    await page.locator('.thread').waitFor({ state: 'visible', timeout: 5_000 });
+    assert.equal(await page.locator('.provider-pane').isVisible(), true);
+    assert.equal(await message.inputValue(), 'Text to copy');
 
     // The in-app Back control returns home too.
     await page.getByRole('button', { name: 'Agents', exact: true }).click();
@@ -702,13 +689,11 @@ test(
     await page.waitForTimeout(500);
     assert.equal(await page.locator('.setup-card').isVisible(), true);
 
-    // Check connection turns the assistant into a connected chat.
+    // Checking the connection opens the website in place of the setup card.
     await page.getByRole('button', { name: 'Check connection' }).click();
-    await page
-      .locator('.thread[aria-label="Messages with Grok"]')
-      .waitFor({ state: 'visible', timeout: 10_000 });
-    assert.match(await page.locator('.chat-identity .ui-status-pill').innerText(), /Connected/);
-    assert.equal(await page.getByLabel('Message Grok').isEnabled(), true);
+    await page.locator('.provider-pane').waitFor({ timeout: 10_000 });
+    await mockWebsite(app, 'Grok');
+    assert.equal(await page.locator('.setup-card, .composer').count(), 0);
 
     // The Connections entry opens the same screen with a Back control.
     await page.getByRole('button', { name: 'Connections', exact: true }).click();
@@ -770,39 +755,42 @@ test(
       await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
       await selectAgent(page, 'Muse');
 
-      const intro = page.locator('.msg.agent', { hasText: 'blibs introduction' }).first();
-      await intro.waitFor({ state: 'visible', timeout: 20_000 });
-      const introText = await intro.locator('.msg-bubble p').innerText();
+      const savedMessages = () => page.evaluate((key) => JSON.parse(
+        localStorage.getItem(key) ?? '{}',
+      ).muse as Array<{ text: string }> | undefined, MESSAGES_STORAGE_KEY);
+      const waitForSavedMessage = async (prefix: string): Promise<void> => {
+        await page.waitForFunction(({ key, text }) => {
+          const messages = JSON.parse(localStorage.getItem(key) ?? '{}');
+          return messages.muse?.some((message: { text: string }) => message.text.startsWith(text));
+        }, { key: MESSAGES_STORAGE_KEY, text: prefix }, { timeout: 20_000 });
+      };
+      await waitForSavedMessage('blibs introduction');
+      const introText = (await savedMessages())?.find((item) => item.text.startsWith('blibs introduction'))?.text;
+      assert.ok(introText);
       assert.match(introText, /Available harnesses: OpenCode\./);
       assert.match(introText, /Enabled for this assistant: OpenCode\./);
       assert.match(introText, /How tagging works:/);
       assert.match(introText, /sends that task to OpenCode/);
       assert.ok(introText.includes('@opencode $<project> <task>'));
-      await intro.scrollIntoViewIfNeeded();
-      await page.waitForTimeout(300);
-      assertImage(await app.screenshot('blibs-intro.png'));
 
-      // The relay also sends the reply into the vendor chat. Its echo must not
-      // add a second bubble or a second introduction.
       const introOutbox = (await (await fetch(`${app.backendUrl}/api/outbox`)).json()) as {
         items?: Array<{ text?: string }>;
       };
       const sentIntro = (introOutbox.items ?? []).find((item) => item.text?.startsWith('blibs introduction'));
-      assert.ok(sentIntro?.text, 'the introduction is queued for the vendor chat');
+      assert.ok(sentIntro?.text, 'The introduction is queued for the vendor chat.');
       await importMuse({
         role: 'user',
         text: `You:\n\n${sentIntro.text}`,
         sourceId: 'e2e-intro-echo',
         ts: Date.now(),
       });
+      const pull = page.waitForResponse((response) => response.url().includes('/api/imports'));
       await page.reload({ waitUntil: 'domcontentloaded' });
-      await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
-      await selectAgent(page, 'Muse');
-      await page.locator('.msg.agent', { hasText: 'blibs introduction' }).first().waitFor({ timeout: 20_000 });
+      await pull;
+      await waitForSavedMessage('blibs introduction');
       assert.equal(
-        await page.locator('.msg', { hasText: 'blibs introduction' }).count(),
+        (await savedMessages())?.filter((item) => item.text.includes('blibs introduction')).length,
         1,
-        'the vendor echo does not add a second introduction bubble',
       );
 
       // Muse tags OpenCode. The one project resolves and the harness replies.
@@ -829,8 +817,6 @@ test(
       assert.ok(reply.startsWith(header), 'the harness reply starts with the harness header');
       assert.ok(reply.includes('harness reply: hi'), 'the harness text follows the header');
 
-      // A vendor session types the reply into the chat. The panel must show
-      // the header as the first line of the message.
       await importMuse({
         role: 'agent',
         text: reply,
@@ -838,16 +824,7 @@ test(
         ts: Date.now(),
       });
       await page.reload({ waitUntil: 'domcontentloaded' });
-      await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
-      await selectAgent(page, 'Muse');
-      const harnessReply = page.locator('.msg.agent', { hasText: header }).first();
-      await harnessReply.waitFor({ state: 'visible', timeout: 20_000 });
-      const replyText = await harnessReply.locator('.msg-bubble p').innerText();
-      assert.ok(replyText.startsWith(header), 'the header is at the top of the message');
-      assert.ok(replyText.includes('harness reply: hi'));
-      await harnessReply.scrollIntoViewIfNeeded();
-      await page.waitForTimeout(300);
-      assertImage(await app.screenshot('harness-reply.png'));
+      await waitForSavedMessage(header);
     } finally {
       rmSync(projectsDir, { recursive: true, force: true });
     }
@@ -1008,12 +985,6 @@ test(
       }
       assert.fail(`The relay did not queue the expected text: ${text}`);
     };
-    const sendRequest = async (sourceId: string, count: number): Promise<void> => {
-      await page.getByLabel('Message Muse').fill(prompt);
-      await page.getByRole('button', { name: 'Send', exact: true }).click();
-      await waitForQueuedText(prompt, undefined, count);
-      await importTurn('muse', 'user', prompt, sourceId);
-    };
     const openConnections = () => page.getByRole('button', { name: 'Connections', exact: true }).click();
     const back = () => page.getByRole('button', { name: 'Back to chats' }).click();
     const openCode = page.getByRole('checkbox', { name: 'OpenCode for Muse' });
@@ -1033,7 +1004,7 @@ test(
       await page.locator('.connections-matrix input:not(:checked):enabled').waitFor();
       await back();
       const previousRun = (await status()).lastRun;
-      await sendRequest('connections-user-disabled', 1);
+      await importTurn('muse', 'user', prompt, 'connections-user-disabled');
       await importTurn('muse', 'user', '@blibs Which tools can you use?', 'connections-intro-disabled');
       await waitForQueuedText('Enabled for this assistant: no harness yet.', threadId);
       await importTurn('muse', 'agent', '@opencode ' + task, 'connections-disabled');
@@ -1046,7 +1017,7 @@ test(
       await openCode.click();
       await page.locator('.connections-matrix input:checked:enabled').waitFor();
       await back();
-      await sendRequest('connections-user-enabled', 2);
+      await importTurn('muse', 'user', prompt, 'connections-user-enabled');
       await importTurn('grok', 'user', prompt, 'connections-grok-user');
       await importTurn('grok', 'agent', '@opencode ' + task, 'connections-grok-opencode');
       await importTurn('muse', 'agent', '@codex ' + task, 'connections-muse-codex');

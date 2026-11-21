@@ -4,7 +4,7 @@
 
 This document covers the theme control, the saved theme choice, the system
 theme follow, the design tokens, the shell layout, the sidebar toggle, the
-current-chat search field, and the status pill.
+global search bar, and the status pill.
 
 It does not cover the brand mark, the favicon, or the window title. Use
 [icon-branding.md](icon-branding.md). It does not cover chat content or search
@@ -17,8 +17,8 @@ See [shared setup](README.md#shared-setup).
 ## Test steps
 
 1. Start the mock app with the shared command. Complete the first-run card.
-   Expected: the chat shell shows with the top bar, the sidebar, the thread,
-   the composer, and the status pill.
+   Expected: the chat shell shows with the topbar, the sidebar, the assistant website,
+   and the status pill.
 
 2. Set the theme control to `Dark`.
    Expected: `document.documentElement.dataset.theme` is `dark`.
@@ -69,13 +69,9 @@ See [shared setup](README.md#shared-setup).
    each view keeps the same content width and side gutter as the chat view.
    The result list scrolls inside its pane.
 
-8. Return to a chat. Expected: the message thread starts below the topbar. The
-   chat view has no provider title, no caption, and no open link. The composer
-   is the last visible control, and no visible status line sits below it. For a
-   short chat, the last bubble sits just above the composer with a small gap.
-   For a long chat, the thread scrolls and the composer stays at the bottom.
-   The message column and the composer use the same width: the chat pane width
-   minus the normal gutter, with a maximum of 960 pixels.
+8. Return to a connected assistant.
+   Expected: the website fills the middle pane from the topbar to the bottom
+   of the window. The context column is visible at a wide window.
 
 9. Resize the window to 800 by 800 pixels.
    Expected: the sidebar is hidden and the `Chats` button is visible. The
@@ -102,7 +98,7 @@ Artifacts: `tests/e2e/artifacts/panel-dark.png` and `panel-light.png`.
   saved `Dark` choice, persistence after a reload, the required tokens, and both
   theme screenshots.
 - `tests/e2e/smoke.spec.ts`, test
-  `panel shows a selected chat and a readable message thread`, covers the 1024
+  `panel shows the selected assistant website as the only middle pane view`, covers the 1024
   and 1440 pixel layouts, the 800 pixel sidebar toggle, and horizontal scroll.
   Run `npm run e2e`.
 - `tests/e2e/harness.ts` provides `selectTheme` and `setTheme`. No unit test

@@ -6,8 +6,8 @@ This document covers the `Search all conversations` panel, keyword search,
 provider, thread, and date filters, source messages, thread links, index
 status, and the experimental local answer path.
 
-It does not cover the current-chat search field. Use
-[chat-sending.md](chat-sending.md). It does not cover model quality or a model
+For website messaging, see [chat-sending.md](chat-sending.md). This guide
+does not cover model quality or a model
 download. Read [the search guide](../../../../docs/conversation-search.md) for
 storage, migration, and model setup.
 

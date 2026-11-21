@@ -799,6 +799,12 @@
 }
 
 /* ---------- Narrow widths ---------- */
+@media (min-width: 901px) and (max-width: 1180px) {
+  .topbar:has(.topbar-actions .context-toggle) {
+    --layout-status-space: var(--layout-status-and-context-space);
+  }
+}
+
 @media (max-width: 1180px) {
   .layout,
   .layout--wide {
@@ -817,6 +823,10 @@
     display: flex;
     width: min(var(--layout-context-width), calc(100vw - var(--space-10)));
     box-shadow: var(--elevation-2);
+  }
+
+  .layout.context-open .provider-pane {
+    display: none;
   }
 
   .context-toggle,

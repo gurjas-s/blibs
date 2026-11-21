@@ -8,8 +8,7 @@ action-taking kind (Meta **Muse**, OpenAI **Dots**, xAI **Grok**), not plain cha
 blibs connects each assistant to the local coding harnesses on your computer
 (**Claude Code**, **Codex**, **OpenCode**). You select the harnesses for each
 assistant one time. You also select the shared folder that the harnesses may
-read and write. Chat with all three assistants from one window, and reply from
-blibs straight into the real assistant session.
+read and write. Chat with all three assistants on their websites in one window.
 
 blibs keeps your vendor sessions active so it can sync chats and send replies.
 
@@ -47,19 +46,14 @@ If the vendor asks for a code or a CAPTCHA, complete that step on the website.
 Select **Check again** to check the connection. Select **Back to Agents** or
 press **Escape** to return to the sign-in screen.
 
-Select an assistant in the sidebar to see its synced messages. Select **Open
-website** in a connected chat to open the provider website in the center pane.
-The website shares its session with the background sync view. Select **Back
-to chats** or press **Escape** to return to the local chat. Select
-**Connections** in the sidebar to change the harnesses or the folder.
+Select a connected assistant in the sidebar to open its website in the center
+pane. The website shares its session with the background sync view. Send
+messages and copy or paste text using the website. Select **Connections** in
+the sidebar to change the harnesses or the folder.
 
-Chats flow in automatically: the app pushes seconds after chat content changes
-(plus a 1-minute backup sweep), and the panel auto-pulls every 15s by default.
-The Auto-sync toggle and interval are in Settings.
-
-**Send a message:** send it from the local chat or the provider website.
-The provider website supports the system copy and paste shortcuts. Select
-**Copy** on a local message to copy its text.
+Chats flow in automatically. The app pushes seconds after chat content
+changes and checks once a minute as a backup. The panel pulls every 15 seconds
+by default. Change the auto-sync settings in **Settings**.
 
 **Ask blibs about itself:** tag `@blibs` in a chat. blibs sends one generated
 reply into the conversation and shows it in the panel. The reply explains what

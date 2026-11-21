@@ -162,9 +162,10 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const providerPane = useRef<HTMLDivElement>(null);
-  const [providerReturn, setProviderReturn] = useState<'chat' | 'login' | 'results'>('chat');
+  const [providerReturn, setProviderReturn] = useState<'login' | 'results'>('login');
   const [providerSource, setProviderSource] = useState<string>();
-  const [providerLoadFailed, setProviderLoadFailed] = useState(false);
+  const [failedPane, setFailedPane] = useState<string>();
+  const [paneAttempt, setPaneAttempt] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const searchId = useRef(0);
@@ -183,6 +184,13 @@ export default function App() {
   const desktopAvailable = desktopLoginAvailable();
   const activeConnection = connectionFor(connections, active.id);
   const activeSetup = resolveSetupStatus(activeConnection, loginStatuses[active.id]);
+  const connected = activeSetup === 'connected';
+  const assistantWebsite = view === 'chat' && desktopAvailable && connected;
+  const showWebsite = assistantWebsite || view === 'provider';
+  const websiteSource = view === 'provider' ? providerSource : undefined;
+  const websiteReturn = view === 'provider' ? providerReturn : undefined;
+  const paneKey = JSON.stringify([active.provider, websiteSource, websiteReturn, paneAttempt]);
+  const providerLoadFailed = failedPane === paneKey;
   const activeActivity = actionsFor(connections, active.id);
   const lastActivity = activeActivity[0];
   const activeStatus = loginStatuses[active.id];
@@ -282,14 +290,20 @@ export default function App() {
   }, [view]);
 
   useEffect(() => {
-    if (!onboarded || view !== 'provider') return;
+    if (!onboarded || !showWebsite) return;
     const element = providerPane.current;
     if (!element) return;
     const updateBounds = (): void => {
       const rect = element.getBoundingClientRect();
       setProviderPaneBounds({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
     };
-    const goBack = (): void => setView(providerReturn);
+    const goBack = (): void => {
+      if (websiteReturn) setView(websiteReturn);
+      else {
+        setContextOpen(false);
+        setSidebarOpen(false);
+      }
+    };
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') goBack();
     };
@@ -298,22 +312,24 @@ export default function App() {
     observer.observe(element);
     window.addEventListener('resize', updateBounds);
     window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('scroll', updateBounds, true);
     updateBounds();
     let open = true;
-    void showProviderPane(active.provider, providerSource).catch(() => {
+    void showProviderPane(active.provider, websiteSource).catch(() => {
       if (!open) return;
-      setProviderLoadFailed(true);
+      setFailedPane(paneKey);
       void hideProviderPane();
     });
     return () => {
       open = false;
       unsubscribe();
       observer.disconnect();
+      window.removeEventListener('scroll', updateBounds, true);
       window.removeEventListener('resize', updateBounds);
       window.removeEventListener('keydown', onKeyDown);
       void hideProviderPane();
     };
-  }, [onboarded, view, active.provider, providerReturn, providerSource]);
+  }, [onboarded, showWebsite, active.provider, websiteReturn, websiteSource, paneKey]);
 
   useEffect(() => {
     if (!contextOpen) return;
@@ -660,7 +676,7 @@ export default function App() {
     }));
   }
 
-  function openProvider(vendorId: string, returnTo: 'chat' | 'login' | 'results', source?: string): void {
+  function openProvider(vendorId: string, returnTo: 'login' | 'results', source?: string): void {
     if (returnTo !== 'results') {
       cancelPendingSearch();
       setQuery('');
@@ -668,7 +684,7 @@ export default function App() {
     setActiveId(vendorId);
     setProviderSource(source);
     setProviderReturn(returnTo);
-    setProviderLoadFailed(false);
+    setFailedPane(undefined);
     setView('provider');
     setSidebarOpen(false);
     setContextOpen(false);
@@ -723,7 +739,6 @@ export default function App() {
     );
   }
 
-  const connected = activeSetup === 'connected';
   const setupError = activeStatus?.phase === 'error' ? activeStatus.message : undefined;
   const layoutClass = cx(
     'layout',
@@ -780,6 +795,18 @@ export default function App() {
             />
           </div>
           <div className="topbar-actions">
+            {assistantWebsite && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="context-toggle"
+                aria-expanded={contextOpen}
+                aria-controls="assistant-context"
+                onClick={() => setContextOpen((open) => !open)}
+              >
+                Context
+              </Button>
+            )}
             <StatusPill tone={pill.tone} title={statusLine}>
               {pill.label}
             </StatusPill>
@@ -854,38 +881,43 @@ export default function App() {
         </aside>
 
         <main className="main">
-          {view === 'provider' ? (
+          {showWebsite ? (
             <>
-              <div className="chat-head">
-                <div className="chat-identity">
-                  <h1>{active.name}</h1>
+              {websiteReturn && (
+                <div className="chat-head">
+                  <div className="chat-identity">
+                    <h1>{active.name}</h1>
+                  </div>
+                  <div className="chat-actions">
+                    {websiteReturn === 'login' && (
+                      <>
+                        <Button variant="secondary" size="sm" onClick={() => checkLogin(active.id)}>
+                          Check again
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => {
+                          cancelLogin(active.id);
+                          setView('login');
+                        }}>
+                          Cancel
+                        </Button>
+                      </>
+                    )}
+                    <Button variant="secondary" size="sm" onClick={() => setView(websiteReturn)}>
+                      {websiteReturn === 'results' ? 'Back to results' : 'Back to Agents'}
+                    </Button>
+                  </div>
                 </div>
-                <div className="chat-actions">
-                  {providerReturn === 'login' && (
-                    <>
-                      <Button variant="secondary" size="sm" onClick={() => checkLogin(active.id)}>
-                        Check again
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => {
-                        cancelLogin(active.id);
-                        setView('login');
-                      }}>
-                        Cancel
-                      </Button>
-                    </>
-                  )}
-                  <Button variant="secondary" size="sm" onClick={() => setView(providerReturn)}>
-                    {providerReturn === 'results' ? 'Back to results' : providerReturn === 'login' ? 'Back to Agents' : 'Back to chats'}
+              )}
+              {providerLoadFailed ? (
+                <div className="login-status login-status--error">
+                  <p role="alert">The provider website did not load.</p>
+                  <Button variant="secondary" size="sm" onClick={() => setPaneAttempt((attempt) => attempt + 1)}>
+                    Retry
                   </Button>
                 </div>
-              </div>
-              {providerLoadFailed ? (
-                <p className="login-status login-status--error" role="alert">
-                  The provider website did not load. Go back and try again.
-                </p>
               ) : (
                 <>
-                  {providerReturn === 'login' && (
+                  {websiteReturn === 'login' && (
                     <p className="login-status" role="status">{loginStatuses[active.id]?.message}</p>
                   )}
                   <div className="provider-pane" ref={providerPane} />
@@ -931,11 +963,6 @@ export default function App() {
                 </StatusPill>
               </div>
               <div className="chat-actions">
-                {desktopAvailable && connected && (
-                  <Button variant="secondary" size="sm" onClick={() => openProvider(active.id, 'chat')}>
-                    Open website
-                  </Button>
-                )}
                 <Button variant="secondary" size="sm" onClick={openConnections}>
                   Edit tools
                 </Button>

@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document covers the connected assistant chat, the context column, the
+This document covers the connected assistant website, the context column, the
 harness switches, the recent activity list, the inline setup card for an
 unconnected assistant, the disabled composer, and the narrow-width layout.
 
@@ -52,8 +52,8 @@ The state is local mock data. Do not use a real chat, a cookie, or a credential.
    connected yet`. `Muse` shows `Fixed login button` as the detail line.
 
 2. Select `Muse`.
-   Expected: the chat header shows `Muse` and the `Connected` pill. The composer
-   is enabled. The context column shows at a wide window.
+   Expected: the Muse website fills the middle pane. The context column shows
+   at a wide window.
 
 3. Read the context column.
    Expected: Recent activity lists `Fixed login button`. The folder in
@@ -64,12 +64,12 @@ The state is local mock data. Do not use a real chat, a cookie, or a credential.
    Expected: The OpenCode switch for Muse is off. Turn it on again.
 
 5. Set the window to 1024 pixels wide.
-   Expected: the context column is not visible. The `Context` button is visible.
-   The layout does not scroll sideways.
+   Expected: the context column collapses. The topbar shows the `Context`
+   button. The layout fits the window.
 
 6. Select `Context`.
    Expected: the context column shows as an overlay. Its switch names still
-   work. Select `Close context`. The overlay closes.
+   work. Select `Close context`. The overlay closes and the website is visible again.
 
 7. Set the window to 800 pixels wide.
    Expected: the sidebar is hidden. The `Chats` toggle shows the sidebar.
@@ -85,7 +85,7 @@ The state is local mock data. Do not use a real chat, a cookie, or a credential.
    Expected: the button shows `Checking…` and then returns to `Check
    connection`. If the mock sign-in is not active, the state stays `Setup`.
 
-10. Select `Edit tools`.
+10. Select `Connections` in the sidebar.
     Expected: the connections screen shows. Select `Back to chats`. The chat
     returns.
 
@@ -93,14 +93,15 @@ The state is local mock data. Do not use a real chat, a cookie, or a credential.
 
 - The console shows a React or storage error.
 
-Smoke screenshots: `chat-connected-dark.png` and `chat-setup-light.png`.
+Panel screenshots: `assistant-website-dark.png`, `assistant-website-light.png`, and `chat-setup-light.png`.
+The native provider page has its own screenshot, `mock-provider-page.png`.
 
 ## Automated coverage
 
 `tests/e2e/smoke.spec.ts`, test
-`panel shows a selected chat and a readable message thread`, covers the action
-card, the context column at 1440 pixels, the overlay at 1024 and 800 pixels, the
-sidebar toggle, and both chat screenshots. Test
+`panel shows the selected assistant website as the only middle pane view`, covers
+website selection, the context column at 1440 pixels, the overlay at 1024 and
+800 pixels, and the sidebar toggle. Test
 `an unconnected assistant shows an inline setup card and a disabled composer`
 covers the `Setup` pill, the three steps, the connect link, the card controls,
 and the disabled composer. Test
