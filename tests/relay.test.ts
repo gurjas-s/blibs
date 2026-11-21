@@ -339,6 +339,13 @@ test('Muse creates a project from an empty list and resumes the saved task once'
   await waitForRunCount(server, 1);
   assert.equal(runs(server)[0].cwd, server.alpha);
   assert.equal(runs(server)[0].prompt, 'build it');
+  const deadline = Date.now() + 5000;
+  let replies = await outbox(server);
+  while (!replies.some(({ text }) => text.includes('harness reply: build it')) && Date.now() < deadline) {
+    await sleep(25);
+    replies = await outbox(server);
+  }
+  assert.match(replies.at(-1)?.text ?? '', /harness reply: build it/);
 
   const file = path.join(server.alpha, 'hello.txt');
   writeFileSync(file, 'keep this file');
