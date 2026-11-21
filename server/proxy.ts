@@ -18,7 +18,7 @@ import { HistoryStore, copyIfAbsent } from './history.js';
 import { RetrievalService } from './retrieval.js';
 import type { LocalModels } from './retrieval.js';
 import type { SearchFilters } from './history.js';
-import { RelayService, buildRelayConfig } from './relay.js';
+import { InvalidProjectsFolder, RelayService, buildRelayConfig } from './relay.js';
 import type { RelayConfig } from './relay.js';
 import type { HarnessChoice } from './harness/intro.js';
 import { HARNESS_TEXT_LIMIT, RELAY_HARNESS_LIMIT, RELAY_MODEL_LIMIT } from './relay-state.js';
@@ -181,7 +181,8 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
           if (typeof entry.enabled !== 'boolean') return send(res, 400, { error: 'harness enabled must be a boolean' });
           harnesses.push({ id: entry.id.trim(), name: entry.name.trim(), enabled: entry.enabled });
         }
-        return send(res, 200, relay.updateHarnesses(harnesses));
+        try { return send(res, 200, relay.updateHarnesses(harnesses)); }
+        catch { return send(res, 500, { error: 'Could not save the harness setting.' }); }
       }
       if (req.url === '/api/relay/projects' && req.method === 'POST') {
         let payload: Record<string, unknown>;
@@ -194,10 +195,15 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         if (model !== undefined && model !== null && (typeof model !== 'string' || !model.trim() || model.length > RELAY_MODEL_LIMIT)) {
           return send(res, 400, { error: 'model must be a provider/model id' });
         }
-        return send(res, 200, relay.updateProjects(
-          typeof discoveryRoot === 'string' ? discoveryRoot : undefined,
-          model === undefined ? undefined : model === null ? null : (model as string),
-        ));
+        try {
+          return send(res, 200, relay.updateProjects(
+            typeof discoveryRoot === 'string' ? discoveryRoot : undefined,
+            model === undefined ? undefined : model === null ? null : (model as string),
+          ));
+        } catch (error) {
+          if (error instanceof InvalidProjectsFolder) return send(res, 400, { error: error.message });
+          return send(res, 500, { error: 'Could not save the relay settings to disk.' });
+        }
       }
       const routeUrl = new URL(req.url || '/', 'http://127.0.0.1');
       if (routeUrl.pathname === '/api/history' && req.method === 'GET') {

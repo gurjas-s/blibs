@@ -238,3 +238,37 @@ test('the default relay model uses the personal Beam Free provider', () => {
   try { assert.equal(buildRelayConfig(dir).model, DEFAULT_RELAY_MODEL); }
   finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('relay settings reject invalid folders and keep the previous settings when persistence fails', async () => {
+  const server = await startRelay();
+  const post = (route: string, body: unknown) => fetch(server.base + route, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const readStatus = async () => await (await fetch(server.base + '/api/relay')).json() as {
+    discoveryRoot: string;
+    harnesses: Array<{ id: string; name: string; enabled: boolean }>;
+  };
+  const blocked = path.join(server.dataDir, 'relay-state.json.tmp');
+  const file = path.join(server.projectsDir, 'file.txt');
+  writeFileSync(file, '');
+  assert.equal((await post('/api/relay/projects', { discoveryRoot: file })).status, 400);
+
+  mkdirSync(blocked);
+  assert.equal((await post('/api/relay/projects', { discoveryRoot: server.alpha })).status, 500);
+  const opencode = { id: 'opencode', name: 'OpenCode', enabled: false };
+  assert.equal((await post('/api/relay/harnesses', { harnesses: [opencode] })).status, 500);
+  assert.equal((await readStatus()).discoveryRoot, server.projectsDir);
+  assert.deepEqual((await readStatus()).harnesses, [{ ...opencode, enabled: true }]);
+  rmSync(blocked, { recursive: true });
+
+  assert.equal((await post('/api/relay/harnesses', { harnesses: [opencode] })).status, 200);
+  assert.equal((await post('/api/relay/harnesses', {
+    harnesses: [{ id: 'codex', name: 'Codex', enabled: true }],
+  })).status, 200);
+  assert.deepEqual((await readStatus()).harnesses, [opencode]);
+  await importMuse(server, '@opencode $alpha hello', 'settings-disabled');
+  assert.ok((await outbox(server)).some((item) => item.text.includes('OpenCode harness is disabled')));
+  assert.equal(runs(server).length, 0);
+});

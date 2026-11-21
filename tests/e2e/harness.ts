@@ -488,8 +488,12 @@ export async function launch(options: LaunchOptions = {}): Promise<E2EApp> {
 
   // The relay runs the harness only after it matches a project.
   const fakeHarness = path.join(tempDir, 'fake-harness.mjs');
-  writeFileSync(fakeHarness, `const args = process.argv.slice(2);
+  writeFileSync(fakeHarness, `import { writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
 const prompt = args.at(-1) || '';
+if (prompt.endsWith('Create hello.txt with exactly Hello from blibs.')) {
+  writeFileSync('hello.txt', 'Hello from blibs.');
+}
 process.stdout.write('harness reply: ' + (prompt.split('\\n').at(-1) || '') + '\\n');
 `);
 

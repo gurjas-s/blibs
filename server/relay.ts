@@ -19,7 +19,7 @@ import {
   isChoicesMessage,
 } from './harness/project-reply.js';
 import type { ReplyOptions } from './harness/project-reply.js';
-import { HARNESS_KINDS, harnessKind } from './harness/registry.js';
+import { harnessKind } from './harness/registry.js';
 import {
   RELAY_PROCESSED_LIMIT,
   RELAY_SESSION_LIMIT,
@@ -78,7 +78,7 @@ export interface RelayStatus {
   enabled: boolean;
   provider: string;
   harness: { id: string; command: string; cwd: string; timeoutMs: number; model?: string };
-  /** Harness rows the panel reported for the introduction reply. */
+  /** Harnesses supported by the configured provider. */
   harnesses: HarnessChoice[];
   discoveryRoot: string;
   pending: number;
@@ -196,6 +196,8 @@ export function isConversationThread(provider: string, threadId: string): boolea
   return url.pathname !== '/' && url.pathname !== '';
 }
 
+export class InvalidProjectsFolder extends Error {}
+
 export class RelayService {
   private config: RelayConfig;
   private readonly stateDir: string;
@@ -267,13 +269,15 @@ export class RelayService {
     };
   }
 
+  private writeState(state: RelayState): void {
+    fs.mkdirSync(this.stateDir, { recursive: true });
+    const staging = `${this.stateFile}.tmp`;
+    fs.writeFileSync(staging, JSON.stringify(state, null, 2));
+    fs.renameSync(staging, this.stateFile);
+  }
+
   private save(): void {
-    try {
-      fs.mkdirSync(this.stateDir, { recursive: true });
-      const staging = `${this.stateFile}.tmp`;
-      fs.writeFileSync(staging, JSON.stringify(this.state, null, 2));
-      fs.renameSync(staging, this.stateFile);
-    } catch { /* keep the in-memory state; the next write retries */ }
+    try { this.writeState(this.state); } catch { /* the next write retries */ }
   }
 
   /** Turn a running last run into an error record. True when the record changed. */
@@ -346,21 +350,21 @@ export class RelayService {
     };
   }
 
-  /**
-   * Harness rows for the introduction reply. A report from the panel wins,
-   * because the panel owns the per-assistant toggles. Without a report, every
-   * harness that this build can drive counts as enabled.
-   */
+  private harnessEnabled(): boolean {
+    return this.state.harnesses.find((choice) => choice.id === this.config.harnessId)?.enabled ?? true;
+  }
+
   harnesses(): HarnessChoice[] {
-    if (this.state.harnesses.length) {
-      return this.state.harnesses.map((choice) => ({ ...choice }));
-    }
-    return HARNESS_KINDS.map((kind) => ({ id: kind.id, name: kind.name, enabled: true }));
+    const kind = harnessKind(this.config.harnessId);
+    return [{ id: kind.id, name: kind.name, enabled: this.config.enabled && this.harnessEnabled() }];
   }
 
   updateHarnesses(reported: HarnessChoice[]): RelayStatus {
-    this.state.harnesses = reported.map((choice) => ({ ...choice }));
-    this.save();
+    const choice = reported.find((choice) => choice.id === this.config.harnessId);
+    if (!choice) return this.status();
+    const harnesses = [{ ...choice, name: harnessKind(this.config.harnessId).name }];
+    this.writeState({ ...this.state, harnesses });
+    this.state.harnesses = harnesses;
     return this.status();
   }
 
@@ -376,18 +380,22 @@ export class RelayService {
 
   /** Change the projects directory and the harness model. Omit a field to keep it. */
   updateProjects(discoveryRoot?: string, model?: string | null): RelayStatus {
+    let resolved = this.state.discoveryRoot;
     if (discoveryRoot !== undefined) {
-      const resolved = canonicalDir(projectsRoot(discoveryRoot));
-      try { fs.mkdirSync(resolved, { recursive: true }); } catch { /* the next run reports a missing directory */ }
-      this.state.discoveryRoot = resolved;
-      this.config = { ...this.config, discoveryRoot: resolved };
+      try {
+        resolved = projectsRoot(discoveryRoot.trim());
+        fs.mkdirSync(resolved, { recursive: true });
+        resolved = fs.realpathSync(resolved);
+        fs.accessSync(resolved, fs.constants.R_OK | fs.constants.X_OK);
+      } catch {
+        throw new InvalidProjectsFolder('Could not save the projects folder. Enter a path to an accessible directory.');
+      }
     }
-    if (model !== undefined) {
-      const nextModel = model ?? DEFAULT_RELAY_MODEL;
-      this.state.model = nextModel;
-      this.config = { ...this.config, model: nextModel };
-    }
-    this.save();
+    const nextModel = model === undefined ? this.state.model : model ?? DEFAULT_RELAY_MODEL;
+    this.writeState({ ...this.state, discoveryRoot: resolved, model: nextModel });
+    this.state.discoveryRoot = resolved;
+    this.state.model = nextModel;
+    this.config = { ...this.config, discoveryRoot: resolved, model: nextModel };
     return this.status();
   }
 
@@ -476,7 +484,15 @@ export class RelayService {
     return body.trim() === '';
   }
 
+  private canDispatch(target: { provider: string; threadId: string }): boolean {
+    if (this.harnessEnabled()) return true;
+    const name = harnessKind(this.config.harnessId).name;
+    this.tellProvider(target, `The ${name} harness is disabled. Turn it on in Connections.`);
+    return false;
+  }
+
   private queueItem(message: HistoryMessage, body: string): boolean {
+    if (!this.canDispatch(message)) return false;
     if (this.queue.length >= RELAY_QUEUE_LIMIT) {
       this.log('skipped', message.id, { reason: 'queue-full' });
       const now = Date.now();
@@ -597,7 +613,7 @@ export class RelayService {
    * provider picks a project and sends the task again.
    */
   private async runOne(item: RelayItem): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || !this.canDispatch(item)) return;
     const startedAt = Date.now();
     this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
     this.save();
