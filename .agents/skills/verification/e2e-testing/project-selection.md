@@ -8,8 +8,6 @@ OpenCode session for each project in one chat thread.
 
 The automated composer check uses scripted Muse responses and a harness stub.
 The optional live check uses a signed-in Muse session and OpenCode.
-Add a check with an empty project list after [issue #39](https://github.com/gurjas-s/blibs/issues/39)
-adds provider-led project creation.
 
 ## Setup
 
@@ -23,14 +21,15 @@ See [shared setup](README.md#shared-setup).
    node --import tsx --test --test-name-pattern='scripted Muse creates' tests/e2e/smoke.spec.ts
    ```
 
-   Confirm that the test passes. It checks that Muse chooses `alpha`, the
-   harness reply appears in the same conversation, `alpha/hello.txt` contains
-   exactly `Hello from blibs.`, and `beta` stays empty.
+   Confirm that the test passes. It checks that both projects stay empty
+   until Muse sends the short selection reply. The harness reply then appears
+   in the same conversation, `alpha/hello.txt` contains exactly
+   `Hello from blibs.`, and `beta` stays empty.
 
-2. Manual boundary for the live check. Get authorization for this run before
-   you use a signed-in Muse profile. Close any app instance that uses that
-   profile. With the app built and OpenCode configured, run the following
-   command. Set `BLIBS_LIVE_PROFILE` if the signed-in profile differs from the
+2. For the opt-in live check, follow the
+   [authenticated provider workflow](../SKILL.md#authenticated-provider-checks).
+   Use a dedicated test conversation and a signed-in profile. With the app
+   built and OpenCode configured, run the following command. Set `BLIBS_LIVE_PROFILE` if the signed-in profile differs from the
    installed app profile.
 
    ```sh
@@ -59,11 +58,11 @@ See [shared setup](README.md#shared-setup).
    ```
 
    Expected: the newest outbox message says `Pick a project for your task:`.
-   It lists `$alpha` and `$beta`. It says
-   `Reply with @opencode $<project> <task>.` The relay does not start the
-   harness.
+   It lists `$alpha` and `$beta` and supplies a request ID. The relay does
+   not start the harness.
 
-5. Run `send_muse agent project-run '@opencode $alpha Build a small app'`.
+5. Copy the request ID from the reply into `REQUEST_ID`. Run
+   `send_muse agent project-run "@opencode /select $REQUEST_ID \$alpha"`.
    Expected: the harness runs in the `alpha` folder. The outbox reply contains
    `harness reply: Build a small app`.
 
@@ -71,8 +70,8 @@ See [shared setup](README.md#shared-setup).
    Expected: the harness reuses the session ID from step 5.
 
 7. Run `send_muse agent missing-project '@opencode $missing Build it'`.
-   Expected: blibs says that the project does not exist and gives
-   `blibs new-project <name>`. The harness does not run.
+   Expected: blibs says that the project is unavailable and offers the
+   available project IDs. The harness does not run.
 
 8. Open the Muse chat in the panel. Expected: the project list and harness
    replies appear once in the thread.
@@ -89,7 +88,9 @@ they end. Use the shared cleanup steps for the manual mock app.
 
 ## Automated coverage
 
-- `tests/relay.test.ts`: `project matcher lists only immediate folders and resolves names, tokens, and paths`; `a task without a project asks Muse to choose, then runs in the selected project`; `the relay reuses one session per project and thread`; `an unknown project gets the create-project instruction without a harness run`. Run with `node --import tsx --test tests/relay.test.ts`.
+- `tests/relay.test.ts` covers direct tasks, short selection replies, duplicate
+  delivery, stale choices, ambiguous requests, and unknown and empty project
+  lists. Run with `node --import tsx --test tests/relay.test.ts`.
 - `tests/e2e/smoke.spec.ts`: `the relay asks Muse to choose a project and runs the selected task`. Run with `npm run e2e`.
 - `tests/e2e/smoke.spec.ts` includes `scripted Muse creates a file in the requested project from the composer`. Run step 1.
-- `tests/e2e/live-login.spec.ts` includes `live Muse creates a file in the requested project from the composer`. Run step 2 with authorization.
+- `tests/e2e/live-login.spec.ts` includes `live Muse creates a file in the requested project from the composer`. Run step 2 for the opt-in check.

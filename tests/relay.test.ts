@@ -7,7 +7,7 @@ import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import { createProxyServer } from '../server/proxy.ts';
 import { HistoryStore } from '../server/history.ts';
-import { buildProjectChoices, formatProjectList, formatUnknownProject } from '../server/harness/project-reply.ts';
+import { buildProjectChoices, formatProjectList } from '../server/harness/project-reply.ts';
 import { listProjects, matchProject, taskAfterProject } from '../server/harness/projects.ts';
 import { introMessage } from '../server/harness/intro.ts';
 import { buildRelayConfig, newSessionId } from '../server/relay.ts';
@@ -136,10 +136,13 @@ test('a task without a project asks Muse to choose, then runs in the selected pr
   assert.equal(list.length, 1);
   assert.match(list[0].text, /\$alpha/);
   assert.match(list[0].text, /\$beta/);
-  assert.match(list[0].text, /Reply with @opencode \$<project> <task>/);
+  assert.match(list[0].text, /To send a new task, use @opencode \$<project> <task>/);
   assert.equal(runs(server).length, 0);
 
-  await importMuse(server, '@opencode $alpha build a small app', 'run-alpha');
+  const selection = selectAlpha(list[0].text);
+  await importMuse(server, '@opencode build a small app', 'rescanned-list-projects');
+  assert.equal((await outbox(server)).length, 1);
+  await importMuse(server, selection, 'run-alpha');
   await waitForRunCount(server, 1);
   const first = runs(server)[0];
   assert.equal(first.cwd, server.alpha);
@@ -148,6 +151,11 @@ test('a task without a project asks Muse to choose, then runs in the selected pr
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline && (await outbox(server)).length < 2) await sleep(25);
   assert.match((await outbox(server))[1].text, /harness reply: build a small app/);
+  await importMuse(server, selection, 'run-alpha');
+  assert.equal((await outbox(server)).length, 2);
+  await importMuse(server, selection, 'rescanned-run-alpha');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /no longer active/);
+  assert.equal(runs(server).length, 1);
 });
 
 test('each displayed project token selects its own folder and preserves the task', async () => {
@@ -205,32 +213,82 @@ test('a harness failure sends a visible reason to the chat', async () => {
   assert.match(items.at(-1)?.text ?? '', /harness failed/i);
 });
 
-test('an unknown project gets the create-project instruction without a harness run', async () => {
+function selectAlpha(reply: string): string {
+  const match = reply.match(/@opencode \/select ([a-f0-9]{12}) \$<project>/);
+  assert.ok(match, reply);
+  return `@opencode /select ${match[1]} $alpha`;
+}
+
+test('an ambiguous task supersedes an older choice and keeps its original wording', async () => {
+  const server = await startRelay();
+  await importMuse(server, '@opencode first task', 'first-choice');
+  const stale = selectAlpha((await outbox(server))[0].text);
+  const task = 'Compare alpha and beta';
+  await importMuse(server, '@opencode ' + task, 'ambiguous');
+  const reply = (await outbox(server))[1].text;
+  assert.match(reply, /names more than one project/);
+  await importMuse(server, stale, 'stale-choice');
+  assert.match((await outbox(server))[2].text, /no longer active/);
+  assert.equal(runs(server).length, 0);
+  await importMuse(server, selectAlpha(reply), 'current-choice');
+  await waitForRunCount(server, 1);
+  assert.equal(runs(server)[0].prompt, task);
+});
+
+test('unknown and removed projects get choices without running the harness', async () => {
   const server = await startRelay();
   await importMuse(server, '@opencode $missing build it', 'missing-project');
-  await sleep(150);
-  const replies = await outbox(server);
-  assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /project "missing" does not exist/i);
-  assert.match(replies[0].text, /blibs new-project <name>/);
+  const reply = (await outbox(server))[0].text;
+  assert.match(reply, /project "missing" is unavailable/i);
+  assert.match(reply, /- \$beta/);
+  const selection = selectAlpha(reply);
+  rmSync(server.alpha, { recursive: true });
+  await importMuse(server, selection, 'removed-project');
+  const retry = (await outbox(server))[1].text;
+  assert.match(retry, /Choose an available project ID/);
+  assert.doesNotMatch(retry, /- \$alpha/);
+  assert.equal(runs(server).length, 0);
+  await importMuse(server, selection.replace('$alpha', '$beta'), 'valid-project');
+  await waitForRunCount(server, 1);
+  assert.equal(runs(server)[0].cwd, path.join(server.projectsDir, 'beta'));
+  assert.equal(runs(server)[0].prompt, 'build it');
+});
+
+test('an empty project list explains how to add a project', async () => {
+  const server = await startRelay();
+  rmSync(server.alpha, { recursive: true });
+  rmSync(path.join(server.projectsDir, 'beta'), { recursive: true });
+  await importMuse(server, '@opencode build it', 'empty-projects');
+  const reply = (await outbox(server))[0].text;
+  assert.match(reply, /No projects are available/);
+  assert.match(reply, /add a project folder.*Connections/);
+  assert.doesNotMatch(reply, /\/select/);
   assert.equal(runs(server).length, 0);
 });
 
-test('project replies ask the assistant to choose, and the blibs introduction explains routing', () => {
-  const options = { mention: '@opencode', root: '/Users/test/Projects' };
+test('a clear makes an unanswered project choice stale', async () => {
+  const server = await startRelay();
+  await importMuse(server, '@opencode build it', 'before-clear');
+  const selection = selectAlpha((await outbox(server))[0].text);
+  await importMuse(server, '/clear', 'clear', 'user');
+  await importMuse(server, selection, 'after-clear');
+  assert.match((await outbox(server))[1].text, /no longer active/);
+  assert.equal(runs(server).length, 0);
+});
+
+test('project replies and the introduction use the same task format', () => {
+  const options = { mention: '@opencode', root: '/Users/test/Projects', requestId: 'abc123' };
   const choices = buildProjectChoices(['/Users/test/Projects/alpha']);
   const projectList = formatProjectList(choices, options);
   assert.match(projectList, /Pick a project for your task:/);
   assert.match(projectList, /- \$alpha/);
-  assert.match(projectList, /Reply with @opencode \$<project> <task>/);
-  assert.match(formatUnknownProject('missing', options), /blibs new-project <name>/);
+  assert.ok(projectList.includes('@opencode $<project> <task>'));
+  assert.ok(projectList.includes('@opencode /select abc123 $<project>'));
   const intro = introMessage([{ id: 'opencode', name: 'OpenCode', enabled: true }]);
   assert.match(intro, /blibs is a desktop control panel/);
-  assert.match(intro, /How tagging works:/);
   assert.match(intro, /sends that task to OpenCode/);
-  assert.match(intro, /send @opencode followed by a task/);
-  assert.doesNotMatch(intro, /project|\$<project>/i);
-  assert.doesNotMatch(intro, /\$find-project|\$sessions|routing agent/i);
+  assert.ok(intro.includes('@opencode $<project> <task>'));
+  assert.ok(intro.includes('@opencode /select <request-id> $<project>'));
 });
 
 test('the default relay model uses the personal Beam Free provider', () => {

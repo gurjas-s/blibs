@@ -67,13 +67,23 @@ blibs does, lists the available and enabled harnesses, and explains how to send
 a task with a harness tag. It suggests the first enabled harness. When no
 harness is enabled, it says to turn one on in Connections.
 
-**Choose a project:** tag a harness with a task but no project to get a list of
-folders in the configured projects directory (`~/Projects` by default). The
-reply asks the assistant to pick a project and send `$<project> <task>`. A
-project name in the task also selects that project. blibs reuses one OpenCode
-session for each project in each chat. A `$<project>` token that does not match
-a folder gets a message with the placeholder command
-`blibs new-project <name>`.
+**Choose a project:** send `@opencode $<project> <task>`, using the project
+ID shown by blibs. For example, send
+`@opencode $alpha Create hello.txt with exactly Hello from blibs.`
+Send `@opencode` by itself to list the project IDs.
+
+If blibs cannot select one project from a task, it lists the available IDs and
+keeps the task for that chat. Reply with `@opencode /select <request-id> $<project>`.
+Copy the request ID from the latest choice reply. For example, send
+`@opencode /select 4e2b70dca168 $alpha`. Each request ID can start work once.
+Send a new task if the choice is no longer active. Pending choices expire
+when blibs restarts, the chat is cleared, or the projects folder changes.
+
+A project name in the task can also select that project when the name is
+unambiguous. If the list is empty, add a project folder under the configured
+folder (`~/Projects` by default) or change the folder in **Connections**.
+Then send the task again. blibs reuses one OpenCode session per project
+in each chat.
 
 **Harness replies:** a reply from a local coding harness starts with
 `Sent from user's harness (<harness name>).` The header shows where the message
