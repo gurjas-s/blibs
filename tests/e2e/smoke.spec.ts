@@ -727,8 +727,7 @@ test(
       assert.match(introText, /Enabled for this assistant: OpenCode\./);
       assert.match(introText, /How tagging works:/);
       assert.match(introText, /sends that task to OpenCode/);
-      assert.doesNotMatch(introText, /project|\$<project>/i);
-      assert.ok(introText.endsWith('To try it, send @opencode followed by a task.'));
+      assert.ok(introText.includes('@opencode $<project> <task>'));
       await intro.scrollIntoViewIfNeeded();
       await page.waitForTimeout(300);
       assertImage(await app.screenshot('blibs-intro.png'));
@@ -855,10 +854,12 @@ test(
       assert.match(projectList, /Pick a project for your task:/);
       assert.match(projectList, /- \$alpha/);
       assert.match(projectList, /- \$beta/);
-      assert.match(projectList, /Reply with @opencode \$<project> <task>/);
+      assert.ok(projectList.includes('@opencode $<project> <task>'));
+      const requestId = projectList.match(/\/select ([a-f0-9]{12})/)?.[1];
+      assert.ok(requestId);
       assert.ok(!projectList.includes(projectsDir), 'The project list does not expose filesystem paths.');
 
-      await importMuse('agent', '@opencode $alpha Build a small app', 'e2e-project-run');
+      await importMuse('agent', `@opencode /select ${requestId} $alpha`, 'e2e-project-run');
       const reply = await waitForOutbox((text) => text.startsWith("Sent from user's harness (OpenCode)."));
       assert.match(reply, /harness reply: Build a small app/);
 
@@ -888,10 +889,11 @@ test(
     mkdirSync(beta);
     const content = 'Hello from blibs.';
     const task = 'Create hello.txt with exactly ' + content;
-    const request = 'Use OpenCode to create hello.txt in the project named alpha. Write exactly: ' + content;
+    const request = 'Use OpenCode to create hello.txt. Write exactly: ' + content;
     const museChatHtml = `<!doctype html>
       <main>
         <div role="log"></div>
+        <button id="choose" disabled>Choose alpha</button>
         <form><textarea aria-label="Message"></textarea><button type="submit">Send</button></form>
       </main>
       <script>
@@ -904,14 +906,20 @@ test(
           row.textContent = text;
           log.append(row);
         }
+        const choose = document.querySelector('#choose');
+        choose.addEventListener('click', () => {
+          append('assistant', '@opencode /select ' + choose.dataset.requestId + ' $alpha');
+          choose.disabled = true;
+        });
         document.querySelector('form').addEventListener('submit', (event) => {
           event.preventDefault();
           const text = composer.value;
           composer.value = '';
           append('user', text);
-          if (text === ${JSON.stringify(request)}) append('assistant', '@opencode');
+          if (text === ${JSON.stringify(request)}) append('assistant', '@opencode ' + ${JSON.stringify(task)});
           if (text.startsWith('blibs choices') && text.includes('- $alpha') && text.includes('- $beta')) {
-            append('assistant', '@opencode $alpha ' + ${JSON.stringify(task)});
+            choose.dataset.requestId = text.split('/select ')[1].split(' ')[0];
+            choose.disabled = false;
           }
         });
       </script>`;
@@ -927,10 +935,23 @@ test(
       assert.ok(muse, 'The Muse vendor view must start.');
       const threadUrl = 'https://muse.ai/chat/e2e-project-file';
       await muse.goto(threadUrl);
+      const baseline = await fetch(testApp.backendUrl + '/api/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [{
+          provider: 'muse', role: 'user', text: 'Project file test baseline.',
+          url: threadUrl, sourceId: 'project-file-baseline', ts: Date.now(),
+        }] }),
+      });
+      assert.equal(baseline.status, 200);
       await muse.getByRole('textbox', { name: 'Message' }).fill(request);
       await muse.getByRole('button', { name: 'Send' }).click();
       const log = muse.getByRole('log');
-      await log.getByText('@opencode $alpha ' + task, { exact: true }).waitFor({ timeout: 30_000 });
+      await log.getByText('Pick a project for your task:', { exact: false }).waitFor({ timeout: 30_000 });
+      assert.deepEqual(readdirSync(alpha), []);
+      assert.deepEqual(readdirSync(beta), []);
+      await muse.getByRole('button', { name: 'Choose alpha' }).click();
+      await log.getByText(/^@opencode \/select [a-f0-9]{12} \$alpha$/).waitFor({ timeout: 30_000 });
       await log.getByText("Sent from user's harness (OpenCode).", { exact: false }).waitFor({ timeout: 30_000 });
       assert.equal(muse.url(), threadUrl);
       assert.deepEqual(readFileSync(path.join(alpha, 'hello.txt')), Buffer.from(content));

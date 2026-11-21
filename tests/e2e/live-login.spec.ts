@@ -460,7 +460,7 @@ test(
       );
       assert.equal(intro.role, 'agent');
       assert.ok(intro.text?.includes('How tagging works:'), 'the reply explains the tags');
-      assert.ok(intro.text?.endsWith('To try it, send @opencode followed by a task.'));
+      assert.ok(intro.text?.includes('@opencode $<project> <task>'));
       assert.ok(!/project|\$<project>/i.test(intro.text ?? ''), 'the introduction omits project selection');
 
       await page.reload({ waitUntil: 'domcontentloaded' });

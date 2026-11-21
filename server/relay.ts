@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,10 +16,10 @@ import {
   PROJECT_CHOICE_LIMIT,
   formatMissingTask,
   formatProjectList,
-  formatUnknownProject,
+  unknownProjectNote,
   isChoicesMessage,
 } from './harness/project-reply.js';
-import type { ReplyOptions } from './harness/project-reply.js';
+import type { ProjectChoice, ReplyOptions } from './harness/project-reply.js';
 import { harnessKind } from './harness/registry.js';
 import {
   RELAY_PROCESSED_LIMIT,
@@ -41,6 +42,7 @@ import {
   sessionKey,
   sessionKeyPrefix,
   taskAfterProject,
+  taskAfterUnknownProject,
 } from './harness/projects.js';
 
 export const RELAY_QUEUE_LIMIT = 20;
@@ -93,8 +95,15 @@ interface RelayItem {
   id: string;
   provider: string;
   threadId: string;
-  /** Text behind the harness mention. Empty means the project list. */
+  /** Empty requests the project list. Null clears the chat context. */
+  body: string | null;
+}
+
+interface PendingProjectTask {
+  id: string;
   body: string;
+  task: string;
+  choices: ProjectChoice[];
 }
 
 export interface RelayServiceOptions {
@@ -209,6 +218,7 @@ export class RelayService {
   private readonly state: RelayState;
   private readonly knownThreads: Set<string>;
   private readonly queue: RelayItem[] = [];
+  private readonly pendingProjectTasks = new Map<string, PendingProjectTask>();
   /** Trigger text per thread. A re-scraped message gets a new message id. */
   private readonly recentTriggers = new Map<string, number>();
   private active: HarnessRun | null = null;
@@ -319,6 +329,7 @@ export class RelayService {
     if (threads.length > RELAY_THREAD_LIMIT) {
       const oldest = threads[0];
       this.knownThreads.delete(oldest);
+      this.pendingProjectTasks.delete(oldest);
       const prefix = sessionKeyPrefix(oldest);
       for (const key of Object.keys(this.state.sessions)) {
         if (key.startsWith(prefix)) delete this.state.sessions[key];
@@ -393,6 +404,7 @@ export class RelayService {
     }
     const nextModel = model === undefined ? this.state.model : model ?? DEFAULT_RELAY_MODEL;
     this.writeState({ ...this.state, discoveryRoot: resolved, model: nextModel });
+    if (resolved !== this.state.discoveryRoot) this.pendingProjectTasks.clear();
     this.state.discoveryRoot = resolved;
     this.state.model = nextModel;
     this.config = { ...this.config, discoveryRoot: resolved, model: nextModel };
@@ -552,6 +564,14 @@ export class RelayService {
           this.remember(message);
           changed = true;
           this.clearTriggers(threadId);
+          const lastQueued = this.queue.findLast((item) => item.threadId === threadId);
+          if (lastQueued?.body === null) continue;
+          if (lastQueued) {
+            this.queue.push({ id: message.id, provider: message.provider, threadId, body: null });
+            queued = true;
+          } else {
+            this.pendingProjectTasks.delete(threadId);
+          }
           continue;
         }
         if (this.isBlibsTrigger(message)) {
@@ -606,42 +626,67 @@ export class RelayService {
     }
   }
 
-  /**
-   * Resolve one mention without guessing. An explicit path or a project folder
-   * name runs the task. A named project that does not exist gets the
-   * create-project reply. Anything else gets the project list, and the
-   * provider picks a project and sends the task again.
-   */
+  /** Resolve a task or a selection against the current project list. */
   private async runOne(item: RelayItem): Promise<void> {
+    if (item.body === null) {
+      this.pendingProjectTasks.delete(item.threadId);
+      return;
+    }
     if (this.closed || !this.canDispatch(item)) return;
+    const pending = this.pendingProjectTasks.get(item.threadId);
+    if (pending?.body === item.body) return;
     const startedAt = Date.now();
     this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
     this.save();
 
-    const projects = listProjects(this.config.discoveryRoot);
-    const allChoices = buildProjectChoices(projects);
+    const allChoices = buildProjectChoices(listProjects(this.config.discoveryRoot));
     const choices = allChoices.slice(0, PROJECT_CHOICE_LIMIT);
-    const options = this.choiceOptions();
+    const options = { ...this.choiceOptions(), total: allChoices.length };
+    const [command, requestId, token, extra] = item.body.trim().split(/\s+/, 4);
+    if (command.toLowerCase() === '/select') {
+      if (!pending || requestId !== pending.id) {
+        return this.finishChoices(item, formatProjectList(choices, {
+          ...options,
+          note: 'This project choice is no longer active. Send a new task or use the request ID from the latest choice reply.',
+        }), startedAt);
+      }
+      const selected = !extra && pending.choices.find((choice) => `$${choice.token}` === token?.toLowerCase());
+      if (selected && allChoices.some((choice) => choice.path === selected.path)) {
+        this.pendingProjectTasks.delete(item.threadId);
+        return this.runWork(item, pending.task, selected.path, startedAt);
+      }
+      const available = pending.choices.filter((choice) => allChoices.some((current) => current.path === choice.path));
+      return this.finishChoices(item, formatProjectList(available, {
+        ...this.choiceOptions(),
+        requestId: pending.id,
+        note: 'Choose an available project ID from this request, or send a new task.',
+      }), startedAt);
+    }
+
     const match = matchProject(item.body, allChoices);
-    this.log('project-match', item.id, { result: match.kind, projectCount: projects.length });
+    this.log('project-match', item.id, { result: match.kind, projectCount: allChoices.length });
 
     if (match.kind === 'project') {
       const task = taskAfterProject(item.body, match);
       if (!task) {
         return this.finishChoices(item, formatMissingTask(match.choice.token, options), startedAt);
       }
+      this.pendingProjectTasks.delete(item.threadId);
       return this.runWork(item, task, match.choice.path, startedAt);
     }
-    if (match.kind === 'unknown') {
-      return this.finishChoices(item, formatUnknownProject(match.name, options), startedAt);
+
+    const task = match.kind === 'unknown' ? taskAfterUnknownProject(item.body) : item.body.trim();
+    const note = match.kind === 'unknown' ? unknownProjectNote(match.name, options)
+      : match.kind === 'ambiguous' ? 'The task names more than one project.' : undefined;
+    const id = task && choices.length ? randomBytes(6).toString('hex') : undefined;
+    const sent = this.tellChoices(item, formatProjectList(choices, { ...options, note, requestId: id }));
+    if (sent && task) {
+      this.pendingProjectTasks.delete(item.threadId);
+      if (id && this.knownThreads.has(item.threadId)) {
+        this.pendingProjectTasks.set(item.threadId, { id, body: item.body, task, choices });
+      }
     }
-    const text = formatProjectList(choices, {
-      ...options,
-      ...(projects.length > choices.length
-        ? { note: `Showing the first ${choices.length} of ${projects.length} projects.` }
-        : {}),
-    });
-    return this.finishChoices(item, text, startedAt);
+    this.finishRun(item.id, startedAt, sent, sent ? undefined : 'outbox write failed');
   }
 
   /** Await one run and keep it visible as the active run while it settles. */

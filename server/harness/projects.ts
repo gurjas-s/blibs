@@ -1,9 +1,3 @@
-// Project matching for harness runs.
-//
-// blibs does not guess a project. It matches the task text against the folders
-// in the projects directory. When the text names no project, or names one that
-// does not exist, the relay answers with the project list instead of starting
-// work. The provider picks a project and sends the task again.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -113,6 +107,17 @@ export function matchProject(text: string, choices: ProjectChoice[]): ProjectMat
   return { kind: 'none' };
 }
 
+/** Keep the task behind an unavailable explicit project reference. */
+export function taskAfterUnknownProject(text: string): string {
+  if (DOLLAR_TOKEN.test(text)) return text.replace(DOLLAR_TOKEN, '').trim();
+  const explicit = findExplicitPath(text);
+  return explicit ? withoutPath(text, explicit) : text.trim();
+}
+
+function withoutPath(text: string, explicit: { index: number; length: number }): string {
+  return `${text.slice(0, explicit.index)} ${text.slice(explicit.index + explicit.length)}`.trim();
+}
+
 /** The task text without a leading project token or project folder name. */
 export function taskAfterProject(text: string, match: Extract<ProjectMatch, { kind: 'project' }>): string {
   const { choice: { path: projectPath }, via } = match;
@@ -122,7 +127,7 @@ export function taskAfterProject(text: string, match: Extract<ProjectMatch, { ki
   if (via === 'path') {
     const explicit = findExplicitPath(trimmed);
     if (!explicit) return trimmed;
-    return `${trimmed.slice(0, explicit.index)} ${trimmed.slice(explicit.index + explicit.length)}`.trim();
+    return withoutPath(trimmed, explicit);
   }
   const name = new RegExp(`^${escapeRegExp(base)}(?![\\w.-])[\\s,:;-]*`, 'i').exec(trimmed);
   return name ? trimmed.slice(name[0].length).trim() : trimmed;
