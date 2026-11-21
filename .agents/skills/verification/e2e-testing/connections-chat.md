@@ -56,12 +56,15 @@ The state is local mock data. Do not use a real chat, a cookie, or a credential.
    is enabled. The context column shows at a wide window.
 
 3. Read the context column.
-   Expected result. Recent activity lists `Fixed login button`. The folder in
-   the preview matches the relay's projects folder. Muse has one switch for
-   OpenCode. Claude Code and Codex show `Unsupported`.
+   Expected: the preview shows `Fixed login button`, `Updated the login handler
+   and ran 12 tests in ~/Projects/blibs.`, and the caption `Claude Code ·
+   ~/Projects`. The three harness switches match the seed: Claude Code on, Codex
+   off, OpenCode on. Recent activity lists `Fixed login button` with a relative
+   time.
 
-4. Turn OpenCode off in the context column. Open Connections.
-   Expected result. The OpenCode switch for Muse is off. Turn it on again.
+4. Toggle `Codex for Muse` in the context column.
+   Expected: the switch turns on. `blibs-connections-v1` has
+   `assistants.muse.harnesses.codex` set to `true`.
 
 5. Set the window to 1024 pixels wide.
    Expected: the context column is not visible. The `Context` button is visible.
@@ -89,18 +92,6 @@ The state is local mock data. Do not use a real chat, a cookie, or a credential.
     Expected: the connections screen shows. Select `Back to chats`. The chat
     returns.
 
-11. Run the scripted Muse request check after building the app.
-
-    ```sh
-    node --import tsx --test --test-name-pattern='Connections applies the saved folder' tests/e2e/smoke.spec.ts
-    ```
-
-    Expected result. The test saves a new projects folder in Connections. It
-    sends a request from the Muse composer and imports scripted Muse turns.
-    Disabled OpenCode and unsupported combinations start no work. Enabled
-    OpenCode creates `alpha/hello.txt` with the exact text `Hello from blibs.`
-    in the new folder. The old folder stays unchanged.
-
 ## Diagnostics
 
 - The console shows a React or storage error.
@@ -115,7 +106,5 @@ card, the context column at 1440 pixels, the overlay at 1024 and 800 pixels, the
 sidebar toggle, and both chat screenshots. Test
 `an unconnected assistant shows an inline setup card and a disabled composer`
 covers the `Setup` pill, the three steps, the connect link, the card controls,
-and the disabled composer. Test
-`Connections applies the saved folder and harness setting to Muse requests`
-covers the scripted request and folder save. `tests/connections.test.ts` covers the state module
+and the disabled composer. `tests/connections.test.ts` covers the state module
 and the setup derivation.
