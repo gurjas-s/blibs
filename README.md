@@ -176,19 +176,17 @@ them. Do not run these checks in CI.
    harness stub. It keeps its Electron profile in
    `tests/e2e/artifacts/live-profile`, so a remembered device works on the next
    run.
-2. **Popout relay check.** It opens the authenticated Muse popout, sends
-   `/clear`, `@blibs`, and a user `@opencode` tag. blibs ignores that user tag.
-   The check then imports provider choice messages to list projects and run a
-   task in the selected project.
-   It uses the installed app profile and runs the real OpenCode model. Set
-   `BLIBS_LIVE_PROFILE` to use another profile. The check reads the model and
-   projects directory from the app state. Set `BLIBS_LIVE_MODEL` to override the
-   model.
+2. **Project file check.** It sends a plain-language request from the Muse
+   composer. Muse sends a task to OpenCode. The check looks for the harness
+   reply in the same conversation and verifies the exact bytes in
+   `alpha/hello.txt`. It also checks that `beta` stays empty. The check
+   removes both temporary projects when it ends.
+   It uses the signed-in app profile. Set `BLIBS_LIVE_PROFILE` to use a
+   different signed-in profile. Set `BLIBS_LIVE_MODEL` to override the model.
 
-Do not commit the profile, a screenshot of a signed-in session, or a
-credential. The popout check writes
-`tests/e2e/artifacts/live-project-session-choices.png`; Git ignores that
-directory.
+Do not commit a profile, a screenshot of a signed-in session, or a credential.
+See the [project selection verification steps](.agents/skills/verification/e2e-testing/project-selection.md)
+to run the project file check by itself.
 
 ## Troubleshooting
 
