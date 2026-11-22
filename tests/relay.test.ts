@@ -208,7 +208,8 @@ test('a plain project task never starts or reuses a session', async () => {
   await importMuse(server, '@opencode /new $alpha first first task', 'first-task');
   await waitForRunCount(server, 1);
   await importMuse(server, '@opencode $alpha second task', 'implicit-resume');
-  assert.match((await outbox(server)).at(-1)?.text ?? '', /Sessions for \$alpha/);
+  const replies = await outbox(server);
+  assert.ok(replies.some(({ text }) => text.includes('\n\nSessions for $alpha:\n- first')));
   assert.equal(runs(server).length, 1);
   await importMuse(server, '@opencode /resume $alpha first second task', 'second-task');
   await waitForRunCount(server, 2);
