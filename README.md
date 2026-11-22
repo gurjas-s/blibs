@@ -76,7 +76,20 @@ Send a new task if the choice is no longer active. Pending choices expire
 when blibs restarts, the chat is cleared, or the projects folder changes.
 
 A project name in the task can also select that project when the name is
-unambiguous. blibs reuses one OpenCode session per project in each chat.
+unambiguous.
+
+**Use multiple sessions:** send `@opencode /new-session $alpha first <task>`
+to start a clean session named `first`. A session name is one word of up to
+40 characters. Use letters, numbers, underscores, or hyphens, and start with
+a letter or number. Send `@opencode /sessions $alpha` to list the names and
+IDs saved for this chat and project. Use
+`@opencode /resume $alpha <session-id> <task>` to continue one of them.
+
+A plain project task uses its only session or starts a default session if
+there are none. If there are several sessions, blibs asks which one to use.
+Send the task again with `/resume` and the chosen ID. blibs shows the
+selected session before a follow-up. It keeps existing sessions under
+`Default` and keeps named sessions after restart.
 
 To create a project, ask Muse for a new project. Muse sends
 `@opencode /new-project <name>`. blibs creates one empty folder in the
@@ -177,7 +190,9 @@ Check their side effects before running them.
 Run `BLIBS_LIVE_LOGIN=1 npm run e2e:live` with a signed-in Muse profile
 and OpenCode configured. The checks use the current Muse conversation.
 They verify the harness reply and exact bytes in `alpha/hello.txt` for a
-new and an existing project. They remove their temporary projects when done.
+new and an existing project. The named-session check refreshes the `@blibs` introduction and checks two
+new sessions and a follow-up from the composer. The checks remove their
+temporary projects when done.
 
 Set `BLIBS_LIVE_PROFILE` to use a different signed-in profile. Set
 `BLIBS_LIVE_MODEL` to override the model. This check runs outside CI.

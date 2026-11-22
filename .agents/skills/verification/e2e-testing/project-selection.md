@@ -3,8 +3,8 @@
 ## Scope
 
 This document covers the project selection flow for OpenCode. The relay uses
-only immediate folders in the configured projects directory. It reuses one
-OpenCode session for each project in one chat thread. Different projects can
+only immediate folders in the configured projects directory. Each chat and
+project can have a default session and named sessions. Different projects can
 run at the same time. Tasks for the same project run in order.
 
 The relay tests use a harness stub. The live check uses a signed-in Muse
@@ -31,6 +31,11 @@ See [shared setup](README.md#shared-setup).
    folder and checks that Muse requests `alpha` before OpenCode writes the
    file. Set `BLIBS_LIVE_CREATION_CHAT` to use another Muse chat URL for the
    creation test.
+
+   The named-session check asks for the current commands with `@blibs`. It
+   asks Muse to start two sessions in `alpha` and write separate files. It
+   checks the active session IDs and verifies that resuming the first
+   changes only `first.txt`.
 
 2. Start the mock app with the shared command. Expected: the panel opens.
 
@@ -59,7 +64,7 @@ See [shared setup](README.md#shared-setup).
    `harness reply: Build a small app`.
 
 5. Run `send_muse agent project-follow-up '@opencode $alpha Add a test'`.
-   Expected: the harness reuses the session ID from step 4.
+   Expected: blibs shows the default session ID before the harness reuses it.
 
 6. Run `send_muse agent missing-project '@opencode $missing Build it'`.
    Expected: blibs says that the project is unavailable and offers the
@@ -87,6 +92,11 @@ The live check stops Electron and removes its temporary projects when it ends. U
   parallel run test holds one project open while a second project completes.
   It then checks that a follow-up waits and reuses its session. Run with
   `node --import tsx --test tests/relay.test.ts`.
+- The relay named-session test starts two sessions in one project, rejects
+  ambiguous, unknown, and wrong-project selections, and checks that both
+  named sessions and the default session can resume after restart.
 - `tests/e2e/smoke.spec.ts` checks picker creation and scripted Muse
-  creation, continuation, and redelivery. Run with `npm run e2e`.
+  creation, continuation, and redelivery. The named-session test checks the
+  composer through two new sessions and a resume, including file contents
+  and the session IDs passed to the mock harness. Run with `npm run e2e`.
 - `tests/e2e/live-muse.spec.ts` checks the provider composer, relay, and file contents in step 1.

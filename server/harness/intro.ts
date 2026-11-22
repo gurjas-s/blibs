@@ -6,7 +6,7 @@
 // trigger and the reply text. The shared module owns the first line.
 import { INTRO_HEADER, startsWithIntroHeader } from '../../shared/intro.js';
 import { stripVendorLabel } from '../../shared/vendor-label.js';
-import { projectCreationFormat, projectSelectionFormat, projectTaskFormat } from './project-reply.js';
+import { projectCreationFormat, projectSelectionFormat, projectTaskFormat, sessionCommands } from './project-reply.js';
 import { HARNESS_KINDS } from './registry.js';
 
 export { INTRO_HEADER };
@@ -81,6 +81,8 @@ export function introMessage(choices: HarnessChoice[]): string {
       `Use ${projectTaskFormat(tag)}. Send ${tag} by itself to list projects.`,
       `If the user asks for a new project, use ${projectCreationFormat(tag)}. Then use the returned project ID for your task.`,
       `If blibs asks you to choose a project for a saved task, reply with ${projectSelectionFormat(tag)} using the request ID from that message.`,
+      '',
+      ...sessionCommands(tag),
     );
   } else {
     lines.push(

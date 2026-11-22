@@ -8,7 +8,7 @@ import { afterEach, test } from 'node:test';
 import { createProxyServer } from '../server/proxy.ts';
 import { HistoryStore } from '../server/history.ts';
 import { buildProjectChoices, formatProjectList } from '../server/harness/project-reply.ts';
-import { listProjects, matchProject, taskAfterProject } from '../server/harness/projects.ts';
+import { listProjects, matchProject, sessionKey, taskAfterProject } from '../server/harness/projects.ts';
 import { introMessage } from '../server/harness/intro.ts';
 import { buildRelayConfig, newSessionId } from '../server/relay.ts';
 import { DEFAULT_RELAY_MODEL } from '../server/relay-defaults.ts';
@@ -26,6 +26,7 @@ interface RelayServer {
   harnessDir: string;
   projectsDir: string;
   alpha: string;
+  restart: () => Promise<void>;
 }
 
 const FAKE_HARNESS = `import fs from 'node:fs';
@@ -33,6 +34,11 @@ import path from 'node:path';
 const args = process.argv.slice(2);
 const prompt = args.at(-1) || '';
 fs.appendFileSync(path.join('__LOG_DIR__', 'runs.jsonl'), JSON.stringify({ args, prompt, cwd: process.cwd() }) + '\\n');
+const session = args[args.indexOf('--session') + 1];
+const historyFile = path.join('__LOG_DIR__', session + '.txt');
+fs.appendFileSync(historyFile, prompt + '\\n');
+const write = /^write (first|second)\\.txt (.+)$/.exec(prompt);
+if (write) fs.writeFileSync(write[1] + '.txt', write[2]);
 if (prompt.includes('FAIL_HARNESS')) process.exit(3);
 if (prompt.includes('WAIT_HARNESS')) {
   process.stderr.write('private diagnostic text');
@@ -55,25 +61,38 @@ async function startRelay(): Promise<RelayServer> {
   const seed = new HistoryStore(dataDir);
   seed.import([{ provider: 'muse', role: 'user', text: 'Earlier message.', ts: 1, url: 'https://muse.ai/chat/relay-test', sourceId: 'seed-user', identity: 'source-id' }]);
   seed.close();
-  const server = createProxyServer(dataDir, {}, { relay: {
+  const createServer = () => createProxyServer(dataDir, {}, { relay: {
     enabled: true,
     provider: 'muse',
     command: JSON.stringify([process.execPath, fake]),
     cwd: harnessDir,
     discoveryRoot: projectsDir,
   } });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const address = server.address();
-  assert.ok(address && typeof address !== 'string');
-  const base = `http://127.0.0.1:${address.port}`;
-  cleanups.push(async () => {
+  let server = createServer();
+  const result = { base: '', dataDir, harnessDir, projectsDir, alpha, restart };
+  async function listen(): Promise<void> {
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    result.base = `http://127.0.0.1:${address.port}`;
+  }
+  async function close(): Promise<void> {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  async function restart(): Promise<void> {
+    await close();
+    server = createServer();
+    await listen();
+  }
+  await listen();
+  cleanups.push(async () => {
+    await close();
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(harnessDir, { recursive: true, force: true });
     rmSync(projectsDir, { recursive: true, force: true });
   });
-  return { base, dataDir, harnessDir, projectsDir, alpha };
+  return result;
 }
 
 let importTimestamp = Date.now() + 1000;
@@ -196,6 +215,62 @@ test('the relay reuses one session per project and thread', async () => {
   assert.ok(newSessionId().startsWith('ses_'));
 });
 
+test('named sessions keep separate histories and resume by ID after restart', async () => {
+  const server = await startRelay();
+  const legacyId = newSessionId();
+  writeFileSync(path.join(server.dataDir, 'relay-state.json'), JSON.stringify({
+    version: 2,
+    sessions: { [sessionKey('https://muse.ai/chat/relay-test', server.alpha)]: legacyId },
+  }));
+  await server.restart();
+
+  await importMuse(server, '@blibs', 'session-intro', 'user');
+  const intro = (await outbox(server)).at(-1)?.text ?? '';
+  for (const command of ['/new-session', '/sessions', '/resume']) {
+    assert.ok(intro.includes(`@opencode ${command}`));
+  }
+
+  await importMuse(server, '@opencode /new-session $alpha first write first.txt initial', 'named-first');
+  await importMuse(server, '@opencode /new-session $alpha second write second.txt separate', 'named-second');
+  await waitForRunCount(server, 2);
+  const [firstId, secondId] = runs(server).map(({ args }) => args[args.indexOf('--session') + 1]);
+  assert.notEqual(firstId, secondId);
+  assert.notEqual(firstId, legacyId);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && (await (await fetch(server.base + '/api/relay')).json()).running) await sleep(25);
+  assert.equal((await (await fetch(server.base + '/api/relay')).json()).running, false);
+  await server.restart();
+
+  await importMuse(server, '@opencode /sessions $alpha', 'show-sessions');
+  const list = (await outbox(server)).at(-1)?.text ?? '';
+  for (const [name, id] of [['Default', legacyId], ['first', firstId], ['second', secondId]]) {
+    assert.ok(list.includes(`${name} (${id})`));
+  }
+  await importMuse(server, '@opencode $alpha update the file', 'ambiguous-session');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /Which session/);
+  await importMuse(server, '@opencode /resume $alpha ses_unknown do not run', 'unknown-session');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /session ID is unavailable/);
+  await importMuse(server, `@opencode /resume $beta ${firstId} do not run`, 'wrong-project-session');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /session ID is unavailable/);
+  await importMuse(server, '@opencode /new-session $alpha FIRST do not run', 'duplicate-session-name');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /different session name/);
+  assert.equal(runs(server).length, 2);
+
+  await importMuse(server, `@opencode /resume $alpha ${firstId} write first.txt updated`, 'resume-first');
+  const notices = (await outbox(server)).filter(({ text }) => text.includes(`Active session for $alpha: first (${firstId})`));
+  assert.equal(notices.length, 2);
+  await importMuse(server, `@opencode /resume $alpha ${secondId} check second.txt`, 'resume-second');
+  await importMuse(server, `@opencode /resume $alpha ${legacyId} check legacy task`, 'resume-legacy');
+  await waitForRunCount(server, 5);
+  assert.deepEqual(runs(server).slice(2).map(({ args }) => args[args.indexOf('--session') + 1]), [firstId, secondId, legacyId]);
+  assert.equal(readFileSync(path.join(server.alpha, 'first.txt'), 'utf8'), 'updated');
+  assert.equal(readFileSync(path.join(server.alpha, 'second.txt'), 'utf8'), 'separate');
+  assert.deepEqual(readFileSync(path.join(server.harnessDir, firstId + '.txt'), 'utf8').trim().split('\n'),
+    ['write first.txt initial', 'write first.txt updated']);
+  assert.deepEqual(readFileSync(path.join(server.harnessDir, secondId + '.txt'), 'utf8').trim().split('\n'),
+    ['write second.txt separate', 'check second.txt']);
+});
+
 test('a user-authored harness tag does not start a run', async () => {
   const server = await startRelay();
   await importMuse(server, '@opencode $alpha do not run', 'user-tag', 'user');
@@ -237,11 +312,12 @@ test('different projects run together and same-project tasks wait and reuse the 
   assert.match((await outbox(server))[0].text, /independent task/);
 
   writeFileSync(path.join(server.harnessDir, 'release'), '');
-  while ((await outbox(server)).length < 3 && Date.now() < deadline) await sleep(25);
+  while ((await outbox(server)).length < 4 && Date.now() < deadline) await sleep(25);
   const items = await outbox(server);
-  assert.equal(items.length, 3);
+  assert.equal(items.length, 4);
   assert.match(items[1].text, /WAIT_HARNESS/);
-  assert.match(items[2].text, /next task/);
+  assert.match(items[2].text, /Active session for \$alpha: Default/);
+  assert.match(items[3].text, /next task/);
   const sessionArg = (run: ReturnType<typeof runs>[number]) => run.args[run.args.indexOf('--session') + 1];
   const [first, independent, followUp] = runs(server);
   assert.equal(sessionArg(first), sessionArg(followUp));

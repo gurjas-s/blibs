@@ -11,7 +11,8 @@ pending choices, task dispatch, session reuse, or restart. For example,
 a storage change can affect what the relay restores after a restart.
 The [spec guide](../../../../tests/specs/README.md) lists the assumptions,
 invariants, and TLC setup. The model ends when the relay queues a reply,
-fails, or stops.
+fails, or stops. It models the default session path. The relay integration
+tests cover named session selection and its persistence across restart.
 
 1. Check whether the implementation still matches the model. If intended
    behavior changes a modeled transition or invariant, update the spec and

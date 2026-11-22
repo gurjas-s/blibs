@@ -497,6 +497,9 @@ const prompt = args.at(-1) || '';
 if (prompt.endsWith('Create hello.txt with exactly Hello from blibs.')) {
   writeFileSync('hello.txt', 'Hello from blibs.');
 }
+const fileTask = /^Write (first|second)[.]txt with exactly (.+)$/.exec(prompt);
+if (fileTask) writeFileSync(fileTask[1] + '.txt', fileTask[2]);
+if (fileTask) process.stdout.write('Session: ' + args[args.indexOf('--session') + 1] + '\\n');
 process.stdout.write('harness reply: ' + (prompt.split('\\n').at(-1) || '') + '\\n');
 `);
 

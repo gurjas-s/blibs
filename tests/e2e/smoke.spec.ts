@@ -939,6 +939,94 @@ test(
 );
 
 test(
+  'scripted Muse starts two sessions and resumes the first from the composer',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async (t) => {
+    const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-sessions-'));
+    t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
+    const alpha = path.join(projectsDir, 'alpha');
+    mkdirSync(alpha);
+    const first = 'Start a session named first in alpha and write first.txt.';
+    const second = 'Start a session named second in alpha and write second.txt.';
+    const resume = 'Resume the first session and update first.txt.';
+    const museChatHtml = `<!doctype html>
+      <div role="log"></div>
+      <form><textarea aria-label="Message"></textarea><button type="submit">Send</button></form>
+      <script>
+        const log = document.querySelector('[role="log"]');
+        const composer = document.querySelector('textarea');
+        let firstId;
+        function append(role, text) {
+          const row = document.createElement('div');
+          row.dataset.messageAuthorRole = role;
+          row.style.whiteSpace = 'pre-wrap';
+          row.textContent = text;
+          log.append(row);
+        }
+        document.querySelector('form').addEventListener('submit', (event) => {
+          event.preventDefault();
+          const text = composer.value;
+          composer.value = '';
+          append('user', text);
+          const notice = /Active session for .alpha: first [(](ses_[a-zA-Z0-9]+)[)]/.exec(text);
+          if (notice) firstId = notice[1];
+          if (text === ${JSON.stringify(first)}) append('assistant', '@opencode /new-session $alpha first Write first.txt with exactly initial');
+          if (text === ${JSON.stringify(second)}) append('assistant', '@opencode /new-session $alpha second Write second.txt with exactly separate');
+          if (text === ${JSON.stringify(resume)}) append('assistant', '@opencode /resume $alpha ' + firstId + ' Write first.txt with exactly updated');
+        });
+      </script>`;
+    const testApp = await launch({ projectsDir, museChatHtml });
+    try {
+      let muse: Page | undefined;
+      const deadline = Date.now() + 15_000;
+      while (!muse && Date.now() < deadline) {
+        muse = testApp.context.pages().find((page) => page.url() === 'https://muse.ai/');
+        if (!muse) await delay(100);
+      }
+      assert.ok(muse, 'The Muse vendor view must start.');
+      const threadUrl = 'https://muse.ai/chat/e2e-sessions';
+      await muse.goto(threadUrl);
+      const baseline = await fetch(testApp.backendUrl + '/api/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [{
+          provider: 'muse', role: 'user', text: 'Session test baseline.',
+          url: threadUrl, sourceId: 'session-baseline', ts: Date.now(),
+        }] }),
+      });
+      assert.equal(baseline.status, 200);
+      const log = muse.getByRole('log');
+      const composer = muse.getByRole('textbox', { name: 'Message' });
+      const send = muse.getByRole('button', { name: 'Send' });
+      const ids: string[] = [];
+      for (const [request, name] of [[first, 'first'], [second, 'second'], [resume, 'first']]) {
+        const replies = log.getByText("Sent from user's harness (OpenCode).", { exact: false });
+        const count = await replies.count();
+        await composer.fill(request);
+        await send.click();
+        const reply = replies.nth(count);
+        await reply.waitFor({ timeout: 45_000 });
+        const id = (await reply.textContent())?.match(/Session: (ses_[a-zA-Z0-9]+)/)?.[1];
+        assert.ok(id);
+        assert.ok(await log.getByText(`Active session for $alpha: ${name} (${id}).`, { exact: false }).last().isVisible());
+        ids.push(id);
+        if (request === first) assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'initial');
+      }
+      assert.notEqual(ids[0], ids[1]);
+      assert.equal(ids[0], ids[2]);
+      assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'updated');
+      assert.equal(readFileSync(path.join(alpha, 'second.txt'), 'utf8'), 'separate');
+      assertImage(await screenshot(muse, 'named-sessions.png'));
+    } catch (error) {
+      const outbox = await (await fetch(testApp.backendUrl + '/api/outbox')).text();
+      throw new Error(`${String(error)}\nMock Muse outbox: ${outbox}`, { cause: error });
+    } finally {
+      await testApp.close();
+    }
+  },
+);
+
+test(
   'Connections applies the saved folder and harness setting to Muse requests',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {

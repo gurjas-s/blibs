@@ -91,6 +91,14 @@ export function projectCreationFormat(mention: string): string {
   return `${mention} /new-project <name>`;
 }
 
+export function sessionCommands(mention: string): string[] {
+  return [
+    `Start a clean session with ${mention} /new-session $<project> <name> <task>. Use one name with letters, numbers, underscores, or hyphens. Start with a letter or number.`,
+    `List sessions in this chat with ${mention} /sessions $<project>.`,
+    `Resume a session with ${mention} /resume $<project> <session-id> <task>. If blibs asks which session to use, ask the user and resend the task with the chosen ID.`,
+  ];
+}
+
 /** Show the available project IDs and how to continue. */
 export function formatProjectList(
   choices: ProjectChoice[],
@@ -114,6 +122,7 @@ export function formatProjectList(
   }
   lines.push('', `If the user asks for a new project, use ${projectCreationFormat(options.mention)}.`);
   lines.push('', `To send a new task, use ${projectTaskFormat(options.mention)}.`);
+  lines.push('', ...sessionCommands(options.mention));
   return lines.join('\n');
 }
 

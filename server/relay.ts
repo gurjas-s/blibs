@@ -18,6 +18,7 @@ import {
   formatMissingTask,
   formatProjectList,
   projectSelectionFormat,
+  sessionCommands,
   unknownProjectNote,
   isChoicesMessage,
 } from './harness/project-reply.js';
@@ -28,6 +29,8 @@ import {
   RELAY_SESSION_LIMIT,
   RELAY_STATE_VERSION,
   RELAY_THREAD_LIMIT,
+  SESSION_NAME,
+  parseNamedSessions,
   parseHarnesses,
   parseModel,
   parseRelayRun,
@@ -35,7 +38,7 @@ import {
   parseStringArray,
   readRelayStateFile,
 } from './relay-state.js';
-import type { RelayRunState, RelayState } from './relay-state.js';
+import type { NamedSession, RelayRunState, RelayState } from './relay-state.js';
 import {
   canonicalDir,
   PROJECT_LIMIT,
@@ -59,6 +62,8 @@ const RELAY_COMMAND_LIMIT = 2000;
 /** Window that treats the same introduction text in one thread as a re-scrape. */
 const TRIGGER_DEDUPE_MS = 2 * 60_000;
 const TRIGGER_DEDUPE_LIMIT = 500;
+/** Keep the full session list short enough to send in one chat message. */
+const PROJECT_SESSION_LIMIT = 20;
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROVIDER_HOSTS: Record<string, string> = { muse: 'muse.ai', dots: 'chatgpt.com', grok: 'grok.com' };
@@ -105,10 +110,13 @@ interface RelayItem {
   body: string | null;
 }
 
+type SessionRequest = { kind: 'new'; name: string } | { kind: 'resume'; id: string };
+
 interface RelayWork {
   item: RelayItem;
   task: string;
   projectPath: string;
+  session?: SessionRequest;
 }
 
 interface ActiveWork {
@@ -261,6 +269,7 @@ export class RelayService {
           processed: [],
           threads: [],
           sessions: {},
+          namedSessions: [],
           discoveryRoot: canonicalDir(options.config.discoveryRoot),
           model: options.config.model,
           harnesses: [],
@@ -288,6 +297,7 @@ export class RelayService {
       processed: parseStringArray(raw.processed, RELAY_PROCESSED_LIMIT),
       threads: parseStringArray(raw.threads, RELAY_THREAD_LIMIT),
       sessions: parseSessions(raw.sessions),
+      namedSessions: parseNamedSessions(raw.namedSessions),
       discoveryRoot: canonicalDir(projectsRoot(root)),
       model: parseModel(raw.model),
       harnesses: parseHarnesses(raw.harnesses),
@@ -366,9 +376,63 @@ export class RelayService {
     return sessionId;
   }
 
-  /** One session per project per thread. The first run creates it. */
-  private sessionFor(threadId: string, projectPath: string): string {
-    return this.storedSession(threadId, projectPath) ?? this.storeSession(threadId, projectPath, newSessionId());
+  private sessionsFor(threadId: string, projectPath: string): NamedSession[] {
+    const scope = sessionKey(threadId, projectPath);
+    const named = this.state.namedSessions.filter((session) => session.scope === scope);
+    const id = this.storedSession(threadId, projectPath);
+    return id ? [{ scope, id, name: 'Default' }, ...named] : named;
+  }
+
+  private sessionList(sessions: NamedSession[], note: string, token: string): string {
+    const lines = sessions.map(({ name, id }) => `- ${name} (${id})`);
+    return [
+      CHOICES_HEADER, '', note, ...lines, '',
+      `Use ${this.harness.mention} /resume $${token} <session-id> <task> with an ID from this list.`,
+      sessionCommands(this.harness.mention)[0],
+    ].join('\n');
+  }
+
+  /** Resolve the session when the project is ready to run the task. */
+  private resolveSession(work: RelayWork, token: string): string | undefined {
+    const { item, projectPath, session } = work;
+    const sessions = this.sessionsFor(item.threadId, projectPath);
+    const selected = session?.kind === 'resume' ? sessions.find(({ id }) => id === session.id) : sessions[0];
+    if (session?.kind === 'new') {
+      if (sessions.some(({ name }) => name.toLowerCase() === session.name.toLowerCase())
+        || session.name.toLowerCase() === 'default') {
+        this.finishChoices(item, this.sessionList(sessions, 'Choose a different session name.', token), Date.now());
+        return;
+      }
+      if (sessions.length >= PROJECT_SESSION_LIMIT || this.state.namedSessions.length >= RELAY_SESSION_LIMIT) {
+        this.finishChoices(item, this.sessionList(sessions, 'The session limit has been reached.', token), Date.now());
+        return;
+      }
+      const id = newSessionId();
+      this.state.namedSessions.push({ scope: sessionKey(item.threadId, projectPath), id, name: session.name });
+      try {
+        this.writeState(this.state);
+      } catch (error) {
+        this.state.namedSessions.pop();
+        throw error;
+      }
+      this.announceSession(item, session.name, id, token);
+      return id;
+    }
+    if ((session?.kind === 'resume' && !selected) || (!session && sessions.length > 1)) {
+      const note = session ? 'That session ID is unavailable for this chat and project.' : 'Which session should run this task?';
+      this.finishChoices(item, this.sessionList(sessions, note, token), Date.now());
+      return;
+    }
+    if (selected) {
+      this.announceSession(item, selected.name, selected.id, token);
+      return selected.id;
+    }
+    return this.storeSession(item.threadId, projectPath, newSessionId());
+  }
+
+  private announceSession(item: RelayItem, name: string, id: string, token: string): void {
+    const text = `${CHOICES_HEADER}\n\nActive session for $${token}: ${name} (${id}).`;
+    if (!this.tellChoices(item, text)) throw new Error('Could not queue the session notice.');
   }
 
   private choiceOptions(): ReplyOptions {
@@ -686,7 +750,9 @@ export class RelayService {
     while (!this.closed) {
       const index = this.workQueue.findIndex(({ projectPath }) => !this.active.has(projectPath));
       if (index === -1) return;
-      const [{ item, task, projectPath }] = this.workQueue.splice(index, 1);
+      const [queued] = this.workQueue.splice(index, 1);
+      const { item, task, projectPath } = queued;
+      let sessionId: string | undefined;
       try {
         if (!this.canDispatch(item)) continue;
         if (path.dirname(projectPath) !== this.config.discoveryRoot
@@ -696,13 +762,18 @@ export class RelayService {
           this.finishRun(item.id, Date.now(), false, error);
           continue;
         }
+        const token = buildProjectChoices(listProjects(this.config.discoveryRoot))
+          .find((choice) => choice.path === projectPath)?.token;
+        if (!token) throw new Error('Could not find project ID.');
+        sessionId = this.resolveSession(queued, token);
+        if (!sessionId) continue;
       } catch {
         this.failDispatch(item);
         continue;
       }
       const work = { item, startedAt: Date.now() };
       this.active.set(projectPath, work);
-      void this.runWork(work, task, projectPath).catch(() => {
+      void this.runWork(work, task, projectPath, sessionId).catch(() => {
         if (!this.closed) this.failDispatch(item);
       }).finally(() => {
         this.active.delete(projectPath);
@@ -722,8 +793,9 @@ export class RelayService {
     if (pending?.body === item.body) return;
     const startedAt = Date.now();
     const body = item.body.trim();
-    const [command, requestId, token, extra] = body.split(/\s+/, 4);
-    if (command.toLowerCase() === '/new-project') {
+    const [command, first, second, extra] = body.split(/\s+/, 4);
+    const action = command.toLowerCase();
+    if (action === '/new-project') {
       const result = this.createProject(body.slice(command.length).trim());
       const mention = this.harness.mention;
       const note = result.kind === 'created'
@@ -736,7 +808,30 @@ export class RelayService {
     const allChoices = buildProjectChoices(listProjects(this.config.discoveryRoot));
     const choices = allChoices.slice(0, PROJECT_CHOICE_LIMIT);
     const options = { ...this.choiceOptions(), total: allChoices.length };
-    if (command.toLowerCase() === '/select') {
+    if (['/sessions', '/new-session', '/resume'].includes(action)) {
+      const project = first;
+      const value = second;
+      const choice = allChoices.find(({ token }) => `$${token}` === project?.toLowerCase());
+      const task = body.match(/^\S+\s+\S+\s+\S+\s+([\s\S]+)$/)?.[1];
+      if (!choice) {
+        return this.finishChoices(item, formatProjectList(choices, { ...options, note: 'Use an available project ID.' }), startedAt);
+      }
+      if (action === '/sessions' && !value) {
+        const sessions = this.sessionsFor(item.threadId, choice.path);
+        const note = sessions.length ? `Sessions for $${choice.token}:` : `No sessions for $${choice.token} in this chat.`;
+        return this.finishChoices(item, this.sessionList(sessions, note, choice.token), startedAt);
+      }
+      if (extra && task && (action === '/resume' || (action === '/new-session' && SESSION_NAME.test(value)))) {
+        const session: SessionRequest = action === '/resume' ? { kind: 'resume', id: value } : { kind: 'new', name: value };
+        this.pendingProjectTasks.delete(item.threadId);
+        this.workQueue.push({ item, task, projectPath: choice.path, session });
+        return;
+      }
+      return this.finishChoices(item, [CHOICES_HEADER, '', ...sessionCommands(this.harness.mention)].join('\n'), startedAt);
+    }
+    if (action === '/select') {
+      const requestId = first;
+      const token = second;
       if (!pending || requestId !== pending.id) {
         return this.finishChoices(item, formatProjectList(choices, {
           ...options,
@@ -785,19 +880,17 @@ export class RelayService {
     this.finishRun(item.id, startedAt, sent, sent ? undefined : 'outbox write failed');
   }
 
-  private async runWork(work: ActiveWork, task: string, projectPath: string): Promise<void> {
+  private async runWork(work: ActiveWork, task: string, projectPath: string, sessionId: string): Promise<void> {
     const { item, startedAt } = work;
     this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
     this.save();
 
-    const reuseSession = Boolean(this.storedSession(item.threadId, projectPath));
     this.log('harness-start', item.id, {
       harness: this.config.harnessId,
       model: this.config.model ?? 'default',
-      reuseSession,
     });
     const run = this.harness.start(buildPrompt(task), {
-      sessionId: this.sessionFor(item.threadId, projectPath),
+      sessionId,
       cwd: projectPath,
       model: this.config.model,
     });
@@ -862,7 +955,7 @@ export class RelayService {
       running: this.active.size > 0,
       processed: this.state.processed.length,
       watermark: this.state.watermark,
-      sessions: Object.keys(this.state.sessions).length,
+      sessions: Object.keys(this.state.sessions).length + this.state.namedSessions.length,
       lastRun: this.state.lastRun,
     };
   }

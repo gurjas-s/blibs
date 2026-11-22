@@ -24,8 +24,9 @@ project removal, pending choice invalidation, and restart.
 
 TLC checks that a pending choice belongs to its chat, expired tasks stay
 expired, a task starts at most once, and only one run is active per project.
-Runs reuse the session for their chat and project. Different chat and project
-pairs use different sessions.
+The model covers default session reuse within each chat and project,
+with a different default session for each pair. The relay integration
+tests cover named session creation, selection, and restart.
 
 The configuration uses two chats, two project paths, and two request slots.
 It treats parsing, filtering, and project matching as inputs with classified
