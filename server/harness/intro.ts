@@ -6,7 +6,7 @@
 // trigger and the reply text. The shared module owns the first line.
 import { INTRO_HEADER, startsWithIntroHeader } from '../../shared/intro.js';
 import { stripVendorLabel } from '../../shared/vendor-label.js';
-import { projectCreationFormat, projectSelectionFormat, projectTaskFormat } from './project-reply.js';
+import { projectCreationFormat, projectSelectionFormat, sessionCommands } from './project-reply.js';
 import { HARNESS_KINDS } from './registry.js';
 
 export { INTRO_HEADER };
@@ -76,11 +76,14 @@ export function introMessage(choices: HarnessChoice[]): string {
   if (suggested) {
     const tag = harnessTag(suggested.id);
     lines.push(
-      `How tagging works: start a message with a harness tag. For example, ${tag} $alpha fix the failing test sends that task to ${suggested.name}. blibs types the harness reply back into this chat.`,
+      `How tagging works: start a message with a harness tag. For example, ${tag} /new $alpha fix-tests Fix the failing test sends that task to ${suggested.name}. blibs types the harness reply back into this chat.`,
       '',
-      `Use ${projectTaskFormat(tag)}. Send ${tag} by itself to list projects.`,
-      `If the user asks for a new project, use ${projectCreationFormat(tag)}. Then use the returned project ID for your task.`,
-      `If blibs asks you to choose a project for a saved task, reply with ${projectSelectionFormat(tag)} using the request ID from that message.`,
+      `Choose a project, then choose a session and include the full task. Only /new and /resume start work. Send ${tag} by itself to list projects.`,
+      `To create a project, use ${projectCreationFormat(tag)}. Then use the returned project ID for your task.`,
+      `When blibs lists projects for a saved task, match the project to the conversation and send ${projectSelectionFormat(tag)} using the request ID from that reply. Then send the full task with /new or /resume.`,
+      '',
+      ...sessionCommands(tag),
+      'Send each command as its own message. Wait for blibs to reply before sending the next command.',
     );
   } else {
     lines.push(

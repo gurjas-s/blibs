@@ -771,7 +771,7 @@ test(
       assert.match(introText, /Enabled for this assistant: OpenCode\./);
       assert.match(introText, /How tagging works:/);
       assert.match(introText, /sends that task to OpenCode/);
-      assert.ok(introText.includes('@opencode $<project> <task>'));
+      assert.ok(introText.includes('@opencode /new $<project> <name> <task>'));
 
       const introOutbox = (await (await fetch(`${app.backendUrl}/api/outbox`)).json()) as {
         items?: Array<{ text?: string }>;
@@ -796,7 +796,7 @@ test(
       // Muse tags OpenCode. The one project resolves and the harness replies.
       await importMuse({
         role: 'agent',
-        text: '@opencode $alpha hi',
+        text: '@opencode /new $alpha greeting hi',
         sourceId: 'e2e-intro-task',
         ts: Date.now(),
       });
@@ -883,6 +883,9 @@ test(
           append('user', text);
           if (created && text.startsWith("Sent from user's harness")) repeat.disabled = false;
           if (text === ${JSON.stringify(request)}) append('assistant', '@opencode ' + ${JSON.stringify(task)});
+          if (text.startsWith('blibs choices') && text.includes('No sessions for $alpha')) {
+            append('assistant', '@opencode /new $alpha hello ' + ${JSON.stringify(task)});
+          }
           if (text.startsWith('blibs choices') && text.includes('No projects are available')) create.disabled = false;
           if (text.startsWith('blibs choices') && text.includes('Project created. Project ID: $alpha.')) {
             choose.dataset.requestId = text.split('/select ')[1].split(' ')[0];
@@ -939,6 +942,91 @@ test(
 );
 
 test(
+  'scripted Muse starts two sessions and resumes the first from the composer',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async (t) => {
+    const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-sessions-'));
+    t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
+    const alpha = path.join(projectsDir, 'alpha');
+    mkdirSync(alpha);
+    const first = 'Start a session named first in alpha and write first.txt.';
+    const second = 'Start a session named second in alpha and write second.txt.';
+    const resume = 'Continue the same session that created first.txt and update it.';
+    const museChatHtml = `<!doctype html>
+      <div role="log"></div>
+      <form><textarea aria-label="Message"></textarea><button type="submit">Send</button></form>
+      <script>
+        const log = document.querySelector('[role="log"]');
+        const composer = document.querySelector('textarea');
+        function append(role, text) {
+          const row = document.createElement('div');
+          row.dataset.messageAuthorRole = role;
+          row.style.whiteSpace = 'pre-wrap';
+          row.textContent = text;
+          log.append(row);
+        }
+        document.querySelector('form').addEventListener('submit', (event) => {
+          event.preventDefault();
+          const text = composer.value;
+          composer.value = '';
+          append('user', text);
+          if (text === ${JSON.stringify(first)}) append('assistant', '@opencode /new $alpha first Write first.txt with exactly initial');
+          if (text === ${JSON.stringify(second)}) append('assistant', '@opencode /new $alpha second Write second.txt with exactly separate');
+          if (text === ${JSON.stringify(resume)}) append('assistant', '@opencode /resume $alpha first Write first.txt with exactly updated');
+        });
+      </script>`;
+    const testApp = await launch({ projectsDir, museChatHtml });
+    try {
+      let muse: Page | undefined;
+      const deadline = Date.now() + 15_000;
+      while (!muse && Date.now() < deadline) {
+        muse = testApp.context.pages().find((page) => page.url() === 'https://muse.ai/');
+        if (!muse) await delay(100);
+      }
+      assert.ok(muse, 'The Muse vendor view must start.');
+      const threadUrl = 'https://muse.ai/chat/e2e-sessions';
+      await muse.goto(threadUrl);
+      const baseline = await fetch(testApp.backendUrl + '/api/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [{
+          provider: 'muse', role: 'user', text: 'Session test baseline.',
+          url: threadUrl, sourceId: 'session-baseline', ts: Date.now(),
+        }] }),
+      });
+      assert.equal(baseline.status, 200);
+      const log = muse.getByRole('log');
+      const composer = muse.getByRole('textbox', { name: 'Message' });
+      const send = muse.getByRole('button', { name: 'Send' });
+      for (const [request, name] of [[first, 'first'], [second, 'second'], [resume, 'first']]) {
+        const replies = log.getByText("Sent from user's harness (OpenCode).", { exact: false });
+        const count = await replies.count();
+        const notices = log.getByText(`Active session for $alpha: ${name}.`, { exact: false });
+        const noticeCount = await notices.count();
+        await composer.fill(request);
+        await send.click();
+        await notices.nth(noticeCount).waitFor({ timeout: 45_000 });
+        await replies.nth(count).waitFor({ timeout: 45_000 });
+        if (request === first) assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'initial');
+      }
+      const ids = readFileSync(path.join(alpha, 'session-runs.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      assert.equal(ids.length, 3);
+      assert.ok(ids.every((id) => typeof id === 'string' && id.startsWith('ses_')));
+      assert.notEqual(ids[0], ids[1]);
+      assert.equal(ids[0], ids[2]);
+      assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'updated');
+      assert.equal(readFileSync(path.join(alpha, 'second.txt'), 'utf8'), 'separate');
+      assertImage(await screenshot(muse, 'named-sessions.png'));
+    } catch (error) {
+      const outbox = await (await fetch(testApp.backendUrl + '/api/outbox')).text();
+      throw new Error(`${String(error)}\nMock Muse outbox: ${outbox}`, { cause: error });
+    } finally {
+      await testApp.close();
+    }
+  },
+);
+
+test(
   'Connections applies the saved folder and harness setting to Muse requests',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {
@@ -953,7 +1041,7 @@ test(
     mkdirSync(path.dirname(newFile), { recursive: true });
     const threadId = 'https://muse.ai/chat/e2e-connections';
     const prompt = 'Create hello.txt in alpha with exactly Hello from blibs.';
-    const task = '$alpha Create hello.txt with exactly Hello from blibs.';
+    const task = '/new $alpha greeting Create hello.txt with exactly Hello from blibs.';
     const status = async () => await (await fetch(backendUrl + '/api/relay')).json() as {
       lastRun: unknown;
       watermark: number;

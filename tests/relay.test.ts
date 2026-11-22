@@ -8,7 +8,7 @@ import { afterEach, test } from 'node:test';
 import { createProxyServer } from '../server/proxy.ts';
 import { HistoryStore } from '../server/history.ts';
 import { buildProjectChoices, formatProjectList } from '../server/harness/project-reply.ts';
-import { listProjects, matchProject, taskAfterProject } from '../server/harness/projects.ts';
+import { listProjects, matchProject, sessionKey, taskAfterProject } from '../server/harness/projects.ts';
 import { introMessage } from '../server/harness/intro.ts';
 import { buildRelayConfig, newSessionId } from '../server/relay.ts';
 import { DEFAULT_RELAY_MODEL } from '../server/relay-defaults.ts';
@@ -26,6 +26,7 @@ interface RelayServer {
   harnessDir: string;
   projectsDir: string;
   alpha: string;
+  restart: () => Promise<void>;
 }
 
 const FAKE_HARNESS = `import fs from 'node:fs';
@@ -33,6 +34,11 @@ import path from 'node:path';
 const args = process.argv.slice(2);
 const prompt = args.at(-1) || '';
 fs.appendFileSync(path.join('__LOG_DIR__', 'runs.jsonl'), JSON.stringify({ args, prompt, cwd: process.cwd() }) + '\\n');
+const session = args[args.indexOf('--session') + 1];
+const historyFile = path.join('__LOG_DIR__', session + '.txt');
+fs.appendFileSync(historyFile, prompt + '\\n');
+const write = /^write (first|second)\\.txt (.+)$/.exec(prompt);
+if (write) fs.writeFileSync(write[1] + '.txt', write[2]);
 if (prompt.includes('FAIL_HARNESS')) process.exit(3);
 if (prompt.includes('WAIT_HARNESS')) {
   process.stderr.write('private diagnostic text');
@@ -55,25 +61,38 @@ async function startRelay(): Promise<RelayServer> {
   const seed = new HistoryStore(dataDir);
   seed.import([{ provider: 'muse', role: 'user', text: 'Earlier message.', ts: 1, url: 'https://muse.ai/chat/relay-test', sourceId: 'seed-user', identity: 'source-id' }]);
   seed.close();
-  const server = createProxyServer(dataDir, {}, { relay: {
+  const createServer = () => createProxyServer(dataDir, {}, { relay: {
     enabled: true,
     provider: 'muse',
     command: JSON.stringify([process.execPath, fake]),
     cwd: harnessDir,
     discoveryRoot: projectsDir,
   } });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const address = server.address();
-  assert.ok(address && typeof address !== 'string');
-  const base = `http://127.0.0.1:${address.port}`;
-  cleanups.push(async () => {
+  let server = createServer();
+  const result = { base: '', dataDir, harnessDir, projectsDir, alpha, restart };
+  async function listen(): Promise<void> {
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    result.base = `http://127.0.0.1:${address.port}`;
+  }
+  async function close(): Promise<void> {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  async function restart(): Promise<void> {
+    await close();
+    server = createServer();
+    await listen();
+  }
+  await listen();
+  cleanups.push(async () => {
+    await close();
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(harnessDir, { recursive: true, force: true });
     rmSync(projectsDir, { recursive: true, force: true });
   });
-  return { base, dataDir, harnessDir, projectsDir, alpha };
+  return result;
 }
 
 let importTimestamp = Date.now() + 1000;
@@ -133,34 +152,32 @@ test('project matcher lists only immediate folders and resolves names, tokens, a
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('a task without a project asks Muse to choose, then runs in the selected project', async () => {
+test('a project choice lists sessions and an explicit command starts work', async () => {
   const server = await startRelay();
   await importMuse(server, '@opencode build a small app', 'list-projects');
-  await sleep(150);
   const list = await outbox(server);
   assert.equal(list.length, 1);
   assert.match(list[0].text, /\$alpha/);
   assert.match(list[0].text, /\$beta/);
-  assert.match(list[0].text, /To send a new task, use @opencode \$<project> <task>/);
   assert.equal(runs(server).length, 0);
 
   const selection = selectAlpha(list[0].text);
   await importMuse(server, '@opencode build a small app', 'rescanned-list-projects');
   assert.equal((await outbox(server)).length, 1);
-  await importMuse(server, selection, 'run-alpha');
-  await waitForRunCount(server, 1);
-  const first = runs(server)[0];
-  assert.equal(first.cwd, server.alpha);
-  assert.equal(first.prompt, 'build a small app');
-  assert.ok(first.args.includes(DEFAULT_RELAY_MODEL));
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline && (await outbox(server)).length < 2) await sleep(25);
-  assert.match((await outbox(server))[1].text, /harness reply: build a small app/);
-  await importMuse(server, selection, 'run-alpha');
+  await importMuse(server, selection, 'select-alpha');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /No sessions for \$alpha/);
+  assert.equal(runs(server).length, 0);
+  await importMuse(server, selection, 'select-alpha');
   assert.equal((await outbox(server)).length, 2);
-  await importMuse(server, selection, 'rescanned-run-alpha');
+  await importMuse(server, selection, 'rescanned-select-alpha');
   assert.match((await outbox(server)).at(-1)?.text ?? '', /no longer active/);
-  assert.equal(runs(server).length, 1);
+  assert.equal(runs(server).length, 0);
+
+  await importMuse(server, '@opencode /new $alpha app build a small app', 'run-alpha');
+  await waitForRunCount(server, 1);
+  assert.equal(runs(server)[0].cwd, server.alpha);
+  assert.equal(runs(server)[0].prompt, 'build a small app');
+  assert.ok(runs(server)[0].args.includes(DEFAULT_RELAY_MODEL));
 });
 
 test('each displayed project token selects its own folder and preserves the task', async () => {
@@ -175,7 +192,7 @@ test('each displayed project token selects its own folder and preserves the task
   const prompt = 'explain the /api/status route for @blibs';
   for (const [index, choice] of matching.entries()) {
     assert.ok((await outbox(server))[0].text.includes(`- $${choice.token}\n`));
-    await importMuse(server, `@opencode $${choice.token} ${prompt}`, `project-token-${index}`);
+    await importMuse(server, `@opencode /new $${choice.token} inspect ${prompt}`, `project-token-${index}`);
     await waitForRunCount(server, index + 1);
     const run = runs(server)[index];
     assert.equal(run.cwd, choice.path);
@@ -183,11 +200,18 @@ test('each displayed project token selects its own folder and preserves the task
   }
 });
 
-test('the relay reuses one session per project and thread', async () => {
+test('a plain project task never starts or reuses a session', async () => {
   const server = await startRelay();
-  await importMuse(server, '@opencode $alpha first task', 'first-task');
+  await importMuse(server, '@opencode $alpha first task', 'implicit-new');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /No sessions for \$alpha/);
+  assert.equal(runs(server).length, 0);
+  await importMuse(server, '@opencode /new $alpha first first task', 'first-task');
   await waitForRunCount(server, 1);
-  await importMuse(server, '@opencode $alpha second task', 'second-task');
+  await importMuse(server, '@opencode $alpha second task', 'implicit-resume');
+  const replies = await outbox(server);
+  assert.ok(replies.some(({ text }) => text.includes('\n\nSessions for $alpha:\n- first')));
+  assert.equal(runs(server).length, 1);
+  await importMuse(server, '@opencode /resume $alpha first second task', 'second-task');
   await waitForRunCount(server, 2);
   const current = runs(server);
   const sessionArg = (args: string[]): string | undefined => args[args.indexOf('--session') + 1];
@@ -196,9 +220,67 @@ test('the relay reuses one session per project and thread', async () => {
   assert.ok(newSessionId().startsWith('ses_'));
 });
 
+test('named sessions keep separate histories and resume by name after restart', async () => {
+  const server = await startRelay();
+  const legacyId = newSessionId();
+  writeFileSync(path.join(server.dataDir, 'relay-state.json'), JSON.stringify({
+    version: 2,
+    sessions: { [sessionKey('https://muse.ai/chat/relay-test', server.alpha)]: legacyId },
+  }));
+  await server.restart();
+
+  await importMuse(server, '@blibs', 'session-intro', 'user');
+  const intro = (await outbox(server)).at(-1)?.text ?? '';
+  assert.ok(intro.includes('@opencode /new $<project> <name> <task>'));
+  assert.ok(intro.includes('@opencode /sessions $<project>'));
+  assert.ok(intro.includes('@opencode /resume $<project> <name> <task>'));
+  assert.doesNotMatch(intro, /ask the user/i);
+
+  await importMuse(server, '@opencode /new $alpha first write first.txt initial', 'named-first');
+  await importMuse(server, '@opencode /new $alpha second write second.txt separate', 'named-second');
+  await waitForRunCount(server, 2);
+  const [firstId, secondId] = runs(server).map(({ args }) => args[args.indexOf('--session') + 1]);
+  assert.notEqual(firstId, secondId);
+  assert.notEqual(firstId, legacyId);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && (await (await fetch(server.base + '/api/relay')).json()).running) await sleep(25);
+  assert.equal((await (await fetch(server.base + '/api/relay')).json()).running, false);
+  await server.restart();
+
+  await importMuse(server, '@opencode /sessions $alpha', 'show-sessions');
+  const list = (await outbox(server)).at(-1)?.text ?? '';
+  assert.deepEqual(list.split('\n').filter((line) => line.startsWith('- ')), ['- Default', '- first', '- second']);
+  for (const id of [legacyId, firstId, secondId]) assert.ok(!list.includes(id));
+  await importMuse(server, '@opencode $alpha update the file', 'ambiguous-session');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /Sessions for \$alpha/);
+  await importMuse(server, '@opencode /resume $alpha unknown-name do not run', 'unknown-session');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /session is unavailable/);
+  await importMuse(server, '@opencode /resume $alpha ses_unknown do not run', 'unknown-session-id');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /session is unavailable/);
+  await importMuse(server, '@opencode /resume $beta first do not run', 'wrong-project-session');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /session is unavailable/);
+  await importMuse(server, '@opencode /new $alpha FIRST do not run', 'duplicate-session-name');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /different session name/);
+  assert.equal(runs(server).length, 2);
+
+  await importMuse(server, '@opencode /resume $alpha FIRST write first.txt updated', 'resume-first');
+  const notices = (await outbox(server)).filter(({ text }) => text.endsWith('Active session for $alpha: first.'));
+  assert.equal(notices.length, 2);
+  await importMuse(server, `@opencode /resume $alpha ${secondId} check second.txt`, 'resume-second');
+  await importMuse(server, '@opencode /resume $alpha Default check legacy task', 'resume-legacy');
+  await waitForRunCount(server, 5);
+  assert.deepEqual(runs(server).slice(2).map(({ args }) => args[args.indexOf('--session') + 1]), [firstId, secondId, legacyId]);
+  assert.equal(readFileSync(path.join(server.alpha, 'first.txt'), 'utf8'), 'updated');
+  assert.equal(readFileSync(path.join(server.alpha, 'second.txt'), 'utf8'), 'separate');
+  assert.deepEqual(readFileSync(path.join(server.harnessDir, firstId + '.txt'), 'utf8').trim().split('\n'),
+    ['write first.txt initial', 'write first.txt updated']);
+  assert.deepEqual(readFileSync(path.join(server.harnessDir, secondId + '.txt'), 'utf8').trim().split('\n'),
+    ['write second.txt separate', 'check second.txt']);
+});
+
 test('a user-authored harness tag does not start a run', async () => {
   const server = await startRelay();
-  await importMuse(server, '@opencode $alpha do not run', 'user-tag', 'user');
+  await importMuse(server, '@opencode /new $alpha unused do not run', 'user-tag', 'user');
   await sleep(150);
   assert.equal(runs(server).length, 0);
   assert.equal((await outbox(server)).length, 0);
@@ -206,7 +288,7 @@ test('a user-authored harness tag does not start a run', async () => {
 
 test('a harness failure sends a visible reason to the chat', async () => {
   const server = await startRelay();
-  await importMuse(server, '@opencode $alpha FAIL_HARNESS', 'failed-run');
+  await importMuse(server, '@opencode /new $alpha failure FAIL_HARNESS', 'failed-run');
   await waitForRunCount(server, 1);
   const deadline = Date.now() + 5000;
   let items: Array<{ text: string }> = [];
@@ -221,27 +303,28 @@ test('a harness failure sends a visible reason to the chat', async () => {
 test('different projects run together and same-project tasks wait and reuse the session', async (t) => {
   const logs = t.mock.method(console, 'info', () => {});
   const server = await startRelay();
-  await importMuse(server, '@opencode $alpha WAIT_HARNESS', 'waiting-run');
+  await importMuse(server, '@opencode /new $alpha waiting WAIT_HARNESS', 'waiting-run');
   await waitForRunCount(server, 1);
-  await importMuse(server, '@opencode $alpha next task', 'queued-run');
+  await importMuse(server, '@opencode /resume $alpha waiting next task', 'queued-run');
   assert.equal(runs(server).length, 1);
   const waiting = await (await fetch(server.base + '/api/relay')).json();
   assert.equal(waiting.pending, 2);
   assert.equal(waiting.running, true);
-  await importMuse(server, '@opencode $beta independent task', 'parallel-run');
+  await importMuse(server, '@opencode /new $beta independent independent task', 'parallel-run');
   await waitForRunCount(server, 2);
   assert.match(runs(server)[1].prompt, /independent task/);
   const deadline = Date.now() + 5000;
-  while (!(await outbox(server)).length && Date.now() < deadline) await sleep(25);
-  assert.equal((await outbox(server)).length, 1);
-  assert.match((await outbox(server))[0].text, /independent task/);
+  while ((await outbox(server)).length < 3 && Date.now() < deadline) await sleep(25);
+  assert.equal((await outbox(server)).length, 3);
+  assert.match((await outbox(server))[2].text, /independent task/);
 
   writeFileSync(path.join(server.harnessDir, 'release'), '');
-  while ((await outbox(server)).length < 3 && Date.now() < deadline) await sleep(25);
+  while ((await outbox(server)).length < 6 && Date.now() < deadline) await sleep(25);
   const items = await outbox(server);
-  assert.equal(items.length, 3);
-  assert.match(items[1].text, /WAIT_HARNESS/);
-  assert.match(items[2].text, /next task/);
+  assert.equal(items.length, 6);
+  assert.match(items[3].text, /WAIT_HARNESS/);
+  assert.match(items[4].text, /Active session for \$alpha: waiting/);
+  assert.match(items[5].text, /next task/);
   const sessionArg = (run: ReturnType<typeof runs>[number]) => run.args[run.args.indexOf('--session') + 1];
   const [first, independent, followUp] = runs(server);
   assert.equal(sessionArg(first), sessionArg(followUp));
@@ -264,10 +347,10 @@ test('five projects can run at the same time', async () => {
   const server = await startRelay();
   for (const project of ['gamma', 'delta', 'epsilon']) mkdirSync(path.join(server.projectsDir, project));
   for (const project of ['alpha', 'beta', 'gamma', 'delta', 'epsilon']) {
-    await importMuse(server, `@opencode $${project} WAIT_HARNESS`, `cap-${project}`);
+    await importMuse(server, `@opencode /new $${project} waiting WAIT_HARNESS`, `cap-${project}`);
   }
   await waitForRunCount(server, 5);
-  assert.equal((await outbox(server)).length, 0);
+  assert.equal((await outbox(server)).length, 5);
   const waiting = await (await fetch(server.base + '/api/relay')).json();
   assert.equal(waiting.pending, 5);
   assert.equal(waiting.running, true);
@@ -292,6 +375,8 @@ test('an ambiguous task supersedes an older choice and keeps its original wordin
   assert.match((await outbox(server))[2].text, /no longer active/);
   assert.equal(runs(server).length, 0);
   await importMuse(server, selectAlpha(reply), 'current-choice');
+  assert.equal(runs(server).length, 0);
+  await importMuse(server, `@opencode /new $alpha compare ${task}`, 'current-choice-task');
   await waitForRunCount(server, 1);
   assert.equal(runs(server)[0].prompt, task);
 });
@@ -310,6 +395,8 @@ test('unknown and removed projects get choices without running the harness', asy
   assert.doesNotMatch(retry, /- \$alpha/);
   assert.equal(runs(server).length, 0);
   await importMuse(server, selection.replace('$alpha', '$beta'), 'valid-project');
+  assert.equal(runs(server).length, 0);
+  await importMuse(server, '@opencode /new $beta build build it', 'valid-project-task');
   await waitForRunCount(server, 1);
   assert.equal(runs(server)[0].cwd, path.join(server.projectsDir, 'beta'));
   assert.equal(runs(server)[0].prompt, 'build it');
@@ -336,6 +423,8 @@ test('Muse creates a project from an empty list and resumes the saved task once'
   assert.ok(selection);
   assert.equal(runs(server).length, 0);
   await importMuse(server, selection, 'select-created-alpha');
+  assert.equal(runs(server).length, 0);
+  await importMuse(server, '@opencode /new $alpha build build it', 'select-created-alpha-task');
   await waitForRunCount(server, 1);
   assert.equal(runs(server)[0].cwd, server.alpha);
   assert.equal(runs(server)[0].prompt, 'build it');
@@ -399,12 +488,12 @@ test('project replies and the introduction use the same task format', () => {
   const projectList = formatProjectList(choices, options);
   assert.match(projectList, /Pick a project for your task:/);
   assert.match(projectList, /- \$alpha/);
-  assert.ok(projectList.includes('@opencode $<project> <task>'));
+  assert.ok(projectList.includes('@opencode /new $<project> <name> <task>'));
   assert.ok(projectList.includes('@opencode /select abc123 $<project>'));
   const intro = introMessage([{ id: 'opencode', name: 'OpenCode', enabled: true }]);
   assert.match(intro, /blibs is a desktop control panel/);
   assert.match(intro, /sends that task to OpenCode/);
-  assert.ok(intro.includes('@opencode $<project> <task>'));
+  assert.ok(intro.includes('@opencode /new $<project> <name> <task>'));
   assert.ok(intro.includes('@opencode /select <request-id> $<project>'));
 });
 
@@ -443,7 +532,7 @@ test('relay settings reject invalid folders and keep the previous settings when 
     harnesses: [{ id: 'codex', name: 'Codex', enabled: true }],
   })).status, 200);
   assert.deepEqual((await readStatus()).harnesses, [opencode]);
-  await importMuse(server, '@opencode $alpha hello', 'settings-disabled');
+  await importMuse(server, '@opencode /new $alpha greeting hello', 'settings-disabled');
   assert.ok((await outbox(server)).some((item) => item.text.includes('OpenCode harness is disabled')));
   assert.equal(runs(server).length, 0);
 });

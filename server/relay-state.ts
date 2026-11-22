@@ -10,7 +10,7 @@ export const RELAY_PROCESSED_LIMIT = 500;
 export const RELAY_THREAD_LIMIT = 500;
 export const RELAY_HARNESS_LIMIT = 20;
 export const HARNESS_TEXT_LIMIT = 60;
-/** Coding sessions kept in state. One thread can own one per project. */
+/** Limit for each stored session collection. */
 export const RELAY_SESSION_LIMIT = 500;
 /** Stored model ids in provider/model form. */
 export const RELAY_MODEL_LIMIT = 200;
@@ -29,6 +29,14 @@ export interface RelayRunState {
   error?: string;
 }
 
+export interface NamedSession {
+  scope: string;
+  id: string;
+  name: string;
+}
+
+export const SESSION_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/i;
+
 export interface RelayState {
   version: 2;
   watermark: number;
@@ -36,6 +44,7 @@ export interface RelayState {
   threads: string[];
   /** Coding sessions keyed by thread id and project path. */
   sessions: Record<string, string>;
+  namedSessions: NamedSession[];
   /** Directory whose immediate subfolders are the projects. */
   discoveryRoot: string;
   /** Persisted harness model default. Empty means the harness default. */
@@ -70,6 +79,19 @@ export function parseSessions(value: unknown): Record<string, string> {
   if (!value || typeof value !== 'object') return sessions;
   for (const [key, id] of Object.entries(value as Record<string, unknown>)) {
     if (typeof id === 'string' && id) sessions[key.slice(0, SESSION_KEY_LIMIT)] = id.slice(0, SESSION_ID_LIMIT);
+  }
+  return sessions;
+}
+
+export function parseNamedSessions(value: unknown): NamedSession[] {
+  if (!Array.isArray(value)) return [];
+  const sessions: NamedSession[] = [];
+  for (const entry of value.slice(0, RELAY_SESSION_LIMIT)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { scope, id, name } = entry as Partial<NamedSession>;
+    if (typeof scope !== 'string' || typeof id !== 'string' || !/^ses_[a-z0-9]+$/i.test(id)
+      || id.length > SESSION_ID_LIMIT || typeof name !== 'string' || !SESSION_NAME.test(name)) continue;
+    sessions.push({ scope, id, name });
   }
   return sessions;
 }

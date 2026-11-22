@@ -149,24 +149,30 @@ for (const createProject of [false, true]) test(
         assert.equal(website.url(), target.href);
       }
       await composer.waitFor();
-      if (createProject) {
-        const introduction = website.getByRole('log').getByText('@opencode /new-project', { exact: false });
+      {
+        const introduction = website.getByRole('log').getByText('@opencode /new $<project>', { exact: false });
         const introductions = await introduction.count();
         await sendFromPane(website, composer, '@blibs');
         await introduction.nth(introductions).waitFor({ timeout: 45_000 });
+      }
+      if (createProject) {
+        const existingIds = new Set((await outboxItems(app)).map(({ id }) => id));
+        await sendFromPane(website, composer, 'Ask blibs to create a new project named alpha.');
+        await waitForOutbox(app, (item) => !existingIds.has(item.id)
+          && item.threadId === website.url() && item.text.includes('Project created. Project ID: $alpha.')
+          && item.status === 'sent', 90_000);
       }
       const log = website.locator('[role="log"]');
       const replies = log.getByText(LIVE_HEADER, { exact: false });
       const replyCount = await replies.count();
       const existingIds = new Set((await outboxItems(app)).map((item) => item.id));
       const content = 'blibs-test-' + randomUUID();
+      const sessionName = 'write-' + randomUUID().slice(0, 8);
       await sendFromPane(
         website,
         composer,
-        (createProject
-          ? 'Ask blibs to create a new project named alpha, then use my local OpenCode harness to create hello.txt in it. '
-          : 'Use my local OpenCode harness to create hello.txt in the project named alpha. ') +
-        'Write exactly ' + content + ' with no trailing newline. Leave all other files and projects untouched.',
+        `Use my local OpenCode harness in alpha. Start a clean session named ${sessionName} and create hello.txt. ` +
+        `Write exactly ${content} to hello.txt with no trailing newline. Leave all other files and projects untouched.`,
       );
 
       const threadId = website.url();
@@ -178,15 +184,14 @@ for (const createProject of [false, true]) test(
         };
         return imports.find((item) => item.provider === 'muse' && item.role === 'agent'
           && item.threadId === threadId && !isUserEcho(item.text)
-          && extractMentionTask(item.text)?.includes(content));
+          && extractMentionTask(item.text)?.toLowerCase().startsWith(`/new $alpha ${sessionName} `)
+          && item.text.includes('hello.txt') && item.text.includes(content));
       }, 180_000);
-      if (createProject) {
-        await waitForOutbox(app, (item) => !existingIds.has(item.id)
-          && item.threadId === threadId && item.text.includes('Project created. Project ID: $alpha.')
-          && item.status === 'sent', 180_000);
-      }
+      const notice = await waitForOutbox(app, (item) => !existingIds.has(item.id)
+        && item.threadId === threadId && item.text.endsWith(`Active session for $alpha: ${sessionName}.`)
+        && item.status === 'sent', 180_000);
       const reply = await waitForOutbox(app, (item) => !existingIds.has(item.id)
-        && item.threadId === threadId && item.text.startsWith(LIVE_HEADER) && item.status === 'sent', 300_000);
+        && item.ts >= notice.ts && item.threadId === threadId && item.text.startsWith(LIVE_HEADER) && item.status === 'sent', 300_000);
       await waitFor('the harness reply to appear in the Muse conversation', async () => {
         return (await replies.count()) > replyCount && await log.getByText(reply.text, { exact: false }).last()
           .isVisible().catch(() => false) ? true : undefined;
@@ -199,3 +204,67 @@ for (const createProject of [false, true]) test(
     }
   },
 );
+
+test('live Muse starts and resumes named sessions from the composer', { skip: relaySkipReason() }, async (t) => {
+  const projectsDir = mkdtempSync(path.join(os.tmpdir(), 'blibs-live-sessions-'));
+  t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
+  const alpha = path.join(projectsDir, 'alpha');
+  mkdirSync(alpha);
+  const app = await launch({ mockLogin: false, profileDir: LIVE_PROFILE, relayCommand: null, projectsDir });
+  try {
+    await completeOnboarding(app.page);
+    const model = liveRelayModel();
+    if (model) {
+      const configured = await fetch(app.backendUrl + '/api/relay/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      });
+      assert.equal(configured.status, 200);
+    }
+    const website = await waitFor('the signed-in Muse view', async () =>
+      app.context.pages().find((page) => new URL(page.url()).origin === 'https://muse.ai'), 30_000);
+    const composer = website.locator('textarea[aria-label="Message"], div[contenteditable="true"]').first();
+    const log = website.getByRole('log');
+    const introduction = log.getByText('@opencode /new $<project>', { exact: false });
+    const introductions = await introduction.count();
+    await sendFromPane(website, composer, '@blibs');
+    await introduction.nth(introductions).waitFor({ timeout: 45_000 });
+
+    const write = async (request: string, command: string, name: string, file: string): Promise<void> => {
+      const content = 'blibs-test-' + randomUUID();
+      const existingIds = new Set((await outboxItems(app)).map(({ id }) => id));
+      await sendFromPane(website, composer, request +
+        ` Write exactly ${content} to ${file} with no trailing newline. Leave all other files and projects untouched.`);
+      const fresh = (item: { id: string; threadId?: string; status: string }): boolean =>
+        !existingIds.has(item.id) && item.threadId === website.url() && item.status === 'sent';
+      await waitForOutbox(app, (item) =>
+        fresh(item) && item.text.endsWith(`Active session for $alpha: ${name}.`), 180_000);
+      await waitForOutbox(app, (item) => fresh(item) && item.text.startsWith(LIVE_HEADER), 300_000);
+      await waitFor('Muse to use the session name in its command', async () => {
+        const response = await fetch(app.backendUrl + '/api/imports');
+        assert.equal(response.status, 200);
+        const { imports } = await response.json() as {
+          imports: Array<{ provider: string; role: string; threadId: string; text: string }>;
+        };
+        return imports.find((item) => {
+          if (item.provider !== 'muse' || item.role !== 'agent' || item.threadId !== website.url() || isUserEcho(item.text)) return false;
+          const task = extractMentionTask(item.text);
+          return task?.toLowerCase().startsWith(`${command} $alpha ${name} `) && task.includes(content);
+        });
+      }, 30_000);
+      assert.deepEqual(readFileSync(path.join(alpha, file)), Buffer.from(content));
+    };
+
+    const suffix = randomUUID().slice(0, 8);
+    const first = 'draft-' + suffix;
+    const second = 'review-' + suffix;
+    await write(`Use my local OpenCode harness to start a clean session named ${first} in alpha.`, '/new', first, 'first.txt');
+    await write(`Use my local OpenCode harness to start a clean session named ${second} in alpha.`, '/new', second, 'second.txt');
+    const secondFile = readFileSync(path.join(alpha, 'second.txt'));
+    await write('Continue the same session that created first.txt in alpha.', '/resume', first, 'first.txt');
+    assert.deepEqual(readFileSync(path.join(alpha, 'second.txt')), secondFile);
+  } finally {
+    await app.close();
+  }
+});
