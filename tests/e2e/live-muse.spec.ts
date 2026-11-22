@@ -155,6 +155,13 @@ for (const createProject of [false, true]) test(
         await sendFromPane(website, composer, '@blibs');
         await introduction.nth(introductions).waitFor({ timeout: 45_000 });
       }
+      if (createProject) {
+        const existingIds = new Set((await outboxItems(app)).map(({ id }) => id));
+        await sendFromPane(website, composer, 'Ask blibs to create a new project named alpha.');
+        await waitForOutbox(app, (item) => !existingIds.has(item.id)
+          && item.threadId === website.url() && item.text.includes('Project created. Project ID: $alpha.')
+          && item.status === 'sent', 90_000);
+      }
       const log = website.locator('[role="log"]');
       const replies = log.getByText(LIVE_HEADER, { exact: false });
       const replyCount = await replies.count();
@@ -164,7 +171,6 @@ for (const createProject of [false, true]) test(
       await sendFromPane(
         website,
         composer,
-        (createProject ? 'Ask blibs to create a new project named alpha. ' : '') +
         `Use my local OpenCode harness in alpha. Start a clean session named ${sessionName} and create hello.txt. ` +
         `Write exactly ${content} to hello.txt with no trailing newline. Leave all other files and projects untouched.`,
       );
@@ -181,11 +187,6 @@ for (const createProject of [false, true]) test(
           && extractMentionTask(item.text)?.toLowerCase().startsWith(`/new $alpha ${sessionName} `)
           && item.text.includes('hello.txt') && item.text.includes(content));
       }, 180_000);
-      if (createProject) {
-        await waitForOutbox(app, (item) => !existingIds.has(item.id)
-          && item.threadId === threadId && item.text.includes('Project created. Project ID: $alpha.')
-          && item.status === 'sent', 180_000);
-      }
       const notice = await waitForOutbox(app, (item) => !existingIds.has(item.id)
         && item.threadId === threadId && item.text.endsWith(`Active session for $alpha: ${sessionName}.`)
         && item.status === 'sent', 180_000);
