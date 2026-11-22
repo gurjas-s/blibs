@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "tsc -b --force && node scripts/emit-cjs-markers.mjs && vite build",
+    "check": "npm run build && npm run lint && npm run test:built",
     "clean": "node scripts/clean.mjs",
     "e2e": "npm run build && npm run e2e:built",
     "e2e:built": "node --import tsx --test tests/e2e/smoke.spec.ts",

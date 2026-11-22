@@ -17,6 +17,8 @@ blibs keeps your vendor sessions active so it can sync chats and send replies.
 Use the [onboarding skill](.agents/skills/onboarding/SKILL.md) to set up a
 checkout and start blibs with a temporary profile and mock sign-in.
 
+See the [verification loop diagram](docs/verification-loop.md).
+
 ## First run for personal use
 
 Prerequisites: Node.js 24.x (`node -v` must print `v24.…`). Electron 34's
@@ -106,6 +108,7 @@ app acknowledged a send. The logs omit chat text, prompts, and harness output.
 | Command | What |
 |---|---|
 | `npm run build` | Build the app |
+| `npm run check` | Build, lint, and run the tests against the build |
 | `npm start` | Launch the app (needs a prior `build`) |
 | `npm test` | Rebuilds, runs unit and HTTP route tests, then runs the desktop harness with temporary stores and ports |
 | `npm run e2e` | Build the app and run end-to-end checks; needs a display |
@@ -121,8 +124,8 @@ app acknowledged a send. The logs omit chat text, prompts, and harness output.
 | `npm run clean` | Wipe `build/` + `dist/` |
 | `npm run verify:clean-build` | Delete generated output, rebuild with the existing incremental cache, and check that all required output was regenerated |
 
-CI runs the build, lint, and test checks on Linux and Windows for every push
-and pull request.
+CI runs `npm run check` and `npm run verify:clean-build` on Linux and Windows
+for every push and pull request.
 
 ## App icon and packaging
 
@@ -163,11 +166,11 @@ check skips with a message; use `xvfb-run -a npm run e2e` on a headless machine.
 
 ### Authenticated provider checks
 
-If the provider is already signed in, follow the
+For each user-facing change, follow the
 [authenticated provider workflow](.agents/skills/verification/SKILL.md#authenticated-provider-checks)
-to test the changed path in the built app. The automated scripts below
-exercise specific flows and can send commands to a real account. Check their
-side effects before running them.
+to test the changed path in the built app with the existing signed-in
+profile. The automated scripts below can send commands to a real account.
+Check their side effects before running them.
 
 ### Live Muse relay check
 
