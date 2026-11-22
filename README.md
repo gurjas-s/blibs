@@ -116,6 +116,7 @@ app acknowledged a send. The logs omit chat text, prompts, and harness output.
 | `npm run test:desktop` | Test search and citations; needs a display, but no model downloads |
 | `npm run smoke` | Check that the app starts; needs a display |
 | `npm run lint` | Check the code for lint errors |
+| `npm run test:specs` | Check the TLA+ model with TLC. See [setup](tests/specs/README.md) |
 | `npm run icons` | Regenerate the app PNG sizes, the macOS `.icns`, and the panel favicon from `assets/icon.svg`; needs macOS |
 | `npm run clean` | Wipe `build/` + `dist/` |
 | `npm run verify:clean-build` | Delete generated output, rebuild with the existing incremental cache, and check that all required output was regenerated |
@@ -194,29 +195,3 @@ for setup and expected results.
 | Send stuck on `Sending…` | Session not signed in or page still loading — use Agents, then Retry |
 | Harness run shows `harness exited with code 1` | Check the OpenCode model and account limits. Set another model with `POST /api/relay/projects` and `{"model":"provider/model"}`. |
 | Login lost after restart | Partitions persist per OS user; check you didn't clear app data |
-
-## Limits (honest POC notes)
-
-**Connections:** The relay stores the OpenCode switch and the shared folder.
-When the switch is off, the relay starts no OpenCode work. The `@blibs`
-introduction uses the same setting. Open **Connections** to see the folder that
-the relay uses. A folder save error appears beside the folder editor.
-
-**Conversation search:** Use the search bar in the topbar. It searches all
-retained conversations after a short pause, and Enter runs the search at once.
-Add a tag such as `#muse` to limit the search to one provider. Cmd+F on macOS or
-Ctrl+F elsewhere focuses the bar. The sidebar gear opens Settings for the index
-controls, **Ask locally**, the thread and date filters, and the theme. Keyword
-search works without model setup. Optional free local BGE embeddings add semantic
-retrieval, and a small local Qwen model can select cited evidence sentences.
-Local answering is experimental: accurate quotes can still be irrelevant or
-incomplete. Review the sources. Read [setup, migration, and test
-instructions](docs/conversation-search.md) before enabling models. Runtime data
-now lives in Electron's user-data history directory, with a preserved legacy
-JSON backup; retained history is not capped at the panel's 500 messages.
-
-- Only sees what's rendered in the **logged-in in-app sessions**. Mobile apps
-  and WhatsApp/Slack DMs are out of reach.
-- Sending is best-effort DOM automation (fill composer → click send); vendors
-  redesign pages, selectors need maintenance — failures always surface with a reason.
-- Personal use on your own accounts; check vendor ToS before productizing.

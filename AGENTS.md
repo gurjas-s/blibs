@@ -46,9 +46,14 @@ and queues replies. Read [README.md](README.md) before making changes.
 | --- | --- |
 | Set up a checkout or fix startup | [onboarding](.agents/skills/onboarding/SKILL.md) |
 | Change renderer UI | [design](.agents/skills/design/SKILL.md) |
+| Write or update a TLA+ spec | User-level `statechart` |
 | Check a change before review or after updating a PR | [validate](.agents/skills/validate/SKILL.md) |
 | Verify changed user-facing behavior | [verification](.agents/skills/verification/SKILL.md) |
 | Update a feature's verification steps or test references | [write-verification-guide](.agents/skills/write-verification-guide/SKILL.md) |
+
+When you write or change a TLA+ spec, use the user-level statechart skill to generate
+or update its Mermaid diagram in `tests/specs/`. See the
+[spec guide](tests/specs/README.md) for the chart workflow.
 
 Use the existing signed-in blibs profile for provider checks and screenshots
 without asking for confirmation. Send synthetic verification messages in
