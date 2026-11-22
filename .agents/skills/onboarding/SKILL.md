@@ -10,5 +10,5 @@ Use Node.js 24. Run `npm ci`, then `npm run build`. Run
 press Ctrl+C to clean up the session.
 
 See [README troubleshooting](../../../README.md#troubleshooting) for setup
-errors and [validate](../validate/SKILL.md#before-review) for headless startup
+errors and [validate](../validate/SKILL.md#1-run-local-checks) for headless startup
 checks.

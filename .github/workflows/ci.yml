@@ -22,8 +22,6 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build
-      - run: npm run lint
-      - run: npm run test:built
+      - run: npm run check
       # Keep the existing incremental cache while deleting build/ and dist/.
       - run: npm run verify:clean-build
