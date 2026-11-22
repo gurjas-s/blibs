@@ -65,6 +65,8 @@ Request(r, c, p) ==
             /\ pending' = [pending EXCEPT ![c] = None]
     /\ UNCHANGED <<known, enabled, projects, sessions>>
 
+\* A resume selector carries the symbolic identity of a name or an existing ID.
+\* A selector for a name can resolve only in the sending chat and project.
 SessionRequest(r, c, p, command, target) ==
     /\ c \in known /\ enabled /\ jobs[r] = Idle /\ p \in projects
     /\ jobs' = Replace(r, c, "queued", p, command, target)
@@ -119,7 +121,7 @@ Dispatch(r) ==
        /\ CASE ~enabled \/ p \notin projects -> NoStart(r, "dropped")
              [] command = "new" -> Start(r, saved, r)
              [] command = "resume" ->
-                 IF target \in saved THEN Start(r, saved, target) ELSE NoStart(r, "unknownSession")
+                 IF target \in saved THEN Start(r, saved, target) ELSE NoStart(r, "unavailableSession")
              [] Cardinality(saved) > 1 -> NoStart(r, "sessionChoice")
              [] saved = {} -> Start(r, saved, r)
              [] OTHER -> Start(r, saved, CHOOSE id \in saved : TRUE)
@@ -178,7 +180,7 @@ SessionResolution ==
     [] [\A r \in Requests :
         LET job == jobs[r]
             next == jobs'[r]
-        IN job.phase = "queued" /\ next.phase \in {"running", "unknownSession", "sessionChoice"} =>
+        IN job.phase = "queued" /\ next.phase \in {"running", "unavailableSession", "sessionChoice"} =>
            LET saved == sessions[job.chat][job.project]
            IN CASE job.command = "new" ->
                    /\ next.phase = "running" /\ r \notin saved /\ next.session = r /\ next.notice = r
@@ -186,7 +188,7 @@ SessionResolution ==
                    IF job.target \in saved
                    THEN /\ next.phase = "running"
                         /\ next.session = job.target /\ next.notice = job.target
-                   ELSE /\ next.phase = "unknownSession" /\ next.session = None /\ next.notice = None
+                   ELSE /\ next.phase = "unavailableSession" /\ next.session = None /\ next.notice = None
                 [] Cardinality(saved) > 1 ->
                    /\ next.phase = "sessionChoice" /\ next.session = None /\ next.notice = None
                 [] saved = {} ->

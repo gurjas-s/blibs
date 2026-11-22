@@ -948,14 +948,13 @@ test(
     mkdirSync(alpha);
     const first = 'Start a session named first in alpha and write first.txt.';
     const second = 'Start a session named second in alpha and write second.txt.';
-    const resume = 'Resume the first session and update first.txt.';
+    const resume = 'Continue the same session that created first.txt and update it.';
     const museChatHtml = `<!doctype html>
       <div role="log"></div>
       <form><textarea aria-label="Message"></textarea><button type="submit">Send</button></form>
       <script>
         const log = document.querySelector('[role="log"]');
         const composer = document.querySelector('textarea');
-        let firstId;
         function append(role, text) {
           const row = document.createElement('div');
           row.dataset.messageAuthorRole = role;
@@ -968,11 +967,9 @@ test(
           const text = composer.value;
           composer.value = '';
           append('user', text);
-          const notice = /Active session for .alpha: first [(](ses_[a-zA-Z0-9]+)[)]/.exec(text);
-          if (notice) firstId = notice[1];
           if (text === ${JSON.stringify(first)}) append('assistant', '@opencode /new-session $alpha first Write first.txt with exactly initial');
           if (text === ${JSON.stringify(second)}) append('assistant', '@opencode /new-session $alpha second Write second.txt with exactly separate');
-          if (text === ${JSON.stringify(resume)}) append('assistant', '@opencode /resume $alpha ' + firstId + ' Write first.txt with exactly updated');
+          if (text === ${JSON.stringify(resume)}) append('assistant', '@opencode /resume $alpha first Write first.txt with exactly updated');
         });
       </script>`;
     const testApp = await launch({ projectsDir, museChatHtml });
@@ -998,20 +995,20 @@ test(
       const log = muse.getByRole('log');
       const composer = muse.getByRole('textbox', { name: 'Message' });
       const send = muse.getByRole('button', { name: 'Send' });
-      const ids: string[] = [];
       for (const [request, name] of [[first, 'first'], [second, 'second'], [resume, 'first']]) {
         const replies = log.getByText("Sent from user's harness (OpenCode).", { exact: false });
         const count = await replies.count();
+        const notices = log.getByText(`Active session for $alpha: ${name}.`, { exact: false });
+        const noticeCount = await notices.count();
         await composer.fill(request);
         await send.click();
-        const reply = replies.nth(count);
-        await reply.waitFor({ timeout: 45_000 });
-        const id = (await reply.textContent())?.match(/Session: (ses_[a-zA-Z0-9]+)/)?.[1];
-        assert.ok(id);
-        assert.ok(await log.getByText(`Active session for $alpha: ${name} (${id}).`, { exact: false }).last().isVisible());
-        ids.push(id);
+        await notices.nth(noticeCount).waitFor({ timeout: 45_000 });
+        await replies.nth(count).waitFor({ timeout: 45_000 });
         if (request === first) assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'initial');
       }
+      const ids = readFileSync(path.join(alpha, 'session-runs.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      assert.equal(ids.length, 3);
+      assert.ok(ids.every((id) => typeof id === 'string' && id.startsWith('ses_')));
       assert.notEqual(ids[0], ids[1]);
       assert.equal(ids[0], ids[2]);
       assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'updated');

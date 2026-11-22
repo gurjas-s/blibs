@@ -93,9 +93,9 @@ export function projectCreationFormat(mention: string): string {
 
 export function sessionCommands(mention: string): string[] {
   return [
-    `Start a clean session with ${mention} /new-session $<project> <name> <task>. Use one name with letters, numbers, underscores, or hyphens. Start with a letter or number.`,
-    `List sessions in this chat with ${mention} /sessions $<project>.`,
-    `Resume a session with ${mention} /resume $<project> <session-id> <task>. If blibs asks which session to use, ask the user and resend the task with the chosen ID.`,
+    `For a separate task, start a clean session with ${mention} /new-session $<project> <name> <task>. Use one name with letters, numbers, underscores, or hyphens. Start with a letter or number.`,
+    `If you need the available names, list sessions with ${mention} /sessions $<project>.`,
+    `For a follow-up, use the session name from the conversation. Send ${mention} /resume $<project> <name> <task> with the full task.`,
   ];
 }
 

@@ -34,8 +34,8 @@ See [shared setup](README.md#shared-setup).
 
    The named-session check asks for the current commands with `@blibs`. It
    asks Muse to start two sessions in `alpha` and write separate files. It
-   checks the active session IDs and verifies that resuming the first
-   changes only `first.txt`.
+   checks that Muse resumes by name when asked to continue the work that
+   created `first.txt` and verifies that only `first.txt` changes.
 
 2. Start the mock app with the shared command. Expected: the panel opens.
 
@@ -64,7 +64,7 @@ See [shared setup](README.md#shared-setup).
    `harness reply: Build a small app`.
 
 5. Run `send_muse agent project-follow-up '@opencode $alpha Add a test'`.
-   Expected: blibs shows the default session ID before the harness reuses it.
+   Expected: blibs shows the name `Default` before the harness reuses the session.
 
 6. Run `send_muse agent missing-project '@opencode $missing Build it'`.
    Expected: blibs says that the project is unavailable and offers the
@@ -94,7 +94,8 @@ The live check stops Electron and removes its temporary projects when it ends. U
   `node --import tsx --test tests/relay.test.ts`.
 - The relay named-session test starts two sessions in one project, rejects
   ambiguous, unknown, and wrong-project selections, and checks that both
-  named sessions and the default session can resume after restart.
+  named sessions and the default session can resume after restart. It
+  checks the name list and confirms that previously issued IDs still work.
 - `tests/e2e/smoke.spec.ts` checks picker creation and scripted Muse
   creation, continuation, and redelivery. The named-session test checks the
   composer through two new sessions and a resume, including file contents

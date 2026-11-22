@@ -11,8 +11,8 @@ pending choices, task dispatch, session reuse, or restart. For example,
 a storage change can affect what the relay restores after a restart.
 The [spec guide](../../../../tests/specs/README.md) lists the assumptions,
 invariants, and TLC setup. The model ends when the relay queues a reply,
-fails, or stops. The model checks session ownership, rejection of unknown
-IDs, choice prompts for ambiguous requests, notices for follow-ups, and
+fails, or stops. The model checks session ownership, rejection of unavailable
+sessions, choice prompts for ambiguous requests, notices for follow-ups, and
 persistence across restart.
 
 1. Check whether the implementation still matches the model. If intended
@@ -23,7 +23,7 @@ persistence across restart.
 3. Run or extend the relevant [relay implementation tests](../../../../tests/relay.test.ts).
    Exercise the affected outcome through the normal entry point. For example,
    use a repeated project selection to check that a task starts at most once,
-   or resume named sessions after restart to check that their histories stay
+   or resume sessions by name after restart to check that their histories stay
    separate.
 4. Record the TLC result, the affected invariant, and the implementation
    test that exercises it. Include these results in the review brief when

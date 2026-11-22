@@ -110,7 +110,7 @@ interface RelayItem {
   body: string | null;
 }
 
-type SessionRequest = { kind: 'new'; name: string } | { kind: 'resume'; id: string };
+type SessionRequest = { kind: 'new'; name: string } | { kind: 'resume'; selector: string };
 
 interface RelayWork {
   item: RelayItem;
@@ -384,10 +384,10 @@ export class RelayService {
   }
 
   private sessionList(sessions: NamedSession[], note: string, token: string): string {
-    const lines = sessions.map(({ name, id }) => `- ${name} (${id})`);
+    const lines = sessions.map(({ name }) => `- ${name}`);
     return [
       CHOICES_HEADER, '', note, ...lines, '',
-      `Use ${this.harness.mention} /resume $${token} <session-id> <task> with an ID from this list.`,
+      `For a follow-up, match the session name to the conversation and send ${this.harness.mention} /resume $${token} <name> <task> with the full task.`,
       sessionCommands(this.harness.mention)[0],
     ].join('\n');
   }
@@ -396,7 +396,6 @@ export class RelayService {
   private resolveSession(work: RelayWork, token: string): string | undefined {
     const { item, projectPath, session } = work;
     const sessions = this.sessionsFor(item.threadId, projectPath);
-    const selected = session?.kind === 'resume' ? sessions.find(({ id }) => id === session.id) : sessions[0];
     if (session?.kind === 'new') {
       if (sessions.some(({ name }) => name.toLowerCase() === session.name.toLowerCase())
         || session.name.toLowerCase() === 'default') {
@@ -415,23 +414,28 @@ export class RelayService {
         this.state.namedSessions.pop();
         throw error;
       }
-      this.announceSession(item, session.name, id, token);
+      this.announceSession(item, session.name, token);
       return id;
     }
+    // Keep ID selectors valid for commands sent before session names were shown.
+    const selected = session?.kind === 'resume'
+      ? sessions.find(({ name }) => name.toLowerCase() === session.selector.toLowerCase())
+        ?? sessions.find(({ id }) => id === session.selector)
+      : sessions[0];
     if ((session?.kind === 'resume' && !selected) || (!session && sessions.length > 1)) {
-      const note = session ? 'That session ID is unavailable for this chat and project.' : 'Which session should run this task?';
+      const note = session ? 'That session is unavailable for this chat and project.' : 'Several sessions are available for this task.';
       this.finishChoices(item, this.sessionList(sessions, note, token), Date.now());
       return;
     }
     if (selected) {
-      this.announceSession(item, selected.name, selected.id, token);
+      this.announceSession(item, selected.name, token);
       return selected.id;
     }
     return this.storeSession(item.threadId, projectPath, newSessionId());
   }
 
-  private announceSession(item: RelayItem, name: string, id: string, token: string): void {
-    const text = `${CHOICES_HEADER}\n\nActive session for $${token}: ${name} (${id}).`;
+  private announceSession(item: RelayItem, name: string, token: string): void {
+    const text = `${CHOICES_HEADER}\n\nActive session for $${token}: ${name}.`;
     if (!this.tellChoices(item, text)) throw new Error('Could not queue the session notice.');
   }
 
@@ -822,7 +826,7 @@ export class RelayService {
         return this.finishChoices(item, this.sessionList(sessions, note, choice.token), startedAt);
       }
       if (extra && task && (action === '/resume' || (action === '/new-session' && SESSION_NAME.test(value)))) {
-        const session: SessionRequest = action === '/resume' ? { kind: 'resume', id: value } : { kind: 'new', name: value };
+        const session: SessionRequest = action === '/resume' ? { kind: 'resume', selector: value } : { kind: 'new', name: value };
         this.pendingProjectTasks.delete(item.threadId);
         this.workQueue.push({ item, task, projectPath: choice.path, session });
         return;

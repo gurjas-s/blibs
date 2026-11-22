@@ -81,15 +81,15 @@ unambiguous.
 **Use multiple sessions:** send `@opencode /new-session $alpha first <task>`
 to start a clean session named `first`. A session name is one word of up to
 40 characters. Use letters, numbers, underscores, or hyphens, and start with
-a letter or number. Send `@opencode /sessions $alpha` to list the names and
-IDs saved for this chat and project. Use
-`@opencode /resume $alpha <session-id> <task>` to continue one of them.
+a letter or number. Send `@opencode /sessions $alpha` to list the names saved
+for this chat and project. Use `@opencode /resume $alpha first <task>` to
+continue the session named `first`. Session names ignore case.
 
 A plain project task uses its only session or starts a default session if
-there are none. If there are several sessions, blibs asks which one to use.
-Send the task again with `/resume` and the chosen ID. blibs shows the
-selected session before a follow-up. It keeps existing sessions under
-`Default` and keeps named sessions after restart.
+there are none. If there are several sessions, blibs lists their names so
+Muse can match the task to the conversation and send it again with
+`/resume`. blibs shows the selected name before a follow-up. It keeps
+existing sessions under `Default` and keeps named sessions after restart.
 
 To create a project, ask Muse for a new project. Muse sends
 `@opencode /new-project <name>`. blibs creates one empty folder in the

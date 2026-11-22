@@ -25,9 +25,9 @@ and restart.
 
 TLC checks that a pending choice belongs to its chat, expired tasks stay
 expired, a task starts at most once, and only one run is active per project.
-It checks that a new session gets a fresh ID, a resume uses an ID from its
+It checks that a new session gets a fresh ID, a resume resolves to an ID from its
 chat and project, and a follow-up records a notice for the selected ID as it
-starts. An unknown ID rejects the task and several matches ask for a choice.
+starts. An unavailable session rejects the task and several matches ask for a choice.
 The stored mappings change only when a run adds its session ID. They survive
 restart.
 
@@ -36,11 +36,14 @@ The command checks two configurations:
 - `MentionRelay.cfg` uses two chats, two projects, and two requests. It checks
   session isolation across chat and project boundaries and overlapping work.
 - `MentionRelay.sessions.cfg` uses one chat, one project, and three requests.
-  It can start two named sessions and then resume either ID, reject an ID, or
+  It can start two named sessions and then resume either session, reject a
+  selection, or
   ask for a choice. It starts empty or with an existing default mapping.
 
 The model treats parsing, project matching, and name validation as classified
-inputs. It treats the notice and start as one dispatch step and records the ID
+inputs. It represents a session name or a legacy ID selector by the symbolic
+ID it addresses. The relay tests check case-insensitive name lookup within
+the chat and project, legacy ID compatibility, and the text shown to Muse. It treats the notice and start as one dispatch step and records the ID
 the relay queues before it starts the harness. It uses the creating request
 slot as its fresh session ID. It allows any eligible queued job to dispatch.
 It assumes successful storage and notice writes. It omits FIFO order, cache

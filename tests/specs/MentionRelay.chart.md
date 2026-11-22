@@ -26,7 +26,7 @@ stateDiagram-v2
   s13: Task dropped
   s14: Selection expired
   s15: Awaiting session choice
-  s16: Session ID rejected
+  s16: Session selection rejected
   s17: Run failed
   s18: Run interrupted
   s19: Reply queued
@@ -38,12 +38,12 @@ stateDiagram-v2
   s0 --> s5: Submit an invalid selection
   s0 --> s6: Session command is invalid
   s0 --> s7: Name a project without a task
-  s0 --> s8: Request a new session or Request a session by ID or Resolve a project
+  s0 --> s8: Request a new session or Request a session by name or Resolve a project
   s0 --> s9: Ask for sessions
   s0 --> s10: Project cannot be resolved
   s8 --> s11: Announce session and start the harness or Start the harness
   s8 --> s13: Dispatch fails or relay restarts
-  s8 --> s16: Session ID is unavailable
+  s8 --> s16: Session is unavailable
   s8 --> s15: Several sessions match
   s10 --> s14: Clear the choice or restart
   s10 --> s8: Select a valid project

@@ -226,28 +226,38 @@ test('live Muse starts and resumes named sessions from the composer', { skip: re
     await sendFromPane(website, composer, '@blibs');
     await introduction.nth(introductions).waitFor({ timeout: 45_000 });
 
-    const write = async (request: string, name: string, file: string): Promise<string> => {
+    const write = async (request: string, command: string, name: string, file: string): Promise<void> => {
       const content = 'blibs-test-' + randomUUID();
       const existingIds = new Set((await outboxItems(app)).map(({ id }) => id));
       await sendFromPane(website, composer, request +
         ` Write exactly ${content} to ${file} with no trailing newline. Leave all other files and projects untouched.`);
       const fresh = (item: { id: string; threadId?: string; status: string }): boolean =>
         !existingIds.has(item.id) && item.threadId === website.url() && item.status === 'sent';
-      const notice = await waitForOutbox(app, (item) =>
-        fresh(item) && item.text.includes(`Active session for $alpha: ${name} (`), 180_000);
-      const id = notice.text.match(/\((ses_[a-zA-Z0-9]+)\)/)?.[1];
-      assert.ok(id);
+      await waitForOutbox(app, (item) =>
+        fresh(item) && item.text.endsWith(`Active session for $alpha: ${name}.`), 180_000);
       await waitForOutbox(app, (item) => fresh(item) && item.text.startsWith(LIVE_HEADER), 300_000);
+      await waitFor('Muse to use the session name in its command', async () => {
+        const response = await fetch(app.backendUrl + '/api/imports');
+        assert.equal(response.status, 200);
+        const { imports } = await response.json() as {
+          imports: Array<{ provider: string; role: string; threadId: string; text: string }>;
+        };
+        return imports.find((item) => {
+          if (item.provider !== 'muse' || item.role !== 'agent' || item.threadId !== website.url() || isUserEcho(item.text)) return false;
+          const task = extractMentionTask(item.text);
+          return task?.toLowerCase().startsWith(`${command} $alpha ${name} `) && task.includes(content);
+        });
+      }, 30_000);
       assert.deepEqual(readFileSync(path.join(alpha, file)), Buffer.from(content));
-      return id;
     };
 
-    const first = await write('Use my local OpenCode harness to start a clean session named first in alpha.', 'first', 'first.txt');
-    const second = await write('Use my local OpenCode harness to start a clean session named second in alpha.', 'second', 'second.txt');
+    const suffix = randomUUID().slice(0, 8);
+    const first = 'draft-' + suffix;
+    const second = 'review-' + suffix;
+    await write(`Use my local OpenCode harness to start a clean session named ${first} in alpha.`, '/new-session', first, 'first.txt');
+    await write(`Use my local OpenCode harness to start a clean session named ${second} in alpha.`, '/new-session', second, 'second.txt');
     const secondFile = readFileSync(path.join(alpha, 'second.txt'));
-    const resumed = await write(`Use my local OpenCode harness to resume session ${first} in alpha.`, 'first', 'first.txt');
-    assert.notEqual(first, second);
-    assert.equal(first, resumed);
+    await write('Continue the same session that created first.txt in alpha.', '/resume', first, 'first.txt');
     assert.deepEqual(readFileSync(path.join(alpha, 'second.txt')), secondFile);
   } finally {
     await app.close();

@@ -215,7 +215,7 @@ test('the relay reuses one session per project and thread', async () => {
   assert.ok(newSessionId().startsWith('ses_'));
 });
 
-test('named sessions keep separate histories and resume by ID after restart', async () => {
+test('named sessions keep separate histories and resume by name after restart', async () => {
   const server = await startRelay();
   const legacyId = newSessionId();
   writeFileSync(path.join(server.dataDir, 'relay-state.json'), JSON.stringify({
@@ -226,9 +226,10 @@ test('named sessions keep separate histories and resume by ID after restart', as
 
   await importMuse(server, '@blibs', 'session-intro', 'user');
   const intro = (await outbox(server)).at(-1)?.text ?? '';
-  for (const command of ['/new-session', '/sessions', '/resume']) {
-    assert.ok(intro.includes(`@opencode ${command}`));
-  }
+  assert.ok(intro.includes('@opencode /new-session $<project> <name> <task>'));
+  assert.ok(intro.includes('@opencode /sessions $<project>'));
+  assert.ok(intro.includes('@opencode /resume $<project> <name> <task>'));
+  assert.doesNotMatch(intro, /ask the user/i);
 
   await importMuse(server, '@opencode /new-session $alpha first write first.txt initial', 'named-first');
   await importMuse(server, '@opencode /new-session $alpha second write second.txt separate', 'named-second');
@@ -243,24 +244,25 @@ test('named sessions keep separate histories and resume by ID after restart', as
 
   await importMuse(server, '@opencode /sessions $alpha', 'show-sessions');
   const list = (await outbox(server)).at(-1)?.text ?? '';
-  for (const [name, id] of [['Default', legacyId], ['first', firstId], ['second', secondId]]) {
-    assert.ok(list.includes(`${name} (${id})`));
-  }
+  assert.deepEqual(list.split('\n').filter((line) => line.startsWith('- ')), ['- Default', '- first', '- second']);
+  for (const id of [legacyId, firstId, secondId]) assert.ok(!list.includes(id));
   await importMuse(server, '@opencode $alpha update the file', 'ambiguous-session');
-  assert.match((await outbox(server)).at(-1)?.text ?? '', /Which session/);
-  await importMuse(server, '@opencode /resume $alpha ses_unknown do not run', 'unknown-session');
-  assert.match((await outbox(server)).at(-1)?.text ?? '', /session ID is unavailable/);
-  await importMuse(server, `@opencode /resume $beta ${firstId} do not run`, 'wrong-project-session');
-  assert.match((await outbox(server)).at(-1)?.text ?? '', /session ID is unavailable/);
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /Several sessions are available/);
+  await importMuse(server, '@opencode /resume $alpha unknown-name do not run', 'unknown-session');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /session is unavailable/);
+  await importMuse(server, '@opencode /resume $alpha ses_unknown do not run', 'unknown-session-id');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /session is unavailable/);
+  await importMuse(server, '@opencode /resume $beta first do not run', 'wrong-project-session');
+  assert.match((await outbox(server)).at(-1)?.text ?? '', /session is unavailable/);
   await importMuse(server, '@opencode /new-session $alpha FIRST do not run', 'duplicate-session-name');
   assert.match((await outbox(server)).at(-1)?.text ?? '', /different session name/);
   assert.equal(runs(server).length, 2);
 
-  await importMuse(server, `@opencode /resume $alpha ${firstId} write first.txt updated`, 'resume-first');
-  const notices = (await outbox(server)).filter(({ text }) => text.includes(`Active session for $alpha: first (${firstId})`));
+  await importMuse(server, '@opencode /resume $alpha FIRST write first.txt updated', 'resume-first');
+  const notices = (await outbox(server)).filter(({ text }) => text.endsWith('Active session for $alpha: first.'));
   assert.equal(notices.length, 2);
   await importMuse(server, `@opencode /resume $alpha ${secondId} check second.txt`, 'resume-second');
-  await importMuse(server, `@opencode /resume $alpha ${legacyId} check legacy task`, 'resume-legacy');
+  await importMuse(server, '@opencode /resume $alpha Default check legacy task', 'resume-legacy');
   await waitForRunCount(server, 5);
   assert.deepEqual(runs(server).slice(2).map(({ args }) => args[args.indexOf('--session') + 1]), [firstId, secondId, legacyId]);
   assert.equal(readFileSync(path.join(server.alpha, 'first.txt'), 'utf8'), 'updated');
