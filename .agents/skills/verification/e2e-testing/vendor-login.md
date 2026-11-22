@@ -40,10 +40,9 @@ See [shared setup](README.md#shared-setup).
 6. Press `Escape`. Open the agents screen again, then select `Back to chats`.
    Expected: the chat shell returns both times.
 
-7. Select `Open website` in the connected Muse chat. Type `Text to copy` in
-   the mock website's `Message` field. Select all, copy, clear the field, and
+7. Select Muse in the sidebar. Type `Text to copy` in the mock website's `Message` field. Select all, copy, clear the field, and
    paste using the system shortcuts. Press Escape while the field has focus.
-   Expected: the text appears after paste. Escape returns to the local chat.
+   Expected: the text appears after paste. Escape leaves the website open.
 
 8. For session persistence changes, start the built app with the
    [authenticated profile](../SKILL.md#authenticated-provider-checks).

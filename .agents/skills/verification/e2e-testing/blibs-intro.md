@@ -21,8 +21,6 @@ For the saved folder and harness settings, see
 
 - The relay starts a harness run for the introduction reply.
 
-Smoke screenshots: `blibs-intro.png` and `harness-reply.png`.
-
 ## Automated coverage
 
 - `tests/e2e/smoke.spec.ts`, test

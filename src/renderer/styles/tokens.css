@@ -16,6 +16,7 @@
   --layout-chat-measure: 960px;
   --layout-search-width: 520px;
   --layout-status-space: 176px;
+  --layout-status-and-context-space: 240px;
   --layout-gutter: var(--space-7);
   --layout-matrix-min-width: 560px;
   --layout-preview-height: 96px;

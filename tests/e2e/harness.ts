@@ -362,7 +362,6 @@ export async function seedChats(
   );
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
-  await page.locator('.msg').first().waitFor({ state: 'visible', timeout: 15_000 });
 }
 
 export type MockAssistantId = 'muse' | 'dots' | 'grok';
@@ -450,10 +449,11 @@ export async function seedConnections(
   await page.locator('.shell').waitFor({ state: 'visible', timeout: 15_000 });
 }
 
-/** Click an agent in the sidebar and wait until its thread shows it. */
+/** Select an assistant in the sidebar. */
 export async function selectAgent(page: Page, name: string): Promise<void> {
-  await page.locator('.agent-main', { hasText: name }).first().click();
-  await page.locator(`.thread[aria-label="Messages with ${name}"]`).waitFor({ timeout: 5_000 });
+  const assistant = page.locator('.agent-main', { hasText: name }).first();
+  await assistant.click();
+  await assistant.and(page.locator('[aria-current="page"]')).waitFor();
 }
 
 async function stopChild(child: ChildProcess): Promise<void> {
