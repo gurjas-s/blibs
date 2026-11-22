@@ -24,7 +24,8 @@
     "verify:clean-build": "node scripts/verify-clean-build.mjs",
     "lint": "eslint . --max-warnings=0",
     "test:desktop": "node scripts/test-search-desktop.mjs",
-    "icons": "node assets/build-icons.mjs"
+    "icons": "node assets/build-icons.mjs",
+    "test:specs": "cd tests/specs && java -XX:+UseParallelGC -jar .tlc/tla2tools.jar -metadir .tlc/states -config MentionRelay.cfg MentionRelay.tla"
   },
   "dependencies": {
     "react": "^19.2.8",
