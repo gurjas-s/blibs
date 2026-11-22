@@ -1,6 +1,8 @@
 export const title = "blibs mention relay"
 const labels = {
   unseen: "Awaiting command", intro: "Introduction queued", ignored: "Ignored",
+  sessionList: "Session list queued", sessionChoice: "Awaiting session choice",
+  unknownSession: "Session ID rejected", invalidSessionCommand: "Session command rejected",
   list: "Project list queued", missingTask: "Task requested",
   invalidSelect: "Selection rejected", createError: "Project creation failed",
   created: "Project created", expired: "Selection expired", pending: "Awaiting project choice",
@@ -10,6 +12,8 @@ const labels = {
 export const state = v => labels[v.jobs.requestA.phase]
 const steps = {
   intro: "Ask about blibs", ignored: "Command is ineligible",
+  sessionList: "Ask for sessions", sessionChoice: "Several sessions match",
+  unknownSession: "Session ID is unavailable", invalidSessionCommand: "Session command is invalid",
   list: "Ask for projects", missingTask: "Name a project without a task",
   invalidSelect: "Submit an invalid selection", createError: "Project cannot be created",
   created: "Create a project", expired: "Clear the choice or restart",
@@ -21,6 +25,12 @@ export const step = (_, from, to) => {
   const before = from.jobs.requestA.phase
   const after = to.jobs.requestA.phase
   if (before === after) return null
-  if (after === "queued") return before === "pending" ? "Select a valid project" : "Resolve a project"
+  if (after === "queued") {
+    if (before === "pending") return "Select a valid project"
+    if (to.jobs.requestA.command === "new") return "Request a new session"
+    if (to.jobs.requestA.command === "resume") return "Request a session by ID"
+    return "Resolve a project"
+  }
+  if (after === "running" && to.jobs.requestA.notice !== "none") return "Announce session and start the harness"
   return steps[after]
 }
