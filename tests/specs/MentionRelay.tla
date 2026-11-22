@@ -61,7 +61,7 @@ Request(r, c, p) ==
     /\ IF p = None
        THEN /\ jobs' = Replace(r, c, "pending", None, "task", None)
             /\ pending' = [pending EXCEPT ![c] = r]
-       ELSE /\ jobs' = Replace(r, c, "queued", p, "task", None)
+       ELSE /\ jobs' = Replace(r, c, "sessionList", p, "task", None)
             /\ pending' = [pending EXCEPT ![c] = None]
     /\ UNCHANGED <<known, enabled, projects, sessions>>
 
@@ -73,10 +73,10 @@ SessionRequest(r, c, p, command, target) ==
     /\ pending' = [pending EXCEPT ![c] = None]
     /\ UNCHANGED <<known, enabled, projects, sessions>>
 
-\* A valid /select consumes the saved task for the sending chat.
+\* A valid /select consumes the project choice and lists sessions.
 Select(c, r, p) ==
     /\ enabled /\ pending[c] = r /\ p \in (projects \cap jobs[r].choices)
-    /\ jobs' = [jobs EXCEPT ![r].phase = "queued", ![r].project = p]
+    /\ jobs' = [jobs EXCEPT ![r].phase = "sessionList", ![r].project = p]
     /\ pending' = [pending EXCEPT ![c] = None]
     /\ UNCHANGED <<known, enabled, projects, sessions>>
 
@@ -101,10 +101,9 @@ Restart ==
 Start(r, saved, id) ==
     LET c == jobs[r].chat
         p == jobs[r].project
-        announce == jobs[r].command # "task" \/ saved # {}
     IN /\ sessions' = [sessions EXCEPT ![c][p] = saved \cup {id}]
        /\ jobs' = [jobs EXCEPT ![r].phase = "running", ![r].session = id,
-                              ![r].notice = IF announce THEN id ELSE None]
+                              ![r].notice = id]
 
 NoStart(r, outcome) ==
     /\ jobs' = [jobs EXCEPT ![r].phase = outcome]
@@ -120,11 +119,8 @@ Dispatch(r) ==
        /\ \A q \in Requests : jobs[q].phase = "running" => jobs[q].project # p
        /\ CASE ~enabled \/ p \notin projects -> NoStart(r, "dropped")
              [] command = "new" -> Start(r, saved, r)
-             [] command = "resume" ->
-                 IF target \in saved THEN Start(r, saved, target) ELSE NoStart(r, "unavailableSession")
-             [] Cardinality(saved) > 1 -> NoStart(r, "sessionChoice")
-             [] saved = {} -> Start(r, saved, r)
-             [] OTHER -> Start(r, saved, CHOOSE id \in saved : TRUE)
+             [] command = "resume" /\ target \in saved -> Start(r, saved, target)
+             [] OTHER -> NoStart(r, "unavailableSession")
        /\ UNCHANGED <<known, enabled, projects, pending>>
 
 Finish(r, result) ==
@@ -140,7 +136,7 @@ Next ==
         \/ Baseline(c)
         \/ Expire({c})
         \/ \E r \in Requests :
-            \/ \E outcome \in {"intro", "ignored", "list", "missingTask", "invalidSelect", "createError", "sessionList", "invalidSessionCommand"} :
+            \/ \E outcome \in {"intro", "ignored", "list", "invalidSelect", "createError", "sessionList", "invalidSessionCommand"} :
                 /\ c \in known \/ outcome \in {"intro", "ignored", "list"}
                 /\ NoWork(r, c, outcome)
             \/ \E p \in Projects :
@@ -176,25 +172,23 @@ SessionsIsolated ==
     \A c, d \in Chats, p, q \in Projects :
         sessions[c][p] \cap sessions[d][q] # {} => c = d /\ p = q
 
+ExplicitSessionCommand ==
+    \A r \in Requests :
+        jobs[r].phase = "queued" \/ jobs[r].session # None =>
+            jobs[r].command \in {"new", "resume"}
+
 SessionResolution ==
     [] [\A r \in Requests :
         LET job == jobs[r]
             next == jobs'[r]
-        IN job.phase = "queued" /\ next.phase \in {"running", "unavailableSession", "sessionChoice"} =>
+        IN job.phase = "queued" /\ next.phase \in {"running", "unavailableSession"} =>
            LET saved == sessions[job.chat][job.project]
-           IN CASE job.command = "new" ->
-                   /\ next.phase = "running" /\ r \notin saved /\ next.session = r /\ next.notice = r
-                [] job.command = "resume" ->
-                   IF job.target \in saved
+           IN IF job.command = "new"
+              THEN /\ next.phase = "running" /\ r \notin saved /\ next.session = r /\ next.notice = r
+              ELSE IF job.target \in saved
                    THEN /\ next.phase = "running"
                         /\ next.session = job.target /\ next.notice = job.target
-                   ELSE /\ next.phase = "unavailableSession" /\ next.session = None /\ next.notice = None
-                [] Cardinality(saved) > 1 ->
-                   /\ next.phase = "sessionChoice" /\ next.session = None /\ next.notice = None
-                [] saved = {} ->
-                   /\ next.phase = "running" /\ next.session = r /\ next.notice = None
-                [] OTHER ->
-                   /\ next.phase = "running" /\ next.session \in saved /\ next.notice = next.session]_vars
+                   ELSE /\ next.phase = "unavailableSession" /\ next.session = None /\ next.notice = None]_vars
 
 SessionMappingsFollowRuns ==
     [] [\A c \in Chats, p \in Projects :

@@ -79,10 +79,6 @@ export function displayPath(target: string): string {
   return target;
 }
 
-export function projectTaskFormat(mention: string): string {
-  return `${mention} $<project> <task>`;
-}
-
 export function projectSelectionFormat(mention: string, requestId = '<request-id>', project = '$<project>'): string {
   return `${mention} /select ${requestId} ${project}`;
 }
@@ -91,11 +87,11 @@ export function projectCreationFormat(mention: string): string {
   return `${mention} /new-project <name>`;
 }
 
-export function sessionCommands(mention: string): string[] {
+export function sessionCommands(mention: string, project = '$<project>'): string[] {
   return [
-    `For a separate task, start a clean session with ${mention} /new-session $<project> <name> <task>. Use one name with letters, numbers, underscores, or hyphens. Start with a letter or number.`,
-    `If you need the available names, list sessions with ${mention} /sessions $<project>.`,
-    `For a follow-up, use the session name from the conversation. Send ${mention} /resume $<project> <name> <task> with the full task.`,
+    `For a separate task, start a clean session with ${mention} /new ${project} <name> <task>. Use one name with letters, numbers, underscores, or hyphens. Start with a letter or number.`,
+    `If you need the available names, list sessions with ${mention} /sessions ${project}.`,
+    `For a follow-up, use the session name from the conversation. Send ${mention} /resume ${project} <name> <task> with the full task.`,
   ];
 }
 
@@ -117,26 +113,14 @@ export function formatProjectList(
       lines.push(`Showing the first ${choices.length} of ${options.total} projects.`);
     }
     if (options.requestId) {
-      lines.push('', `Reply with ${projectSelectionFormat(options.mention, options.requestId)} to use the saved task.`);
+      lines.push('', `Reply with ${projectSelectionFormat(options.mention, options.requestId)} to see the sessions for that project.`);
     }
   }
   lines.push('', `If the user asks for a new project, use ${projectCreationFormat(options.mention)}.`);
-  lines.push('', `To send a new task, use ${projectTaskFormat(options.mention)}.`);
   lines.push('', ...sessionCommands(options.mention));
   return lines.join('\n');
 }
 
 export function unknownProjectNote(name: string, options: ReplyOptions): string {
   return `The project "${name.slice(0, REASON_LIMIT)}" is unavailable in ${displayPath(options.root)}.`;
-}
-
-/** The reply when a project is named without a task. */
-export function formatMissingTask(token: string, options: ReplyOptions): string {
-  return [
-    CHOICES_HEADER,
-    '',
-    `Add a task after $${token}.`,
-    '',
-    `Use ${projectTaskFormat(options.mention)}.`,
-  ].join('\n');
 }

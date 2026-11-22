@@ -149,8 +149,8 @@ for (const createProject of [false, true]) test(
         assert.equal(website.url(), target.href);
       }
       await composer.waitFor();
-      if (createProject) {
-        const introduction = website.getByRole('log').getByText('@opencode /new-project', { exact: false });
+      {
+        const introduction = website.getByRole('log').getByText('@opencode /new $<project>', { exact: false });
         const introductions = await introduction.count();
         await sendFromPane(website, composer, '@blibs');
         await introduction.nth(introductions).waitFor({ timeout: 45_000 });
@@ -160,13 +160,13 @@ for (const createProject of [false, true]) test(
       const replyCount = await replies.count();
       const existingIds = new Set((await outboxItems(app)).map((item) => item.id));
       const content = 'blibs-test-' + randomUUID();
+      const sessionName = 'write-' + randomUUID().slice(0, 8);
       await sendFromPane(
         website,
         composer,
-        (createProject
-          ? 'Ask blibs to create a new project named alpha, then use my local OpenCode harness to create hello.txt in it. '
-          : 'Use my local OpenCode harness to create hello.txt in the project named alpha. ') +
-        'Write exactly ' + content + ' with no trailing newline. Leave all other files and projects untouched.',
+        (createProject ? 'Ask blibs to create a new project named alpha. ' : '') +
+        `Use my local OpenCode harness in alpha. Start a clean session named ${sessionName} and create hello.txt. ` +
+        `Write exactly ${content} to hello.txt with no trailing newline. Leave all other files and projects untouched.`,
       );
 
       const threadId = website.url();
@@ -178,15 +178,19 @@ for (const createProject of [false, true]) test(
         };
         return imports.find((item) => item.provider === 'muse' && item.role === 'agent'
           && item.threadId === threadId && !isUserEcho(item.text)
-          && extractMentionTask(item.text)?.includes(content));
+          && extractMentionTask(item.text)?.toLowerCase().startsWith(`/new $alpha ${sessionName} `)
+          && item.text.includes('hello.txt') && item.text.includes(content));
       }, 180_000);
       if (createProject) {
         await waitForOutbox(app, (item) => !existingIds.has(item.id)
           && item.threadId === threadId && item.text.includes('Project created. Project ID: $alpha.')
           && item.status === 'sent', 180_000);
       }
+      const notice = await waitForOutbox(app, (item) => !existingIds.has(item.id)
+        && item.threadId === threadId && item.text.endsWith(`Active session for $alpha: ${sessionName}.`)
+        && item.status === 'sent', 180_000);
       const reply = await waitForOutbox(app, (item) => !existingIds.has(item.id)
-        && item.threadId === threadId && item.text.startsWith(LIVE_HEADER) && item.status === 'sent', 300_000);
+        && item.ts >= notice.ts && item.threadId === threadId && item.text.startsWith(LIVE_HEADER) && item.status === 'sent', 300_000);
       await waitFor('the harness reply to appear in the Muse conversation', async () => {
         return (await replies.count()) > replyCount && await log.getByText(reply.text, { exact: false }).last()
           .isVisible().catch(() => false) ? true : undefined;
@@ -221,7 +225,7 @@ test('live Muse starts and resumes named sessions from the composer', { skip: re
       app.context.pages().find((page) => new URL(page.url()).origin === 'https://muse.ai'), 30_000);
     const composer = website.locator('textarea[aria-label="Message"], div[contenteditable="true"]').first();
     const log = website.getByRole('log');
-    const introduction = log.getByText('@opencode /new-session', { exact: false });
+    const introduction = log.getByText('@opencode /new $<project>', { exact: false });
     const introductions = await introduction.count();
     await sendFromPane(website, composer, '@blibs');
     await introduction.nth(introductions).waitFor({ timeout: 45_000 });
@@ -254,8 +258,8 @@ test('live Muse starts and resumes named sessions from the composer', { skip: re
     const suffix = randomUUID().slice(0, 8);
     const first = 'draft-' + suffix;
     const second = 'review-' + suffix;
-    await write(`Use my local OpenCode harness to start a clean session named ${first} in alpha.`, '/new-session', first, 'first.txt');
-    await write(`Use my local OpenCode harness to start a clean session named ${second} in alpha.`, '/new-session', second, 'second.txt');
+    await write(`Use my local OpenCode harness to start a clean session named ${first} in alpha.`, '/new', first, 'first.txt');
+    await write(`Use my local OpenCode harness to start a clean session named ${second} in alpha.`, '/new', second, 'second.txt');
     const secondFile = readFileSync(path.join(alpha, 'second.txt'));
     await write('Continue the same session that created first.txt in alpha.', '/resume', first, 'first.txt');
     assert.deepEqual(readFileSync(path.join(alpha, 'second.txt')), secondFile);

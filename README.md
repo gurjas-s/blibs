@@ -63,38 +63,29 @@ blibs does, lists the available and enabled harnesses, and explains how to send
 a task with a harness tag. It suggests the first enabled harness. When no
 harness is enabled, it says to turn one on in Connections.
 
-**Choose a project:** send `@opencode $<project> <task>`, using the project
-ID shown by blibs. For example, send
-`@opencode $alpha Create hello.txt with exactly Hello from blibs.`
-Send `@opencode` by itself to list the project IDs.
+**Choose a project and session:** send `@opencode` by itself to list project
+IDs. Send `@opencode /sessions $alpha` to list the session names for the
+`alpha` project in this chat. Only `/new` and `/resume` start a harness task.
 
-If blibs cannot select one project from a task, it lists the available IDs and
-keeps the task for that chat. Reply with `@opencode /select <request-id> $<project>`.
-Copy the request ID from the latest choice reply. For example, send
-`@opencode /select 4e2b70dca168 $alpha`. Each request ID can start work once.
-Send a new task if the choice is no longer active. Pending choices expire
-when blibs restarts, the chat is cleared, or the projects folder changes.
+- Start with fresh context using `@opencode /new $alpha first <task>`. A
+  session name is one word of up to 40 characters. Use letters, numbers,
+  underscores, or hyphens, and start with a letter or number.
+- Continue an existing session using `@opencode /resume $alpha first <task>`.
+  Session names ignore case. blibs announces the session name before it starts
+  the task. Existing sessions remain available as `Default`, and named
+  sessions persist across restart.
 
-A project name in the task can also select that project when the name is
-unambiguous.
-
-**Use multiple sessions:** send `@opencode /new-session $alpha first <task>`
-to start a clean session named `first`. A session name is one word of up to
-40 characters. Use letters, numbers, underscores, or hyphens, and start with
-a letter or number. Send `@opencode /sessions $alpha` to list the names saved
-for this chat and project. Use `@opencode /resume $alpha first <task>` to
-continue the session named `first`. Session names ignore case.
-
-A plain project task uses its only session or starts a default session if
-there are none. If there are several sessions, blibs lists their names so
-Muse can match the task to the conversation and send it again with
-`/resume`. blibs shows the selected name before a follow-up. It keeps
-existing sessions under `Default` and keeps named sessions after restart.
+A project mention such as `@opencode $alpha <task>` lists the sessions. If
+the project is unclear, blibs lists project IDs and gives Muse a request ID.
+Muse can reply with `@opencode /select <request-id> $<project>` to see the
+sessions, then send the full task with `/new` or `/resume`. A request ID can
+select a project once. Pending choices expire when blibs restarts, the chat
+is cleared, or the projects folder changes.
 
 To create a project, ask Muse for a new project. Muse sends
 `@opencode /new-project <name>`. blibs creates one empty folder in the
-configured projects directory and returns its project ID. If blibs saved a
-task, Muse can use the `/select` command in the reply to continue. You can
+configured projects directory and returns its project ID. Muse can use that
+ID with `/new` to start a session. You can
 also select **New project** in the **Connections** project picker. Use a name
 that starts with a letter or number and contains only letters, numbers,
 spaces, dots, underscores, and hyphens.

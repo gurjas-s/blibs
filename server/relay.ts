@@ -15,7 +15,6 @@ import {
   buildProjectChoices,
   CHOICES_HEADER,
   PROJECT_CHOICE_LIMIT,
-  formatMissingTask,
   formatProjectList,
   projectSelectionFormat,
   sessionCommands,
@@ -47,7 +46,6 @@ import {
   projectsRoot,
   sessionKey,
   sessionKeyPrefix,
-  taskAfterProject,
   taskAfterUnknownProject,
 } from './harness/projects.js';
 
@@ -116,7 +114,7 @@ interface RelayWork {
   item: RelayItem;
   task: string;
   projectPath: string;
-  session?: SessionRequest;
+  session: SessionRequest;
 }
 
 interface ActiveWork {
@@ -128,7 +126,6 @@ interface ActiveWork {
 interface PendingProjectTask {
   id: string;
   body: string;
-  task: string;
   choices: ProjectChoice[];
 }
 
@@ -369,13 +366,6 @@ export class RelayService {
     return this.state.sessions[sessionKey(threadId, projectPath)];
   }
 
-  private storeSession(threadId: string, projectPath: string, sessionId: string): string {
-    this.state.sessions[sessionKey(threadId, projectPath)] = sessionId;
-    const keys = Object.keys(this.state.sessions);
-    if (keys.length > RELAY_SESSION_LIMIT) delete this.state.sessions[keys[0]];
-    return sessionId;
-  }
-
   private sessionsFor(threadId: string, projectPath: string): NamedSession[] {
     const scope = sessionKey(threadId, projectPath);
     const named = this.state.namedSessions.filter((session) => session.scope === scope);
@@ -384,12 +374,16 @@ export class RelayService {
   }
 
   private sessionList(sessions: NamedSession[], note: string, token: string): string {
-    const lines = sessions.map(({ name }) => `- ${name}`);
     return [
-      CHOICES_HEADER, '', note, ...lines, '',
-      `For a follow-up, match the session name to the conversation and send ${this.harness.mention} /resume $${token} <name> <task> with the full task.`,
-      sessionCommands(this.harness.mention)[0],
+      CHOICES_HEADER, '', note, ...sessions.map(({ name }) => `- ${name}`), '',
+      ...sessionCommands(this.harness.mention, `$${token}`),
     ].join('\n');
+  }
+
+  private showSessions(item: RelayItem, project: ProjectChoice, startedAt: number): void {
+    const sessions = this.sessionsFor(item.threadId, project.path);
+    const note = sessions.length ? `Sessions for $${project.token}:` : `No sessions for $${project.token} in this chat.`;
+    this.finishChoices(item, this.sessionList(sessions, note, project.token), startedAt);
   }
 
   /** Resolve the session when the project is ready to run the task. */
@@ -418,20 +412,15 @@ export class RelayService {
       return id;
     }
     // Keep ID selectors valid for commands sent before session names were shown.
-    const selected = session?.kind === 'resume'
-      ? sessions.find(({ name }) => name.toLowerCase() === session.selector.toLowerCase())
-        ?? sessions.find(({ id }) => id === session.selector)
-      : sessions[0];
-    if ((session?.kind === 'resume' && !selected) || (!session && sessions.length > 1)) {
-      const note = session ? 'That session is unavailable for this chat and project.' : 'Several sessions are available for this task.';
+    const selected = sessions.find(({ name }) => name.toLowerCase() === session.selector.toLowerCase())
+      ?? sessions.find(({ id }) => id === session.selector);
+    if (!selected) {
+      const note = 'That session is unavailable for this chat and project.';
       this.finishChoices(item, this.sessionList(sessions, note, token), Date.now());
       return;
     }
-    if (selected) {
-      this.announceSession(item, selected.name, token);
-      return selected.id;
-    }
-    return this.storeSession(item.threadId, projectPath, newSessionId());
+    this.announceSession(item, selected.name, token);
+    return selected.id;
   }
 
   private announceSession(item: RelayItem, name: string, token: string): void {
@@ -804,15 +793,15 @@ export class RelayService {
       const mention = this.harness.mention;
       const note = result.kind === 'created'
         ? `Project created. Project ID: $${result.token}.` + (pending
-          ? ` Reply with ${projectSelectionFormat(mention, pending.id, `$${result.token}`)} to use the saved task.`
-          : ` Send ${mention} $${result.token} <task> to start work.`)
+          ? ` Reply with ${projectSelectionFormat(mention, pending.id, `$${result.token}`)} to see its sessions.`
+          : ` Send ${mention} /new $${result.token} <name> <task> to start a session.`)
         : result.error;
       return this.finishChoices(item, `${CHOICES_HEADER}\n\n${note}`, startedAt);
     }
     const allChoices = buildProjectChoices(listProjects(this.config.discoveryRoot));
     const choices = allChoices.slice(0, PROJECT_CHOICE_LIMIT);
     const options = { ...this.choiceOptions(), total: allChoices.length };
-    if (['/sessions', '/new-session', '/resume'].includes(action)) {
+    if (['/sessions', '/new', '/resume'].includes(action)) {
       const project = first;
       const value = second;
       const choice = allChoices.find(({ token }) => `$${token}` === project?.toLowerCase());
@@ -820,12 +809,8 @@ export class RelayService {
       if (!choice) {
         return this.finishChoices(item, formatProjectList(choices, { ...options, note: 'Use an available project ID.' }), startedAt);
       }
-      if (action === '/sessions' && !value) {
-        const sessions = this.sessionsFor(item.threadId, choice.path);
-        const note = sessions.length ? `Sessions for $${choice.token}:` : `No sessions for $${choice.token} in this chat.`;
-        return this.finishChoices(item, this.sessionList(sessions, note, choice.token), startedAt);
-      }
-      if (extra && task && (action === '/resume' || (action === '/new-session' && SESSION_NAME.test(value)))) {
+      if (action === '/sessions' && !value) return this.showSessions(item, choice, startedAt);
+      if (extra && task && (action === '/resume' || (action === '/new' && SESSION_NAME.test(value)))) {
         const session: SessionRequest = action === '/resume' ? { kind: 'resume', selector: value } : { kind: 'new', name: value };
         this.pendingProjectTasks.delete(item.threadId);
         this.workQueue.push({ item, task, projectPath: choice.path, session });
@@ -843,10 +828,10 @@ export class RelayService {
         }), startedAt);
       }
       const selected = !extra && pending.choices.find((choice) => `$${choice.token}` === token?.toLowerCase());
-      if (selected && allChoices.some((choice) => choice.path === selected.path)) {
+      const current = selected && allChoices.find((choice) => choice.path === selected.path);
+      if (current) {
         this.pendingProjectTasks.delete(item.threadId);
-        this.workQueue.push({ item, task: pending.task, projectPath: selected.path });
-        return;
+        return this.showSessions(item, current, startedAt);
       }
       const available = pending.choices.filter((choice) => allChoices.some((current) => current.path === choice.path));
       return this.finishChoices(item, formatProjectList(available.slice(0, PROJECT_CHOICE_LIMIT), {
@@ -861,13 +846,8 @@ export class RelayService {
     this.log('project-match', item.id, { result: match.kind, projectCount: allChoices.length });
 
     if (match.kind === 'project') {
-      const task = taskAfterProject(item.body, match);
-      if (!task) {
-        return this.finishChoices(item, formatMissingTask(match.choice.token, options), startedAt);
-      }
       this.pendingProjectTasks.delete(item.threadId);
-      this.workQueue.push({ item, task, projectPath: match.choice.path });
-      return;
+      return this.showSessions(item, match.choice, startedAt);
     }
 
     const task = match.kind === 'unknown' ? taskAfterUnknownProject(item.body) : item.body.trim();
@@ -878,7 +858,7 @@ export class RelayService {
     if (sent && task) {
       this.pendingProjectTasks.delete(item.threadId);
       if (id && this.knownThreads.has(item.threadId)) {
-        this.pendingProjectTasks.set(item.threadId, { id, body: item.body, task, choices });
+        this.pendingProjectTasks.set(item.threadId, { id, body: item.body, choices });
       }
     }
     this.finishRun(item.id, startedAt, sent, sent ? undefined : 'outbox write failed');

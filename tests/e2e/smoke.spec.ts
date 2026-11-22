@@ -771,7 +771,7 @@ test(
       assert.match(introText, /Enabled for this assistant: OpenCode\./);
       assert.match(introText, /How tagging works:/);
       assert.match(introText, /sends that task to OpenCode/);
-      assert.ok(introText.includes('@opencode $<project> <task>'));
+      assert.ok(introText.includes('@opencode /new $<project> <name> <task>'));
 
       const introOutbox = (await (await fetch(`${app.backendUrl}/api/outbox`)).json()) as {
         items?: Array<{ text?: string }>;
@@ -796,7 +796,7 @@ test(
       // Muse tags OpenCode. The one project resolves and the harness replies.
       await importMuse({
         role: 'agent',
-        text: '@opencode $alpha hi',
+        text: '@opencode /new $alpha greeting hi',
         sourceId: 'e2e-intro-task',
         ts: Date.now(),
       });
@@ -883,6 +883,9 @@ test(
           append('user', text);
           if (created && text.startsWith("Sent from user's harness")) repeat.disabled = false;
           if (text === ${JSON.stringify(request)}) append('assistant', '@opencode ' + ${JSON.stringify(task)});
+          if (text.startsWith('blibs choices') && text.includes('No sessions for $alpha')) {
+            append('assistant', '@opencode /new $alpha hello ' + ${JSON.stringify(task)});
+          }
           if (text.startsWith('blibs choices') && text.includes('No projects are available')) create.disabled = false;
           if (text.startsWith('blibs choices') && text.includes('Project created. Project ID: $alpha.')) {
             choose.dataset.requestId = text.split('/select ')[1].split(' ')[0];
@@ -967,8 +970,8 @@ test(
           const text = composer.value;
           composer.value = '';
           append('user', text);
-          if (text === ${JSON.stringify(first)}) append('assistant', '@opencode /new-session $alpha first Write first.txt with exactly initial');
-          if (text === ${JSON.stringify(second)}) append('assistant', '@opencode /new-session $alpha second Write second.txt with exactly separate');
+          if (text === ${JSON.stringify(first)}) append('assistant', '@opencode /new $alpha first Write first.txt with exactly initial');
+          if (text === ${JSON.stringify(second)}) append('assistant', '@opencode /new $alpha second Write second.txt with exactly separate');
           if (text === ${JSON.stringify(resume)}) append('assistant', '@opencode /resume $alpha first Write first.txt with exactly updated');
         });
       </script>`;
@@ -1038,7 +1041,7 @@ test(
     mkdirSync(path.dirname(newFile), { recursive: true });
     const threadId = 'https://muse.ai/chat/e2e-connections';
     const prompt = 'Create hello.txt in alpha with exactly Hello from blibs.';
-    const task = '$alpha Create hello.txt with exactly Hello from blibs.';
+    const task = '/new $alpha greeting Create hello.txt with exactly Hello from blibs.';
     const status = async () => await (await fetch(backendUrl + '/api/relay')).json() as {
       lastRun: unknown;
       watermark: number;

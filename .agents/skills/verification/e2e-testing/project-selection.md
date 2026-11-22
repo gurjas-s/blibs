@@ -4,7 +4,7 @@
 
 This document covers the project selection flow for OpenCode. The relay uses
 only immediate folders in the configured projects directory. Each chat and
-project can have a default session and named sessions. Different projects can
+project can have named sessions and a legacy session called `Default`. Different projects can
 run at the same time. Tasks for the same project run in order.
 
 The relay tests use a harness stub. The live check uses a signed-in Muse
@@ -59,12 +59,14 @@ See [shared setup](README.md#shared-setup).
    for a selection before it starts the harness.
 
 4. Copy the request ID into `REQUEST_ID`. Run
-   `send_muse agent project-run "@opencode /select $REQUEST_ID \$alpha"`.
-   Expected: the harness runs in the `alpha` folder. The outbox reply contains
-   `harness reply: Build a small app`.
+   `send_muse agent project-choice "@opencode /select $REQUEST_ID \$alpha"`.
+   Expected: blibs lists the sessions for `alpha`. No harness run starts.
+   Run `send_muse agent project-run '@opencode /new $alpha app Build a small app'`.
+   Expected: blibs announces `app` and the harness runs in `alpha`. The
+   outbox reply contains `harness reply: Build a small app`.
 
-5. Run `send_muse agent project-follow-up '@opencode $alpha Add a test'`.
-   Expected: blibs shows the name `Default` before the harness reuses the session.
+5. Run `send_muse agent project-follow-up '@opencode /resume $alpha app Add a test'`.
+   Expected: blibs announces the name `app` and the harness reuses its session.
 
 6. Run `send_muse agent missing-project '@opencode $missing Build it'`.
    Expected: blibs says that the project is unavailable and offers the
@@ -86,7 +88,7 @@ The live check stops Electron and removes its temporary projects when it ends. U
 
 ## Automated coverage
 
-- `tests/relay.test.ts` covers direct tasks, short selection replies, duplicate
+- `tests/relay.test.ts` covers explicit session commands, project selection replies, duplicate
   delivery, stale choices, ambiguous requests, and unknown and empty project
   lists, folder creation, invalid names, conflicts, and write failures. The
   parallel run test holds one project open while a second project completes.

@@ -19,15 +19,16 @@ commands and ends when the relay queues a reply, fails, or stops.
 
 MentionRelay covers the `@blibs` introduction, the project list, project
 matches, unresolved tasks, `/select`, and `/new-project`. It also covers
-`/new-session`, `/sessions`, and `/resume`. It includes baseline import,
+`/new`, `/sessions`, and `/resume`. It includes baseline import,
 disabled harness checks, project removal, pending choice invalidation,
 and restart.
 
 TLC checks that a pending choice belongs to its chat, expired tasks stay
 expired, a task starts at most once, and only one run is active per project.
-It checks that a new session gets a fresh ID, a resume resolves to an ID from its
-chat and project, and a follow-up records a notice for the selected ID as it
-starts. An unavailable session rejects the task and several matches ask for a choice.
+Only a valid `/new` or `/resume` can queue harness work. A project match or
+`/select` returns the sessions for that project. A new session gets a fresh ID,
+a resume resolves to an ID from the chat and project, and dispatch records a
+notice for the selected ID. An unavailable session rejects the task.
 The stored mappings change only when a run adds its session ID. They survive
 restart.
 
@@ -36,9 +37,8 @@ The command checks two configurations:
 - `MentionRelay.cfg` uses two chats, two projects, and two requests. It checks
   session isolation across chat and project boundaries and overlapping work.
 - `MentionRelay.sessions.cfg` uses one chat, one project, and three requests.
-  It can start two named sessions and then resume either session, reject a
-  selection, or
-  ask for a choice. It starts empty or with an existing default mapping.
+  It can start two named sessions and then resume either session or reject a
+  selection. It starts empty or with an existing default mapping.
 
 The model treats parsing, project matching, and name validation as classified
 inputs. It represents a session name or a legacy ID selector by the symbolic
@@ -64,12 +64,13 @@ The model check is opt-in. The app and the regular test suite need no Java.
 
 Open the [MentionRelay statechart](MentionRelay.chart.md) for the request
 lifecycle. The chart uses one chat, one project, and one request. It starts empty or
-with two saved sessions so it can show the session-choice and resume paths
+with two saved sessions so it can show session discovery and resume paths
 within the statechart tool's 500-state limit.
 
 To regenerate the chart, use the user-level `statechart` skill. Run these
 commands from the repository root.
-Copy the generated Mermaid into the fenced block in `MentionRelay.chart.md`.
+Copy the generated Mermaid into the request lifecycle block in
+`MentionRelay.chart.md`.
 
 ```sh
 chart_dir=$(mktemp -d)
