@@ -637,6 +637,10 @@ test(
     await selectTheme(page, 'light');
     await page.locator('.agent-main', { hasText: 'Grok' }).first().click();
     await page.locator('.setup-card').waitFor({ state: 'visible' });
+    assert.equal(
+      await page.locator('.setup-head p').innerText(),
+      'Grok needs one link before it can use the harnesses on this computer.',
+    );
 
     // The header reports the connection state.
     assert.match(await page.locator('.chat-identity').innerText(), /Grok/);
