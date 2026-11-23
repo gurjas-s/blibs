@@ -496,7 +496,7 @@ test(
 
     assert.equal(
       await page.locator('#onboarding-title').innerText(),
-      'Connect your AI assistants to this Mac',
+      'Connect your AI assistants to this computer',
     );
     assert.equal(await page.locator('.sidebar').count(), 0, 'Onboarding has no chat sidebar.');
     const switchControl = page.getByRole('checkbox', { name: 'OpenCode for Muse' });
@@ -637,6 +637,10 @@ test(
     await selectTheme(page, 'light');
     await page.locator('.agent-main', { hasText: 'Grok' }).first().click();
     await page.locator('.setup-card').waitFor({ state: 'visible' });
+    assert.equal(
+      await page.locator('.setup-head p').innerText(),
+      'Grok needs one link before it can use the harnesses on this computer.',
+    );
 
     // The header reports the connection state.
     assert.match(await page.locator('.chat-identity').innerText(), /Grok/);

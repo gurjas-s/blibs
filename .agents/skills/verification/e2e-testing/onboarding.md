@@ -22,7 +22,7 @@ See [shared setup](README.md#shared-setup).
 
 1. Start the mock app with the shared command.
    Expected: the connections screen shows before the chat shell. The heading is
-   `Connect your AI assistants to this Mac`. The chat sidebar is not present.
+   `Connect your AI assistants to this computer`. The chat sidebar is not present.
 
 2. Read the matrix.
    Expected: OpenCode for Muse is the only switch. It is on in a fresh

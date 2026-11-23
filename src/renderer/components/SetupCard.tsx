@@ -80,7 +80,7 @@ export function SetupCard({
     <Card className="setup-card" role="region" aria-labelledby={titleId}>
       <div className="setup-head">
         <h2 id={titleId}>Connect {assistantName} to blibs</h2>
-        <p>{assistantName} needs one link before it can use the harnesses on this Mac.</p>
+        <p>{assistantName} needs one link before it can use the harnesses on this computer.</p>
       </div>
 
       <ol className="setup-steps">

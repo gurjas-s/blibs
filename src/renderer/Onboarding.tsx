@@ -122,7 +122,7 @@ export default function Onboarding({
 
       <main className="connections-center">
         <div className="connections-hero">
-          <h1 id={headingId}>Connect your AI assistants to this Mac</h1>
+          <h1 id={headingId}>Connect your AI assistants to this computer</h1>
           {relay && !relay.enabled && <p>The relay is off.</p>}
         </div>
 
