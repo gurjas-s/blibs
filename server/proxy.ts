@@ -21,8 +21,8 @@ import type { SearchFilters } from './history.js';
 import { InvalidProjectsFolder, RelayService, buildRelayConfig } from './relay.js';
 import type { RelayConfig } from './relay.js';
 import type { HarnessChoice } from './harness/intro.js';
-import { HARNESS_TEXT_LIMIT, RELAY_HARNESS_LIMIT, RELAY_MODEL_LIMIT } from './relay-state.js';
-import { harnessKind } from './harness/registry.js';
+import { HARNESS_TEXT_LIMIT, RELAY_HARNESS_LIMIT, parseModel } from './relay-state.js';
+import { HARNESS_KINDS, harnessKind } from './harness/registry.js';
 import { USER_ECHO_LABEL } from './harness/mention.js';
 import { PROJECT_PATH_LIMIT } from './harness/projects.js';
 
@@ -197,14 +197,19 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         if (discoveryRoot !== undefined && (typeof discoveryRoot !== 'string' || !discoveryRoot.trim() || discoveryRoot.length > PROJECT_PATH_LIMIT)) {
           return send(res, 400, { error: 'discoveryRoot must be a path' });
         }
-        const model = payload.model;
-        if (model !== undefined && model !== null && (typeof model !== 'string' || !model.trim() || model.length > RELAY_MODEL_LIMIT)) {
-          return send(res, 400, { error: 'model must be a provider/model id' });
+        const { harnessId, model } = payload;
+        if (harnessId !== undefined && !HARNESS_KINDS.some(({ id }) => id === harnessId)) {
+          return send(res, 400, { error: 'Select a supported harness.' });
+        }
+        const parsedModel = parseModel(model);
+        if (model !== undefined && model !== null && !parsedModel) {
+          return send(res, 400, { error: 'Enter one model ID. For OpenCode, use provider/model.' });
         }
         try {
           return send(res, 200, relay.updateProjects(
             typeof discoveryRoot === 'string' ? discoveryRoot : undefined,
-            model === undefined ? undefined : model === null ? null : (model as string),
+            model === null ? null : parsedModel,
+            typeof harnessId === 'string' ? harnessId : undefined,
           ));
         } catch (error) {
           if (error instanceof InvalidProjectsFolder) return send(res, 400, { error: error.message });

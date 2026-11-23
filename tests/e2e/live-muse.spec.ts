@@ -56,8 +56,10 @@ function liveRelayModel(): string | undefined {
   const override = process.env.BLIBS_LIVE_MODEL?.trim();
   if (override) return override;
   try {
-    const state = JSON.parse(readFileSync(LIVE_STATE, 'utf8')) as { model?: unknown };
-    if (typeof state.model === 'string' && state.model) return state.model;
+    const state = JSON.parse(readFileSync(LIVE_STATE, 'utf8')) as { model?: unknown; modelDefaults?: { opencode?: unknown } };
+    const model = state.modelDefaults ? state.modelDefaults.opencode
+      : state.model === 'opencode-go/beam-free' ? undefined : state.model;
+    if (typeof model === 'string' && model) return model;
   } catch { /* use the default model */ }
 }
 
@@ -231,16 +233,18 @@ test('live Muse starts and resumes named sessions from the composer', { skip: re
     await sendFromPane(website, composer, '@blibs');
     await introduction.nth(introductions).waitFor({ timeout: 45_000 });
 
-    const write = async (request: string, command: string, name: string, file: string): Promise<void> => {
+    const write = async (request: string, command: string, name: string, file: string, runModel?: string): Promise<void> => {
       const content = 'blibs-test-' + randomUUID();
       const existingIds = new Set((await outboxItems(app)).map(({ id }) => id));
-      await sendFromPane(website, composer, request +
+      const modelRequest = runModel ? ` Use ${runModel} as the OpenCode model for this task.` : '';
+      await sendFromPane(website, composer, request + modelRequest +
         ` Write exactly ${content} to ${file} with no trailing newline. Leave all other files and projects untouched.`);
       const fresh = (item: { id: string; threadId?: string; status: string }): boolean =>
         !existingIds.has(item.id) && item.threadId === website.url() && item.status === 'sent';
       await waitForOutbox(app, (item) =>
         fresh(item) && item.text.endsWith(`Active session for $alpha: ${name}.`), 180_000);
-      await waitForOutbox(app, (item) => fresh(item) && item.text.startsWith(LIVE_HEADER), 300_000);
+      const result = await waitForOutbox(app, (item) => fresh(item)
+        && (item.text.startsWith(LIVE_HEADER) || item.text.startsWith('The OpenCode harness failed:')), 300_000);
       await waitFor('Muse to use the session name in its command', async () => {
         const response = await fetch(app.backendUrl + '/api/imports');
         assert.equal(response.status, 200);
@@ -250,16 +254,20 @@ test('live Muse starts and resumes named sessions from the composer', { skip: re
         return imports.find((item) => {
           if (item.provider !== 'muse' || item.role !== 'agent' || item.threadId !== website.url() || isUserEcho(item.text)) return false;
           const task = extractMentionTask(item.text);
-          return task?.toLowerCase().startsWith(`${command} $alpha ${name} `) && task.includes(content);
+          const prefix = `${command} $alpha ${name} `;
+          const modelOption = runModel ? `--model ${runModel} ` : '';
+          return task?.toLowerCase().startsWith(prefix) && task.slice(prefix.length).startsWith(modelOption)
+            && task.includes(content);
         });
       }, 30_000);
+      assert.ok(result.text.startsWith(LIVE_HEADER), 'OpenCode reported a harness failure.');
       assert.deepEqual(readFileSync(path.join(alpha, file)), Buffer.from(content));
     };
 
     const suffix = randomUUID().slice(0, 8);
     const first = 'draft-' + suffix;
     const second = 'review-' + suffix;
-    await write(`Use my local OpenCode harness to start a clean session named ${first} in alpha.`, '/new', first, 'first.txt');
+    await write(`Use my local OpenCode harness to start a clean session named ${first} in alpha.`, '/new', first, 'first.txt', process.env.BLIBS_LIVE_MODEL?.trim());
     await write(`Use my local OpenCode harness to start a clean session named ${second} in alpha.`, '/new', second, 'second.txt');
     const secondFile = readFileSync(path.join(alpha, 'second.txt'));
     await write('Continue the same session that created first.txt in alpha.', '/resume', first, 'first.txt');

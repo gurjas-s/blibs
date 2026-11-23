@@ -761,6 +761,16 @@
   font-size: var(--font-size-lg);
 }
 
+.settings-model-help {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.settings-model-form {
+  display: grid;
+  gap: var(--space-2-5);
+}
+
 .settings-fields {
   display: grid;
   grid-template-columns: 2fr 1fr 1fr;

@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { isSessionId } from '../relay-state.js';
 import { OPENCODE_MENTION } from './mention.js';
 import type {
   Harness,
@@ -8,7 +9,6 @@ import type {
   HarnessStartOptions,
 } from './types.js';
 
-export const HARNESS_OUTPUT_LIMIT = 64 * 1024;
 /** Default opencode command. The relay uses it unless a config overrides it. */
 export const OPENCODE_COMMAND = 'opencode run';
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
@@ -16,7 +16,6 @@ const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-
 export interface OpenCodeHarnessOptions {
   command: string;
   cwd: string;
-  maxOutputBytes?: number;
 }
 
 export function splitCommand(value: string): string[] {
@@ -38,7 +37,8 @@ function plainText(value: string): string {
 }
 
 function hasSessionFlag(args: string[]): boolean {
-  return args.some((arg) => arg === '--session' || arg === '-s' || arg === '--continue' || arg === '-c');
+  return args.some((arg) => arg === '--session' || arg === '-s' || arg === '--continue' || arg === '-c'
+    || /^(?:--session|-s|--continue|-c)=/.test(arg));
 }
 
 /** One run that fails before the harness process starts. */
@@ -46,8 +46,14 @@ function failedRun(error: string): HarnessRun {
   return { promise: Promise.resolve({ ok: false, reply: '', code: null, error }), kill() {} };
 }
 
-function hasModelFlag(args: string[]): boolean {
-  return args.some((arg) => arg === '--model' || arg === '-m');
+function setFlag(args: string[], flags: string[], value: string): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (flags.includes(arg)) index += 1;
+    else if (!flags.some((flag) => arg.startsWith(`${flag}=`))) result.push(arg);
+  }
+  return [...result, flags[0], value];
 }
 
 function normalizeStartOptions(options?: HarnessStartOptions | string): HarnessStartOptions {
@@ -72,24 +78,42 @@ export class OpenCodeHarness implements Harness {
 
   private readonly command: string;
   private readonly cwd: string;
-  private readonly maxOutputBytes: number;
 
   constructor(options: OpenCodeHarnessOptions) {
     this.command = options.command;
     this.cwd = options.cwd;
-    this.maxOutputBytes = options.maxOutputBytes ?? HARNESS_OUTPUT_LIMIT;
+  }
+
+  listModels(cwd: string, signal: AbortSignal): Promise<string[] | undefined> {
+    const [file, ...args] = splitCommand(this.command);
+    const run = args.indexOf('run');
+    if (!file || run === -1) return Promise.resolve(undefined);
+    const modelCommand = [...args.slice(0, run), 'models'];
+    return new Promise((resolve) => {
+      execFile(file, modelCommand, { cwd, signal, timeout: 5_000, maxBuffer: 256 * 1024, windowsHide: true }, (error, stdout) => {
+        if (error) return resolve(undefined);
+        const models = plainText(stdout).split(/\r?\n/).map((line) => line.trim())
+          .filter((id) => id.length <= 200 && /^[\w.-]+\/[\w.@:+/-]+$/.test(id));
+        resolve(models.length ? [...new Set(models)] : undefined);
+      });
+    });
   }
 
   start(prompt: string, options?: HarnessStartOptions | string): HarnessRun {
     const run = normalizeStartOptions(options);
     const cwd = run.cwd ?? this.cwd;
     const command = splitCommand(this.command);
-    const maxOutput = this.maxOutputBytes;
     if (!command.length) return failedRun('harness command is empty');
     const [file, ...args] = command;
-    const finalArgs = [...args];
-    if (run.sessionId && !hasSessionFlag(finalArgs)) finalArgs.push('--session', run.sessionId);
-    if (run.model && !hasModelFlag(finalArgs)) finalArgs.push('--model', run.model);
+    let finalArgs = run.model ? setFlag(args, ['--model', '-m'], run.model) : args;
+    const onSessionCreated = run.onSessionCreated;
+    if (onSessionCreated) {
+      // An explicit continuation flag would make /new reuse another session.
+      if (hasSessionFlag(finalArgs)) return failedRun('remove session flags from the OpenCode command to start a new session');
+    } else if (run.sessionId && !hasSessionFlag(finalArgs)) {
+      finalArgs.push('--session', run.sessionId);
+    }
+    finalArgs = setFlag(finalArgs, ['--format'], 'json');
     finalArgs.push(prompt);
 
     const startedAt = performance.now();
@@ -109,8 +133,12 @@ export class OpenCodeHarness implements Harness {
       return failedRun(`harness could not start: ${(error as Error).message}`);
     }
 
-    let output = '';
-    let overflow = false;
+    let stepText = '';
+    let finalText = '';
+    let eventBuffer = '';
+    let session = run.sessionId;
+    let sessionWriteFailed = false;
+    let eventError = false;
     let settled = false;
     let spawned = false;
     let stdoutBytes = 0;
@@ -141,18 +169,49 @@ export class OpenCodeHarness implements Harness {
       child.stderr?.destroy();
     };
 
+    function consumeEvent(line: string): void {
+      let event: { type?: unknown; sessionID?: unknown; part?: { text?: unknown; reason?: unknown } };
+      try {
+        event = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (!event || !isSessionId(event.sessionID)) return;
+      if (!session) {
+        session = event.sessionID;
+        try {
+          onSessionCreated?.(session);
+        } catch {
+          sessionWriteFailed = true;
+          stop();
+          return;
+        }
+      }
+      if (event.sessionID !== session) return;
+      if (event.type === 'error') eventError = true;
+      if (event.type === 'step_start') {
+        stepText = '';
+        finalText = '';
+      }
+      if (event.type === 'text' && typeof event.part?.text === 'string') {
+        stepText += event.part.text;
+      }
+      if (event.type === 'step_finish' && event.part?.reason !== 'tool-calls') {
+        finalText = stepText;
+      }
+    }
+
     child.once('spawn', () => { spawned = true; });
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => {
       stdoutBytes += Buffer.byteLength(chunk);
       lastOutputAt = performance.now();
-      if (overflow) return;
-      if (stdoutBytes > maxOutput) {
-        overflow = true;
-        stop();
-        return;
+      const lines = (eventBuffer + chunk).split('\n');
+      eventBuffer = lines.pop() ?? '';
+      for (const line of lines) {
+        consumeEvent(line);
+        if (sessionWriteFailed) return;
       }
-      output += chunk;
     });
     // OpenCode can repeat the prompt on stderr. Count bytes and discard the text.
     child.stderr?.on('data', (chunk: Buffer) => {
@@ -165,9 +224,14 @@ export class OpenCodeHarness implements Harness {
       finish({ ok: false, reply: '', code: null, error: `harness could not start: ${spawnErrorCode ?? 'unknown error'}` });
     });
     child.once('close', (code) => {
-      if (overflow) return finish({ ok: false, reply: '', code, error: `harness output exceeded ${maxOutput} bytes` });
+      if (!sessionWriteFailed && eventBuffer) consumeEvent(eventBuffer);
+      if (sessionWriteFailed) return finish({ ok: false, reply: '', code, error: 'could not register the OpenCode session' });
       if (code !== 0) return finish({ ok: false, reply: '', code, error: `harness exited with code ${code ?? 'unknown'}` });
-      const reply = plainText(output);
+      if (onSessionCreated && !session) {
+        return finish({ ok: false, reply: '', code, error: 'OpenCode did not return a session ID' });
+      }
+      if (eventError) return finish({ ok: false, reply: '', code, error: 'OpenCode reported a run error' });
+      const reply = plainText(finalText);
       if (!reply) return finish({ ok: false, reply: '', code, error: 'harness returned no assistant text' });
       finish({ ok: true, reply, code });
     });

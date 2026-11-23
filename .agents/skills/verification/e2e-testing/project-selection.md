@@ -35,7 +35,9 @@ See [shared setup](README.md#shared-setup).
    The named-session check asks for the current commands with `@blibs`. It
    asks Muse to start two sessions in `alpha` and write separate files. It
    checks that Muse resumes by name when asked to continue the work that
-   created `first.txt` and verifies that only `first.txt` changes.
+   created `first.txt` and verifies that only `first.txt` changes. Set
+   `BLIBS_LIVE_MODEL` to an available OpenCode model ID to also ask Muse for
+   that model on the first task and check the command it sends.
 
 2. Start the mock app with the shared command. Expected: the panel opens.
 
@@ -62,8 +64,8 @@ See [shared setup](README.md#shared-setup).
    `send_muse agent project-choice "@opencode /select $REQUEST_ID \$alpha"`.
    Expected: blibs lists the sessions for `alpha`. No harness run starts.
    Run `send_muse agent project-run '@opencode /new $alpha app Build a small app'`.
-   Expected: blibs announces `app` and the harness runs in `alpha`. The
-   outbox reply contains `harness reply: Build a small app`.
+   Expected: OpenCode creates a session in `alpha`. blibs saves its ID and
+   announces `app`. The outbox reply contains `harness reply: Build a small app`.
 
 5. Run `send_muse agent project-follow-up '@opencode /resume $alpha app Add a test'`.
    Expected: blibs announces the name `app` and the harness reuses its session.
@@ -78,6 +80,23 @@ See [shared setup](README.md#shared-setup).
 8. Open **Connections** and select **New project**. Create `picker-test`.
    The picker selects the new project, and the shared folder contains an
    empty `picker-test` folder.
+
+9. Open **Settings → Harness models**. Confirm OpenCode shows **Harness
+   default** when the field is blank. Save `provider/custom`, reopen
+   Settings, and confirm the value. Clear the field and save to restore the
+   harness default. Use a mock profile for these changes.
+
+10. In the mock app, send
+    `@opencode /resume $alpha app --model provider/custom Add a test`.
+    Confirm the reply contains only the task as its prompt. The relay tests
+    check that OpenCode gets the model option for that run and uses the
+    configured default on the next run without an option.
+
+11. In the scripted Muse test, the mock harness lists two model IDs ending in
+    `sol`. Send the task that asks for `sol`. Confirm that blibs returns the
+    exact IDs and the scripted assistant sends the same task with one of them.
+    The session starts after the retry. The relay tests also cover a retry
+    with an existing session.
 
 ## Diagnostics
 
@@ -98,8 +117,14 @@ The live check stops Electron and removes its temporary projects when it ends. U
   ambiguous, unknown, and wrong-project selections, and checks that both
   named sessions and the default session can resume after restart. It
   checks the name list and confirms that previously issued IDs still work.
+  The noisy-output test checks that both a new and resumed run send only
+  the final reply, even after a large tool event. It also checks that the full final reply is
+  queued when it exceeds 256 KiB. Another test checks that a failure before OpenCode reports its ID leaves
+  the name available and that a recorded ID survives a later failure.
 - `tests/e2e/smoke.spec.ts` checks picker creation and scripted Muse
   creation, continuation, and redelivery. The named-session test checks the
   composer through two new sessions and a resume, including file contents
-  and the session IDs passed to the mock harness. Run with `npm run e2e`.
+  and the session IDs passed to the mock harness. It checks the model choices
+  and retry from the composer. It also checks that Settings
+  saves and clears the model default. Run with `npm run e2e`.
 - `tests/e2e/live-muse.spec.ts` checks the provider composer, relay, and file contents in step 1.

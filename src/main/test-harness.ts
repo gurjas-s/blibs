@@ -128,16 +128,17 @@ try {
   assert.deepStrictEqual(r, { ok: true }, 'static /api proxy');
   console.log('ok  - static panel + /api fan-out');
 
-  // 4. outbox loop with a fake vendor view (no browser involved)
+  // 4. outbox loop with a long message and a fake vendor view
+  const longReply = '😀'.repeat(100_000);
   await fetch(`${backend}/api/outbox`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ provider: 'muse', text: 'hello desktop harness' }),
+    body: JSON.stringify({ provider: 'muse', text: longReply }),
   });
   (api._views as Map<string, unknown>).set('muse', fakeView());
   const d = await api.drainOutbox('harness');
   assert.strictEqual(d.drained, 1, 'one item drained');
   const posted = sentToViews.find((s) => s.channel === 'blibs:send');
-  assert.ok(posted && posted.msg.text === 'hello desktop harness', 'view received exact text');
+  assert.ok(posted && posted.msg.text === longReply, 'view received exact text');
   r = (await fetch(`${backend}/api/outbox`).then((x) => x.json())) as {
     items: Array<{ status: string }>;
   };

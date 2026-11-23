@@ -71,9 +71,22 @@ IDs. Send `@opencode /sessions $alpha` to list the session names for the
   session name is one word of up to 40 characters. Use letters, numbers,
   underscores, or hyphens, and start with a letter or number.
 - Continue an existing session using `@opencode /resume $alpha first <task>`.
-  Session names ignore case. blibs announces the session name before it starts
-  the task. Existing sessions remain available as `Default`, and named
-  sessions persist across restart.
+  Session names ignore case. For a new session, blibs saves the ID OpenCode
+  returns and announces the name. For a resume, blibs announces the saved
+  name before it starts the task. Legacy sessions remain available as
+  `Default`, and named sessions persist across restart.
+
+**Choose a harness model:** Open **Settings → Harness models**. Leave the
+model ID blank to use the harness default. Enter a model ID and save to set a
+blibs default for that harness. For OpenCode, enter `provider/model`.
+
+To use a different model for one task, ask Muse to use that model. Muse can
+send `@opencode /new $alpha first --model provider/model <task>` or
+`@opencode /resume $alpha first --model provider/model <task>`. The option
+applies to that run. Later runs use the configured default when Muse omits it.
+If OpenCode lists models for the project and the requested ID is missing,
+blibs replies with up to five close matches. Muse can send the same command
+with one exact ID from the list and the full task.
 
 A project mention such as `@opencode $alpha <task>` lists the sessions. If
 the project is unclear, blibs lists project IDs and gives Muse a request ID.
@@ -92,13 +105,15 @@ spaces, dots, underscores, and hyphens.
 
 **Harness replies:** a reply from a local coding harness starts with
 `Sent from user's harness (<harness name>).` The header shows where the message
-came from.
+came from. blibs sends the final assistant response. OpenCode tool output
+and intermediate responses stay out of the chat. blibs sends the full final
+response, including long replies.
 
-The relay uses OpenCode. It uses the personal OpenCode Go provider with the
-Beam Free model by default. Set another model with `POST /api/relay/projects`
-and a `model` value in `provider/model` form. Set the projects directory with
-the `discoveryRoot` value. The relay uses only its immediate subfolders. A run
-that fails posts a short failure note into the chat.
+The relay uses OpenCode. To change its default through the local API, send
+`harnessId: "opencode"` and a `model` ID to `POST /api/relay/projects`. Send
+`model: null` to use the OpenCode default. Set the projects directory with
+`discoveryRoot`. The relay uses only its immediate subfolders. A run that
+fails posts a short failure note into the chat.
 
 ## Relay logs
 
@@ -202,5 +217,5 @@ for setup and expected results.
 | Blibs: `Backend unreachable` pill | Backend didn't boot with the app — restart; check the terminal for `[blibs] proxy exited` |
 | `EADDRINUSE` on `:5174`/`:8787` in `npm test` | A previous app instance is still running — quit it first |
 | Send stuck on `Sending…` | Session not signed in or page still loading — use Agents, then Retry |
-| Harness run shows `harness exited with code 1` | Check the OpenCode model and account limits. Set another model with `POST /api/relay/projects` and `{"model":"provider/model"}`. |
+| Harness run shows `harness exited with code 1` | Check the OpenCode model and account limits. Set an OpenCode default in **Settings → Harness models**. |
 | Login lost after restart | Partitions persist per OS user; check you didn't clear app data |

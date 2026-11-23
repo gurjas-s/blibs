@@ -491,18 +491,29 @@ export async function launch(options: LaunchOptions = {}): Promise<E2EApp> {
 
   // The relay runs the harness only after it matches a project.
   const fakeHarness = path.join(tempDir, 'fake-harness.mjs');
-  writeFileSync(fakeHarness, `import { appendFileSync, writeFileSync } from 'node:fs';
+  writeFileSync(fakeHarness, `import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 const args = process.argv.slice(2);
+if (args.at(-1) === 'models') {
+  if (!existsSync('models.txt')) process.exit(1);
+  process.stdout.write(readFileSync('models.txt', 'utf8'));
+  process.exit(0);
+}
 const prompt = args.at(-1) || '';
+const json = args.includes('--format') && args[args.indexOf('--format') + 1] === 'json';
+const session = args.includes('--session') ? args[args.indexOf('--session') + 1] : 'ses_' + randomBytes(12).toString('hex');
+if (json) process.stdout.write(JSON.stringify({ type: 'step_start', sessionID: session }) + '\\n');
 if (prompt.endsWith('Create hello.txt with exactly Hello from blibs.')) {
   writeFileSync('hello.txt', 'Hello from blibs.');
 }
 const fileTask = /^Write (first|second)[.]txt with exactly (.+)$/.exec(prompt);
 if (fileTask) {
   writeFileSync(fileTask[1] + '.txt', fileTask[2]);
-  appendFileSync('session-runs.jsonl', JSON.stringify(args[args.indexOf('--session') + 1]) + '\\n');
+  appendFileSync('session-runs.jsonl', JSON.stringify(session) + '\\n');
 }
-process.stdout.write('harness reply: ' + (prompt.split('\\n').at(-1) || '') + '\\n');
+const reply = 'harness reply: ' + (prompt.split('\\n').at(-1) || '');
+process.stdout.write((json ? JSON.stringify({ type: 'text', sessionID: session, part: { text: reply } }) : reply) + '\\n');
+if (json) process.stdout.write(JSON.stringify({ type: 'step_finish', sessionID: session, part: { reason: 'stop' } }) + '\\n');
 `);
 
   const env: NodeJS.ProcessEnv = {
@@ -510,7 +521,7 @@ process.stdout.write('harness reply: ' + (prompt.split('\\n').at(-1) || '') + '\
     BLIBS_DATA_DIR: dataDir,
     BLIBS_LEGACY_DIR: tempDir,
     BLIBS_NODE_PATH: process.execPath,
-    BLIBS_RELAY_COMMAND: JSON.stringify([process.execPath, fakeHarness]),
+    BLIBS_RELAY_COMMAND: JSON.stringify([process.execPath, fakeHarness, 'run']),
     BLIBS_RELAY_PROJECTS_DIR: projectsDir,
     BLIBS_UI_PORT: String(panelPort),
     PROXY_PORT: String(backendPort),

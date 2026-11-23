@@ -13,13 +13,19 @@ The [spec guide](../../../../tests/specs/README.md) lists the assumptions,
 invariants, and TLC setup. The model ends when the relay queues a reply,
 fails, or stops. The model checks that only explicit session commands can
 queue work. It also checks ownership, rejection of unavailable sessions,
-session notices, and persistence across restart.
+session notices, and persistence across restart. It checks that the relay
+saves a new session only after OpenCode reports its ID. It also checks model
+selection at dispatch, preservation of the chosen model after dispatch,
+and changes to the saved default. The model uses symbolic model IDs.
+The model checks that an unavailable model produces choices without a session
+or run. The relay tests cover invalid syntax, the ranked choices, and a
+retry with an exact ID.
 
 1. Check whether the implementation still matches the model. If intended
    behavior changes a modeled transition or invariant, update the spec and
    regenerate the statechart as described in the spec guide.
 2. Run `npm run test:specs` from the repository root. TLC checks the
-   transitions in both configurations.
+   transitions in all three configurations.
 3. Run or extend the relevant [relay implementation tests](../../../../tests/relay.test.ts).
    Exercise the affected outcome through the normal entry point. For example,
    use a repeated project selection to check that a task starts at most once,
