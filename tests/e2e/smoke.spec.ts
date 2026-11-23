@@ -496,7 +496,7 @@ test(
 
     assert.equal(
       await page.locator('#onboarding-title').innerText(),
-      'Connect your AI assistants to this Mac',
+      'Connect your AI assistants to this computer',
     );
     assert.equal(await page.locator('.sidebar').count(), 0, 'Onboarding has no chat sidebar.');
     const switchControl = page.getByRole('checkbox', { name: 'OpenCode for Muse' });
