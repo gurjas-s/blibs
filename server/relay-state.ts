@@ -12,7 +12,7 @@ export const RELAY_HARNESS_LIMIT = 20;
 export const HARNESS_TEXT_LIMIT = 60;
 /** Limit for each stored session collection. */
 export const RELAY_SESSION_LIMIT = 500;
-/** Stored model ids in provider/model form. */
+/** Maximum length of a stored model ID. */
 export const RELAY_MODEL_LIMIT = 200;
 /** Truncation for one stored error text. */
 const ERROR_TEXT_LIMIT = 300;
@@ -30,6 +30,7 @@ export interface RelayRunState {
 }
 
 export interface NamedSession {
+  harnessId?: string;
   scope: string;
   id: string;
   name: string;
@@ -89,14 +90,22 @@ export function isSessionId(value: unknown): value is string {
   return typeof value === 'string' && value.length <= SESSION_ID_LIMIT && /^ses_[a-z0-9]+$/i.test(value);
 }
 
+export function isCodexSessionId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
+}
+
 export function parseNamedSessions(value: unknown): NamedSession[] {
   if (!Array.isArray(value)) return [];
   const sessions: NamedSession[] = [];
   for (const entry of value.slice(0, RELAY_SESSION_LIMIT)) {
     if (!entry || typeof entry !== 'object') continue;
-    const { scope, id, name } = entry as Partial<NamedSession>;
-    if (typeof scope !== 'string' || !isSessionId(id) || typeof name !== 'string' || !SESSION_NAME.test(name)) continue;
-    sessions.push({ scope, id, name });
+    const { scope, id, name, harnessId } = entry as Partial<NamedSession>;
+    if (typeof scope !== 'string' || typeof name !== 'string' || !SESSION_NAME.test(name)) continue;
+    if (harnessId === 'codex') {
+      if (isCodexSessionId(id)) sessions.push({ scope, id, name, harnessId });
+    } else if ((harnessId === undefined || harnessId === 'opencode') && isSessionId(id)) {
+      sessions.push({ scope, id, name });
+    }
   }
   return sessions;
 }

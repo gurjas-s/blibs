@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { isSessionId } from '../relay-state.js';
+import { failedRun, killTree, normalizeStartOptions, splitCommand } from './process.js';
 import { OPENCODE_MENTION } from './mention.js';
 import type {
   Harness,
@@ -18,20 +19,6 @@ export interface OpenCodeHarnessOptions {
   cwd: string;
 }
 
-export function splitCommand(value: string): string[] {
-  const trimmed = value.trim();
-  if (!trimmed) return [];
-  if (trimmed.startsWith('[')) {
-    let parsed: unknown;
-    try { parsed = JSON.parse(trimmed); } catch { throw new Error('harness command is not valid JSON'); }
-    if (!Array.isArray(parsed) || !parsed.length || !parsed.every((part) => typeof part === 'string' && part.trim())) {
-      throw new Error('harness command must be a non-empty JSON array of strings');
-    }
-    return parsed as string[];
-  }
-  return trimmed.split(/\s+/);
-}
-
 function plainText(value: string): string {
   return value.replace(ANSI_SEQUENCE, '').trim();
 }
@@ -39,11 +26,6 @@ function plainText(value: string): string {
 function hasSessionFlag(args: string[]): boolean {
   return args.some((arg) => arg === '--session' || arg === '-s' || arg === '--continue' || arg === '-c'
     || /^(?:--session|-s|--continue|-c)=/.test(arg));
-}
-
-/** One run that fails before the harness process starts. */
-function failedRun(error: string): HarnessRun {
-  return { promise: Promise.resolve({ ok: false, reply: '', code: null, error }), kill() {} };
 }
 
 function setFlag(args: string[], flags: string[], value: string): string[] {
@@ -54,22 +36,6 @@ function setFlag(args: string[], flags: string[], value: string): string[] {
     else if (!flags.some((flag) => arg.startsWith(`${flag}=`))) result.push(arg);
   }
   return [...result, flags[0], value];
-}
-
-function normalizeStartOptions(options?: HarnessStartOptions | string): HarnessStartOptions {
-  if (typeof options === 'string') return { sessionId: options };
-  return options ?? {};
-}
-
-function killTree(child: ReturnType<typeof spawn>): void {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  try {
-    // The child leads a process group, so helper processes die with it.
-    if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
-    else child.kill('SIGKILL');
-  } catch {
-    try { child.kill('SIGKILL'); } catch { /* already gone */ }
-  }
 }
 
 export class OpenCodeHarness implements Harness {

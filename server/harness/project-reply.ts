@@ -93,7 +93,7 @@ export function sessionCommands(mention: string, project = '$<project>'): string
     `If you need the available names, list sessions with ${mention} /sessions ${project}.`,
     `For a follow-up, use the session name from the conversation. Send ${mention} /resume ${project} <name> <task> with the full task.`,
     'If blibs lists model IDs, choose an exact ID from the list and resend the full command and task.',
-    'If the user requests a model, put --model <model-id> after the session name and before the task. For OpenCode, use provider/model. Omit the option to use the configured default.',
+    'If the user requests a model, put --model <model-id> after the session name and before the task. Use provider/model for OpenCode and a Codex model ID for Codex. Omit the option to use the configured default.',
   ];
 }
 

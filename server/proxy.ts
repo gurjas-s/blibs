@@ -203,7 +203,7 @@ export function createProxyServer(dataDir = process.env.BLIBS_DATA_DIR || SERVER
         }
         const parsedModel = parseModel(model);
         if (model !== undefined && model !== null && !parsedModel) {
-          return send(res, 400, { error: 'Enter one model ID. For OpenCode, use provider/model.' });
+          return send(res, 400, { error: 'Enter one model ID. Use provider/model for OpenCode and a Codex model ID for Codex.' });
         }
         try {
           return send(res, 200, relay.updateProjects(

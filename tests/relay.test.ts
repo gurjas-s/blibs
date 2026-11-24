@@ -66,7 +66,45 @@ process.stdout.write((json ? JSON.stringify({ type: 'text', sessionID: session, 
 if (json) process.stdout.write(JSON.stringify({ type: 'step_finish', sessionID: session, part: { reason: 'stop' } }) + '\\n');
 `;
 
-async function startRelay(commandArgs: string[] = []): Promise<RelayServer> {
+const FAKE_CODEX = `import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { createInterface } from 'node:readline';
+const args = process.argv.slice(2);
+const send = (event) => console.log(JSON.stringify(event));
+if (args[0] === 'app-server') {
+  for await (const line of createInterface({ input: process.stdin })) {
+    const request = JSON.parse(line);
+    if (request.method === 'initialize') send({ id: request.id, result: {} });
+    if (request.method === 'model/list') {
+      send({ id: request.id, result: request.params.cursor
+        ? { data: [{ model: 'test-override' }], nextCursor: null }
+        : { data: [{ model: 'test-default' }], nextCursor: 'next' } });
+    }
+  }
+} else {
+  const prompt = fs.readFileSync(0, 'utf8');
+  const output = args[args.indexOf('--output-last-message') + 1];
+  const resumed = args.includes('resume');
+  const thread = resumed ? args.at(-3) : randomUUID();
+  if (prompt === 'fail before session') process.exit(1);
+  send({ type: 'thread.started', thread_id: thread });
+  if (prompt === 'fail turn') {
+    send({ type: 'turn.failed', error: { message: 'private failure details' } });
+    process.exit(0);
+  }
+  const history = thread + '.txt';
+  if (resumed && !fs.existsSync(history)) process.exit(2);
+  const prior = resumed ? fs.readFileSync(history, 'utf8') : '';
+  fs.writeFileSync(history, prompt);
+  const model = args.includes('--model') ? args[args.indexOf('--model') + 1] : 'native';
+  send({ type: 'item.completed', item: { type: 'agent_message', text: 'intermediate response' } });
+  console.error('private tool output');
+  fs.writeFileSync(output, prompt === 'long reply' ? '😀'.repeat(100_000) : [model, prior, prompt].join('|'));
+  send({ type: 'turn.completed' });
+}
+`;
+
+async function startRelay(commandArgs: string[] = [], fakeCodex = false): Promise<RelayServer> {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-data-'));
   const harnessDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-harness-'));
   const projectsDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'blibs-relay-projects-')));
@@ -78,13 +116,24 @@ async function startRelay(commandArgs: string[] = []): Promise<RelayServer> {
   const seed = new HistoryStore(dataDir);
   seed.import([{ provider: 'muse', role: 'user', text: 'Earlier message.', ts: 1, url: 'https://muse.ai/chat/relay-test', sourceId: 'seed-user', identity: 'source-id' }]);
   seed.close();
-  const createServer = () => createProxyServer(dataDir, {}, { relay: {
-    enabled: true,
-    provider: 'muse',
-    command: JSON.stringify([process.execPath, fake, 'run', ...commandArgs]),
-    cwd: harnessDir,
-    discoveryRoot: projectsDir,
-  } });
+  const codex = path.join(harnessDir, 'fake-codex.mjs');
+  if (fakeCodex) writeFileSync(codex, FAKE_CODEX);
+  const createServer = () => {
+    const original = process.env.BLIBS_CODEX_COMMAND;
+    if (fakeCodex) process.env.BLIBS_CODEX_COMMAND = JSON.stringify([process.execPath, codex, 'exec']);
+    try {
+      return createProxyServer(dataDir, {}, { relay: {
+        enabled: true,
+        provider: 'muse',
+        command: JSON.stringify([process.execPath, fake, 'run', ...commandArgs]),
+        cwd: harnessDir,
+        discoveryRoot: projectsDir,
+      } });
+    } finally {
+      if (original === undefined) delete process.env.BLIBS_CODEX_COMMAND;
+      else process.env.BLIBS_CODEX_COMMAND = original;
+    }
+  };
   let server = createServer();
   const result = { base: '', dataDir, harnessDir, projectsDir, alpha, restart };
   async function listen(): Promise<void> {
@@ -579,6 +628,7 @@ test('model defaults persist by harness and an explicit model applies to one run
   assert.equal(saved.status, 200);
   assert.deepEqual((await saved.json()).modelDefaults, [
     { id: 'opencode', name: 'OpenCode', model: 'provider/default' },
+    { id: 'codex', name: 'Codex' },
   ]);
 
   await server.restart();
@@ -688,17 +738,81 @@ test('relay settings reject invalid folders and keep the previous settings when 
   assert.equal((await post('/api/relay/projects', { discoveryRoot: server.alpha, model: null })).status, 500);
   assert.equal((await readStatus()).harness.model, 'provider/saved');
   const opencode = { id: 'opencode', name: 'OpenCode', enabled: false };
+  const codex = { id: 'codex', name: 'Codex', enabled: true };
   assert.equal((await post('/api/relay/harnesses', { harnesses: [opencode] })).status, 500);
   assert.equal((await readStatus()).discoveryRoot, server.projectsDir);
-  assert.deepEqual((await readStatus()).harnesses, [{ ...opencode, enabled: true }]);
+  assert.deepEqual((await readStatus()).harnesses, [{ ...opencode, enabled: true }, codex]);
   rmSync(blocked, { recursive: true });
 
   assert.equal((await post('/api/relay/harnesses', { harnesses: [opencode] })).status, 200);
   assert.equal((await post('/api/relay/harnesses', {
     harnesses: [{ id: 'codex', name: 'Codex', enabled: true }],
   })).status, 200);
-  assert.deepEqual((await readStatus()).harnesses, [opencode]);
+  assert.deepEqual((await readStatus()).harnesses, [opencode, codex]);
   await importMuse(server, '@opencode /new $alpha greeting hello', 'settings-disabled');
   assert.ok((await outbox(server)).some((item) => item.text.includes('OpenCode harness is disabled')));
   assert.equal(runs(server).length, 0);
+});
+
+test('Muse routes Codex projects, models, and durable sessions independently of OpenCode', async () => {
+  const server = await startRelay([], true);
+  const post = (route: string, body: unknown) => fetch(server.base + route, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  let sequence = 0;
+  const request = async (command: string, expected: string): Promise<string> => {
+    const count = (await outbox(server)).filter(({ text }) => text.includes(expected)).length;
+    await importMuse(server, command, `codex-${++sequence}`);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const matches = (await outbox(server)).filter(({ text }) => text.includes(expected));
+      if (matches.length > count) return matches.at(-1)!.text;
+      await sleep(25);
+    }
+    assert.fail(`Expected ${expected} after ${command}`);
+  };
+  const header = "Sent from user's harness (Codex).";
+  await request('@codex', '- $alpha');
+  await request('@codex /new-project codex-project', 'Project ID: $codex-project');
+  const choices = await request('@codex help with this project', '@codex /select ');
+  const requestId = choices.match(/@codex \/select ([a-f0-9]+) /)?.[1];
+  assert.ok(requestId);
+  await request(`@opencode /select ${requestId} $alpha`, 'project choice is no longer active');
+  await request(`@codex /select ${requestId} $alpha`, 'No sessions for $alpha');
+  assert.equal((await post('/api/relay/projects', { harnessId: 'codex', model: 'test-default' })).status, 200);
+  await request('@opencode /new $alpha first OpenCode task', 'harness reply: OpenCode task');
+  await request('@opencode /new $alpha other OpenCode task two', 'harness reply: OpenCode task two');
+  await request('@codex /resume $alpha other Wrong harness', 'That session is unavailable');
+  const rejected = await request('@codex /new $alpha first --model missing Set context', 'Closest available model IDs');
+  assert.match(rejected, /- test-override/);
+  await request('@codex /sessions $alpha', 'No sessions for $alpha');
+  await request('@codex /new $alpha first --model test-override Set context', `${header}
+
+test-override||Set context`);
+  await request('@codex /new $alpha FIRST Duplicate', 'Choose a different session name');
+  await request('@codex /new $alpha failed fail before session', 'Codex harness failed');
+  await request('@codex /new $alpha turn-error fail turn', 'Codex reported a run error');
+  const sessions = await request('@codex /sessions $alpha', 'Sessions for $alpha');
+  assert.match(sessions, /- first\n- turn-error/);
+  assert.doesNotMatch(sessions, /- other|- failed/);
+
+  assert.equal((await post('/api/relay/harnesses', { harnesses: [{ id: 'codex', name: 'Codex', enabled: false }] })).status, 200);
+  await server.restart();
+  await request('@codex /resume $alpha first Disabled', 'Codex harness is disabled');
+  await request('@opencode /resume $alpha first OpenCode still enabled', 'harness reply: OpenCode still enabled');
+  assert.equal((await post('/api/relay/harnesses', { harnesses: [{ id: 'codex', name: 'Codex', enabled: true }] })).status, 200);
+  await request('@codex /resume $alpha FIRST Follow up', `${header}
+
+test-default|Set context|Follow up`);
+  await request('@codex /resume $beta first Wrong project', 'That session is unavailable');
+  assert.equal((await post('/api/relay/projects', { harnessId: 'codex', model: null })).status, 200);
+  await request('@codex /resume $alpha first Use native model', `${header}
+
+native|Follow up|Use native model`);
+  const longReply = await request('@codex /resume $alpha first long reply', `${header}
+
+😀`);
+  assert.equal(longReply, `${header}
+
+${'😀'.repeat(100_000)}`);
+  assert.ok((await outbox(server)).every(({ text }) => !/private tool output|intermediate response|private failure details/.test(text)));
 });

@@ -1,14 +1,15 @@
-# Verify OpenCode project selection
+# Verify Muse project selection
 
 ## Scope
 
-This document covers the project selection flow for OpenCode. The relay uses
+This document covers the project selection flow for OpenCode and Codex in Muse. The relay uses
 only immediate folders in the configured projects directory. Each chat and
-project can have named sessions and a legacy session called `Default`. Different projects can
+project can have named sessions for each harness. OpenCode also supports a
+legacy session called `Default`. Different projects can
 run at the same time. Tasks for the same project run in order.
 
 The relay tests use a harness stub. The live check uses a signed-in Muse
-session and OpenCode.
+session and the installed harnesses.
 
 ## Setup
 
@@ -32,12 +33,18 @@ See [shared setup](README.md#shared-setup).
    file. Set `BLIBS_LIVE_CREATION_CHAT` to use another Muse chat URL for the
    creation test.
 
-   The named-session check asks for the current commands with `@blibs`. It
+   The named-session checks for OpenCode and Codex ask for the current commands with `@blibs`. It
    asks Muse to start two sessions in `alpha` and write separate files. It
    checks that Muse resumes by name when asked to continue the work that
    created `first.txt` and verifies that only `first.txt` changes. Set
    `BLIBS_LIVE_MODEL` to an available OpenCode model ID to also ask Muse for
-   that model on the first task and check the command it sends.
+   that model on the first task and check the command it sends. Use
+   `BLIBS_LIVE_CODEX_MODEL` for the Codex check. To run only the Codex check
+   against the existing build, use this command.
+
+   ```sh
+   BLIBS_LIVE_LOGIN=1 node --import tsx --test --test-name-pattern 'Codex named sessions' tests/e2e/live-muse.spec.ts
+   ```
 
 2. Start the mock app with the shared command. Expected: the panel opens.
 
@@ -98,6 +105,11 @@ See [shared setup](README.md#shared-setup).
     The session starts after the retry. The relay tests also cover a retry
     with an existing session.
 
+12. In **Connections**, turn off **Codex for Muse** and confirm that
+    **OpenCode for Muse** is still on. Reload and check that the settings
+    persist. In **Settings → Harness models**, save and clear the Codex
+    default and confirm that the OpenCode field keeps its value.
+
 ## Diagnostics
 
 - Check whether the harness reply appeared in the same conversation.
@@ -107,6 +119,9 @@ The live check stops Electron and removes its temporary projects when it ends. U
 
 ## Automated coverage
 
+- The Codex test in `tests/relay.test.ts` checks project commands, exact
+  model IDs, session isolation, resume after restart, final replies, and
+  failure notes through the Muse import and outbox routes.
 - `tests/relay.test.ts` covers explicit session commands, project selection replies, duplicate
   delivery, stale choices, ambiguous requests, and unknown and empty project
   lists, folder creation, invalid names, conflicts, and write failures. The

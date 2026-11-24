@@ -78,6 +78,7 @@ export function introMessage(choices: HarnessChoice[]): string {
     lines.push(
       `How tagging works: start a message with a harness tag. For example, ${tag} /new $alpha fix-tests Fix the failing test sends that task to ${suggested.name}. blibs types the harness reply back into this chat.`,
       '',
+      ...(enabled.length > 1 ? [`Use the same commands with ${enabled.map(({ id }) => harnessTag(id)).join(' or ')}. Session names are specific to each harness.`, ''] : []),
       `Choose a project, then choose a session and include the full task. Only /new and /resume start work. Send ${tag} by itself to list projects.`,
       `To create a project, use ${projectCreationFormat(tag)}. Then use the returned project ID for your task.`,
       `When blibs lists projects for a saved task, match the project to the conversation and send ${projectSelectionFormat(tag)} using the request ID from that reply. Then send the full task with /new or /resume.`,

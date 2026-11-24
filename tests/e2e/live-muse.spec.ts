@@ -1,4 +1,4 @@
-// Opt-in check for Muse and OpenCode using an existing signed-in profile.
+// Opt-in checks for Muse harnesses using an existing signed-in profile.
 // Run with BLIBS_LIVE_LOGIN=1 npm run e2e:live.
 
 import { test } from 'node:test';
@@ -207,72 +207,79 @@ for (const createProject of [false, true]) test(
   },
 );
 
-test('live Muse starts and resumes named sessions from the composer', { skip: relaySkipReason() }, async (t) => {
-  const projectsDir = mkdtempSync(path.join(os.tmpdir(), 'blibs-live-sessions-'));
-  t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
-  const alpha = path.join(projectsDir, 'alpha');
-  mkdirSync(alpha);
-  const app = await launch({ mockLogin: false, profileDir: LIVE_PROFILE, relayCommand: null, projectsDir });
-  try {
-    await completeOnboarding(app.page);
-    const model = liveRelayModel();
-    if (model) {
-      const configured = await fetch(app.backendUrl + '/api/relay/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model }),
-      });
-      assert.equal(configured.status, 200);
-    }
-    const website = await waitFor('the signed-in Muse view', async () =>
-      app.context.pages().find((page) => new URL(page.url()).origin === 'https://muse.ai'), 30_000);
-    const composer = website.locator('textarea[aria-label="Message"], div[contenteditable="true"]').first();
-    const log = website.getByRole('log');
-    const introduction = log.getByText('@opencode /new $<project>', { exact: false });
-    const introductions = await introduction.count();
-    await sendFromPane(website, composer, '@blibs');
-    await introduction.nth(introductions).waitFor({ timeout: 45_000 });
-
-    const write = async (request: string, command: string, name: string, file: string, runModel?: string): Promise<void> => {
-      const content = 'blibs-test-' + randomUUID();
-      const existingIds = new Set((await outboxItems(app)).map(({ id }) => id));
-      const modelRequest = runModel ? ` Use ${runModel} as the OpenCode model for this task.` : '';
-      await sendFromPane(website, composer, request + modelRequest +
-        ` Write exactly ${content} to ${file} with no trailing newline. Leave all other files and projects untouched.`);
-      const fresh = (item: { id: string; threadId?: string; status: string }): boolean =>
-        !existingIds.has(item.id) && item.threadId === website.url() && item.status === 'sent';
-      await waitForOutbox(app, (item) =>
-        fresh(item) && item.text.endsWith(`Active session for $alpha: ${name}.`), 180_000);
-      const result = await waitForOutbox(app, (item) => fresh(item)
-        && (item.text.startsWith(LIVE_HEADER) || item.text.startsWith('The OpenCode harness failed:')), 300_000);
-      await waitFor('Muse to use the session name in its command', async () => {
-        const response = await fetch(app.backendUrl + '/api/imports');
-        assert.equal(response.status, 200);
-        const { imports } = await response.json() as {
-          imports: Array<{ provider: string; role: string; threadId: string; text: string }>;
-        };
-        return imports.find((item) => {
-          if (item.provider !== 'muse' || item.role !== 'agent' || item.threadId !== website.url() || isUserEcho(item.text)) return false;
-          const task = extractMentionTask(item.text);
-          const prefix = `${command} $alpha ${name} `;
-          const modelOption = runModel ? `--model ${runModel} ` : '';
-          return task?.toLowerCase().startsWith(prefix) && task.slice(prefix.length).startsWith(modelOption)
-            && task.includes(content);
+for (const [harnessId, harnessName] of [['opencode', 'OpenCode'], ['codex', 'Codex']]) {
+  test(`live Muse starts and resumes ${harnessName} named sessions from the composer`, { skip: relaySkipReason() }, async (t) => {
+    const mention = `@${harnessId}`;
+    const header = `Sent from user's harness (${harnessName}).`;
+    const modelOverride = harnessId === 'codex'
+      ? process.env.BLIBS_LIVE_CODEX_MODEL?.trim() : process.env.BLIBS_LIVE_MODEL?.trim();
+    const projectsDir = mkdtempSync(path.join(os.tmpdir(), 'blibs-live-sessions-'));
+    t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
+    const alpha = path.join(projectsDir, 'alpha');
+    mkdirSync(alpha);
+    const app = await launch({ mockLogin: false, profileDir: LIVE_PROFILE, relayCommand: null, projectsDir });
+    try {
+      await completeOnboarding(app.page);
+      const model = harnessId === 'opencode' ? liveRelayModel() : modelOverride;
+      if (model) {
+        const configured = await fetch(app.backendUrl + '/api/relay/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ harnessId, model }),
         });
-      }, 30_000);
-      assert.ok(result.text.startsWith(LIVE_HEADER), 'OpenCode reported a harness failure.');
-      assert.deepEqual(readFileSync(path.join(alpha, file)), Buffer.from(content));
-    };
+        assert.equal(configured.status, 200);
+      }
+      const website = await waitFor('the signed-in Muse view', async () =>
+        app.context.pages().find((page) => new URL(page.url()).origin === 'https://muse.ai'), 30_000);
+      const composer = website.locator('textarea[aria-label="Message"], div[contenteditable="true"]').first();
+      const log = website.getByRole('log');
+      const introduction = log.getByText(harnessId === 'codex' ? /@codex.*Session names are specific/ : '@opencode /new $<project>', { exact: false });
+      const introductions = await introduction.count();
+      await sendFromPane(website, composer, '@blibs');
+      await introduction.nth(introductions).waitFor({ timeout: 45_000 });
 
-    const suffix = randomUUID().slice(0, 8);
-    const first = 'draft-' + suffix;
-    const second = 'review-' + suffix;
-    await write(`Use my local OpenCode harness to start a clean session named ${first} in alpha.`, '/new', first, 'first.txt', process.env.BLIBS_LIVE_MODEL?.trim());
-    await write(`Use my local OpenCode harness to start a clean session named ${second} in alpha.`, '/new', second, 'second.txt');
-    const secondFile = readFileSync(path.join(alpha, 'second.txt'));
-    await write('Continue the same session that created first.txt in alpha.', '/resume', first, 'first.txt');
-    assert.deepEqual(readFileSync(path.join(alpha, 'second.txt')), secondFile);
-  } finally {
-    await app.close();
-  }
-});
+      const write = async (request: string, command: string, name: string, file: string, runModel?: string): Promise<void> => {
+        const content = 'blibs-test-' + randomUUID();
+        const marker = 'done-' + randomUUID();
+        const existingIds = new Set((await outboxItems(app)).map(({ id }) => id));
+        const modelOption = runModel ? `--model ${runModel} ` : '';
+        const task = `Write exactly ${content} to ${file} with no trailing newline. Reply with ${marker} after writing the file. Leave other files untouched.`;
+        await sendFromPane(website, composer, request +
+          ` Send this exact command as your own message: ${mention} ${command} $alpha ${name} ${modelOption}${task}`);
+        const fresh = (item: { id: string; threadId?: string; status: string }): boolean =>
+          !existingIds.has(item.id) && item.threadId === website.url() && item.status === 'sent';
+        await waitForOutbox(app, (item) =>
+          fresh(item) && item.text.endsWith(`Active session for $alpha: ${name}.`), 180_000);
+        const result = await waitForOutbox(app, (item) => fresh(item)
+          && ((item.text.startsWith(header) && item.text.includes(marker)) || item.text.startsWith(`The ${harnessName} harness failed:`)), 300_000);
+        await waitFor('Muse to use the session name in its command', async () => {
+          const response = await fetch(app.backendUrl + '/api/imports');
+          assert.equal(response.status, 200);
+          const { imports } = await response.json() as {
+            imports: Array<{ provider: string; role: string; threadId: string; text: string }>;
+          };
+          return imports.find((item) => {
+            if (item.provider !== 'muse' || item.role !== 'agent' || item.threadId !== website.url() || isUserEcho(item.text)) return false;
+            const task = extractMentionTask(item.text, mention);
+            const prefix = `${command} $alpha ${name} `;
+            return task?.toLowerCase().startsWith(prefix) && task.slice(prefix.length).startsWith(modelOption)
+              && task.includes(content) && task.includes(marker);
+          });
+        }, 30_000);
+        assert.ok(result.text.startsWith(header), `${harnessName} reported a harness failure.`);
+        assert.deepEqual(readFileSync(path.join(alpha, file)), Buffer.from(content));
+      };
+
+      const suffix = randomUUID().slice(0, 8);
+      const first = 'draft-' + suffix;
+      const second = 'review-' + suffix;
+      await write(`Use my local ${harnessName} harness to start a clean session named ${first} in alpha.`, '/new', first, 'first.txt', modelOverride);
+      await write(`Use my local ${harnessName} harness to start a clean session named ${second} in alpha.`, '/new', second, 'second.txt');
+      const secondFile = readFileSync(path.join(alpha, 'second.txt'));
+      await write(`Use my local ${harnessName} harness to continue the same session that created first.txt in alpha.`, '/resume', first, 'first.txt');
+      assert.deepEqual(readFileSync(path.join(alpha, 'second.txt')), secondFile);
+    } finally {
+      await app.close();
+    }
+  });
+}

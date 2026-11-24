@@ -14,7 +14,10 @@ invariants, and TLC setup. The model ends when the relay queues a reply,
 fails, or stops. The model checks that only explicit session commands can
 queue work. It also checks ownership, rejection of unavailable sessions,
 session notices, and persistence across restart. It checks that the relay
-saves a new session only after OpenCode reports its ID. It also checks model
+saves a new session only after the harness reports its ID. Apply the same checks to each
+harness. The model represents one harness. The relay tests check that the
+same chat and project can use separate Codex and OpenCode session names and
+project selections. It also checks model
 selection at dispatch, preservation of the chosen model after dispatch,
 and changes to the saved default. The model uses symbolic model IDs.
 The model checks that an unavailable model produces choices without a session

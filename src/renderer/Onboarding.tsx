@@ -18,7 +18,7 @@ export interface OnboardingProps {
   relay?: RelayStatus;
   saving: boolean;
   error: string;
-  onToggleHarness: (enabled: boolean) => void;
+  onToggleHarness: (id: string, enabled: boolean) => void;
   onClearError: () => void;
   onCreateProject: (name: string) => Promise<string | undefined>;
   onChangeFolder: (folder: string) => Promise<boolean>;
@@ -151,13 +151,13 @@ export default function Onboarding({
                     <th scope="row">{harness.name}</th>
                     {assistants.map((assistant) => (
                       <td key={assistant.id}>
-                        {relay?.provider === assistant.id && relay.harness.id === harness.id ? (
+                        {relay?.provider === assistant.id && relay.harnesses.some(({ id }) => id === harness.id) ? (
                           <CheckboxField
                             variant="switch"
-                            checked={relay.harnesses[0]?.enabled ?? false}
+                            checked={relay.harnesses.find(({ id }) => id === harness.id)?.enabled ?? false}
                             disabled={!relay.enabled || saving}
                             label={`${harness.name} for ${assistant.product}`}
-                            onChange={(event) => onToggleHarness(event.target.checked)}
+                            onChange={(event) => onToggleHarness(harness.id, event.target.checked)}
                           />
                         ) : relay ? 'Unsupported' : 'Unavailable'}
                       </td>
