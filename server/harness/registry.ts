@@ -1,8 +1,9 @@
 // Harness selection for the relay.
 //
 // The relay modules stay harness-generic: the relay config names a harness id,
-// and this registry turns the id into the default command and the adapter. A
-// new harness adds one entry to HARNESS_KINDS; no relay module changes.
+// and this registry turns the id into the default command and the adapter. The
+// relay uses the registry to find the available adapters.
+import { CODEX_COMMAND, CODEX_MENTION, CodexHarness } from './codex.js';
 import { OPENCODE_COMMAND, OpenCodeHarness } from './opencode.js';
 import { OPENCODE_MENTION } from './mention.js';
 import type { Harness } from './types.js';
@@ -36,7 +37,13 @@ const OPENCODE_KIND: HarnessKind = {
 };
 
 /** Every harness blibs can drive. The first entry is the relay default. */
-export const HARNESS_KINDS: readonly HarnessKind[] = [OPENCODE_KIND];
+export const HARNESS_KINDS: readonly HarnessKind[] = [OPENCODE_KIND, {
+  id: 'codex',
+  name: 'Codex',
+  mention: CODEX_MENTION,
+  defaultCommand: CODEX_COMMAND,
+  create: (options) => new CodexHarness(options),
+}];
 
 /** The relay default. The relay uses it when no harness id is set. */
 export function defaultHarness(): HarnessKind {

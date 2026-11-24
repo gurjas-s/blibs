@@ -657,8 +657,8 @@ export default function App() {
     return token;
   }
 
-  function toggleHarness(enabled: boolean): void {
-    const choice = relay?.harnesses[0];
+  function toggleHarness(id: string, enabled: boolean): void {
+    const choice = relay?.harnesses.find((entry) => entry.id === id);
     if (relay?.enabled && choice) {
       void saveRelay(() => updateRelayHarnesses([{ ...choice, enabled }]));
     }
@@ -1105,13 +1105,13 @@ export default function App() {
               {HARNESSES.map((harness) => (
                 <div className="context-row" key={harness.id}>
                   <span>{harness.name}</span>
-                  {relay?.provider === active.provider && relay.harness.id === harness.id ? (
+                  {relay?.provider === active.provider && relay.harnesses.some(({ id }) => id === harness.id) ? (
                     <CheckboxField
                       variant="switch"
-                      checked={relay.harnesses[0]?.enabled ?? false}
+                      checked={relay.harnesses.find(({ id }) => id === harness.id)?.enabled ?? false}
                       disabled={!relay.enabled || relaySaving}
                       label={`${harness.name} for ${active.name}`}
-                      onChange={(event) => toggleHarness(event.target.checked)}
+                      onChange={(event) => toggleHarness(harness.id, event.target.checked)}
                     />
                   ) : <span>{relay ? 'Unsupported' : 'Unavailable'}</span>}
                 </div>

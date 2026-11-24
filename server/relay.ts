@@ -54,6 +54,7 @@ export const RELAY_QUEUE_LIMIT = 20;
 export const RELAY_PROVIDER = 'muse';
 /** Environment override for the harness command. Tests and e2e stub the harness with it. */
 export const RELAY_COMMAND_ENV = 'BLIBS_RELAY_COMMAND';
+export const CODEX_COMMAND_ENV = 'BLIBS_CODEX_COMMAND';
 /** Environment override for the projects directory. */
 export const RELAY_PROJECTS_DIR_ENV = 'BLIBS_RELAY_PROJECTS_DIR';
 /** Length limit for one stored or env harness command. */
@@ -75,7 +76,7 @@ export interface RelayConfig {
   harnessId: string;
   command: string;
   cwd: string;
-  /** Default harness model in provider/model form. Empty means the harness default. */
+  /** Default model for the configured harness. */
   model?: string;
   /** Directory whose immediate subfolders are the projects. */
   discoveryRoot: string;
@@ -103,6 +104,7 @@ export type ProjectCreation =
   | { kind: 'invalid' | 'conflict' | 'failed'; error: string };
 
 interface RelayItem {
+  harness: Harness;
   id: string;
   provider: string;
   threadId: string;
@@ -229,7 +231,7 @@ export class RelayService {
   private config: RelayConfig;
   private readonly stateDir: string;
   private readonly stateFile: string;
-  private readonly harness: Harness;
+  private readonly harnessAdapters: Harness[];
   private readonly enqueueReply: (provider: string, text: string, threadId?: string) => void;
   private readonly announceReply: (provider: string, text: string, threadId?: string, triggerId?: string) => void;
   private readonly threadHasUser: (provider: string, threadId: string) => boolean;
@@ -247,7 +249,17 @@ export class RelayService {
     this.config = options.config;
     this.stateDir = options.stateDir;
     this.stateFile = path.join(options.stateDir, 'relay-state.json');
-    this.harness = options.harness;
+    this.harnessAdapters = [options.harness];
+    if (this.config.provider === RELAY_PROVIDER) {
+      for (const kind of HARNESS_KINDS) {
+        if (kind.id === options.harness.id) continue;
+        const command = kind.id === 'codex' ? process.env[CODEX_COMMAND_ENV]?.trim() : undefined;
+        this.harnessAdapters.push(kind.create({
+          command: command ? command.slice(0, RELAY_COMMAND_LIMIT) : kind.defaultCommand,
+          cwd: this.config.cwd,
+        }));
+      }
+    }
     this.enqueueReply = options.enqueue;
     this.announceReply = options.announce ?? (() => {});
     this.threadHasUser = options.threadHasUser ?? (() => false);
@@ -356,7 +368,7 @@ export class RelayService {
     if (threads.length > RELAY_THREAD_LIMIT) {
       const oldest = threads[0];
       this.knownThreads.delete(oldest);
-      this.pendingProjectTasks.delete(oldest);
+      this.clearPendingChoices(oldest);
       const prefix = sessionKeyPrefix(oldest);
       for (const key of Object.keys(this.state.sessions)) {
         if (key.startsWith(prefix)) delete this.state.sessions[key];
@@ -365,51 +377,51 @@ export class RelayService {
     this.state.threads = [...this.knownThreads].slice(-RELAY_THREAD_LIMIT);
   }
 
-  private storedSession(threadId: string, projectPath: string): string | undefined {
-    return this.state.sessions[sessionKey(threadId, projectPath)];
-  }
-
-  private sessionsFor(threadId: string, projectPath: string): NamedSession[] {
-    const scope = sessionKey(threadId, projectPath);
-    const named = this.state.namedSessions.filter((session) => session.scope === scope);
-    const id = this.storedSession(threadId, projectPath);
+  private sessionsFor(item: RelayItem, projectPath: string): NamedSession[] {
+    const scope = sessionKey(item.threadId, projectPath);
+    const named = this.state.namedSessions.filter((session) =>
+      session.scope === scope && (session.harnessId ?? 'opencode') === item.harness.id);
+    const id = item.harness.id === 'opencode' ? this.state.sessions[scope] : undefined;
     return id ? [{ scope, id, name: 'Default' }, ...named] : named;
   }
 
-  private sessionList(sessions: NamedSession[], note: string, token: string): string {
+  private sessionList(item: RelayItem, sessions: NamedSession[], note: string, token: string): string {
     return [
       CHOICES_HEADER, '', note, ...sessions.map(({ name }) => `- ${name}`), '',
-      ...sessionCommands(this.harness.mention, `$${token}`),
+      ...sessionCommands(item.harness.mention, `$${token}`),
     ].join('\n');
   }
 
   private showSessions(item: RelayItem, project: ProjectChoice, startedAt: number): void {
-    const sessions = this.sessionsFor(item.threadId, project.path);
+    const sessions = this.sessionsFor(item, project.path);
     const note = sessions.length ? `Sessions for $${project.token}:` : `No sessions for $${project.token} in this chat.`;
-    this.finishChoices(item, this.sessionList(sessions, note, project.token), startedAt);
+    this.finishChoices(item, this.sessionList(item, sessions, note, project.token), startedAt);
   }
 
-  /** Resolve a saved session or prepare to save the ID OpenCode creates. */
+  /** Resolve a saved session or prepare to save the ID the harness creates. */
   private resolveSession(work: RelayWork, token: string): Pick<HarnessStartOptions, 'sessionId' | 'onSessionCreated'> | undefined {
     const { item, projectPath, session } = work;
-    const sessions = this.sessionsFor(item.threadId, projectPath);
+    const sessions = this.sessionsFor(item, projectPath);
     if (session?.kind === 'new') {
       if (sessions.some(({ name }) => name.toLowerCase() === session.name.toLowerCase())
-        || session.name.toLowerCase() === 'default') {
-        this.finishChoices(item, this.sessionList(sessions, 'Choose a different session name.', token), Date.now());
+        || (item.harness.id === 'opencode' && session.name.toLowerCase() === 'default')) {
+        this.finishChoices(item, this.sessionList(item, sessions, 'Choose a different session name.', token), Date.now());
         return;
       }
       if (sessions.length >= PROJECT_SESSION_LIMIT || this.state.namedSessions.length >= RELAY_SESSION_LIMIT) {
-        this.finishChoices(item, this.sessionList(sessions, 'The session limit has been reached.', token), Date.now());
+        this.finishChoices(item, this.sessionList(item, sessions, 'The session limit has been reached.', token), Date.now());
         return;
       }
       return { onSessionCreated: (id) => {
         if (this.closed) return;
         if (this.state.namedSessions.length >= RELAY_SESSION_LIMIT) throw new Error('The session limit has been reached.');
         if (this.state.namedSessions.some((entry) => entry.id === id) || Object.values(this.state.sessions).includes(id)) {
-          throw new Error('OpenCode returned an existing session ID.');
+          throw new Error('The harness returned an existing session ID.');
         }
-        const named = { scope: sessionKey(item.threadId, projectPath), id, name: session.name };
+        const named = {
+          scope: sessionKey(item.threadId, projectPath), id, name: session.name,
+          ...(item.harness.id === 'opencode' ? {} : { harnessId: item.harness.id }),
+        };
         const namedSessions = [...this.state.namedSessions, named];
         this.writeState({ ...this.state, namedSessions });
         this.state.namedSessions = namedSessions;
@@ -421,7 +433,7 @@ export class RelayService {
       ?? sessions.find(({ id }) => id === session.selector);
     if (!selected) {
       const note = 'That session is unavailable for this chat and project.';
-      this.finishChoices(item, this.sessionList(sessions, note, token), Date.now());
+      this.finishChoices(item, this.sessionList(item, sessions, note, token), Date.now());
       return;
     }
     this.announceSession(item, selected.name, token);
@@ -433,26 +445,30 @@ export class RelayService {
     if (!this.tellChoices(item, text)) throw new Error('Could not queue the session notice.');
   }
 
-  private choiceOptions(): ReplyOptions {
+  private choiceOptions(item: RelayItem): ReplyOptions {
     return {
-      mention: this.harness.mention,
+      mention: item.harness.mention,
       root: this.config.discoveryRoot,
     };
   }
 
-  private harnessEnabled(): boolean {
-    return this.state.harnesses.find((choice) => choice.id === this.config.harnessId)?.enabled ?? true;
+  private harnessEnabled(id: string): boolean {
+    return this.state.harnesses.find((choice) => choice.id === id)?.enabled ?? true;
   }
 
   harnesses(): HarnessChoice[] {
-    const kind = harnessKind(this.config.harnessId);
-    return [{ id: kind.id, name: kind.name, enabled: this.config.enabled && this.harnessEnabled() }];
+    return this.harnessAdapters.map(({ id }) => ({
+      id, name: harnessKind(id).name, enabled: this.config.enabled && this.harnessEnabled(id),
+    }));
   }
 
   updateHarnesses(reported: HarnessChoice[]): RelayStatus {
-    const choice = reported.find((choice) => choice.id === this.config.harnessId);
-    if (!choice) return this.status();
-    const harnesses = [{ ...choice, name: harnessKind(this.config.harnessId).name }];
+    const updates = this.harnesses().flatMap(({ id, name }) => {
+      const choice = reported.find((entry) => entry.id === id);
+      return choice ? [{ id, name, enabled: choice.enabled }] : [];
+    });
+    if (!updates.length) return this.status();
+    const harnesses = this.state.harnesses.filter((choice) => !updates.some(({ id }) => id === choice.id)).concat(updates);
     this.writeState({ ...this.state, harnesses });
     this.state.harnesses = harnesses;
     return this.status();
@@ -536,7 +552,7 @@ export class RelayService {
     sanitize = true,
   ): boolean {
     try {
-      const body = sanitize ? sanitizeReply(text, this.harness.mention) : text;
+      const body = sanitize ? this.harnessAdapters.reduce((reply, harness) => sanitizeReply(reply, harness.mention), text) : text;
       this.enqueueReply(target.provider, body, target.threadId);
       return true;
     } catch {
@@ -602,11 +618,16 @@ export class RelayService {
       && (startsWithMention(message.text, BLIBS_MENTION) || message.role === 'user' || isUserTurn(message.text));
   }
 
-  /** Only the provider assistant can send a harness tag. A user tag is ignored. */
-  private isHarnessTrigger(message: HistoryMessage): boolean {
-    return message.role !== 'user'
-      && !isUserTurn(message.text)
-      && startsWithMention(message.text, this.harness.mention);
+  /** Only the provider assistant can start a harness request. */
+  private taggedHarness(message: HistoryMessage): Harness | undefined {
+    if (message.role === 'user' || isUserTurn(message.text)) return undefined;
+    return this.harnessAdapters.find(({ mention }) => startsWithMention(message.text, mention));
+  }
+
+  private clearPendingChoices(threadId: string): void {
+    for (const { id } of this.harnessAdapters) {
+      this.pendingProjectTasks.delete(sessionKeyPrefix(threadId) + id);
+    }
   }
 
   /** True when the body only asks for the project list. That reply never starts work. */
@@ -614,15 +635,15 @@ export class RelayService {
     return body.trim() === '';
   }
 
-  private canDispatch(target: { provider: string; threadId: string }): boolean {
-    if (this.harnessEnabled()) return true;
-    const name = harnessKind(this.config.harnessId).name;
+  private canDispatch(target: { provider: string; threadId: string; harness: Harness }): boolean {
+    if (this.harnessEnabled(target.harness.id)) return true;
+    const name = harnessKind(target.harness.id).name;
     this.tellProvider(target, `The ${name} harness is disabled. Turn it on in Connections.`);
     return false;
   }
 
-  private queueItem(message: HistoryMessage, body: string): boolean {
-    if (!this.canDispatch(message)) return false;
+  private queueItem(message: HistoryMessage, harness: Harness, body: string): boolean {
+    if (!this.canDispatch({ ...message, harness })) return false;
     if (this.queue.length + this.workQueue.length >= RELAY_QUEUE_LIMIT) {
       this.log('skipped', message.id, { reason: 'queue-full' });
       const now = Date.now();
@@ -630,6 +651,7 @@ export class RelayService {
       return false;
     }
     this.queue.push({
+      harness,
       id: message.id,
       provider: message.provider,
       threadId: message.threadId,
@@ -664,11 +686,12 @@ export class RelayService {
             this.announceIntro(row);
           }
           // A bare list request is safe to answer on the baseline batch.
-          const body = extractMentionBody(row.text, this.harness.mention);
-          if (body === null || !this.isHarnessTrigger(row)) continue;
+          const harness = this.taggedHarness(row);
+          if (!harness) continue;
+          const body = extractMentionBody(row.text, harness.mention) ?? '';
           if (!this.isListBody(body)) {
             this.log('skipped', row.id, { reason: 'conversation-baseline' });
-          } else if (this.queueItem(row, body)) {
+          } else if (this.queueItem(row, harness, body)) {
             queued = true;
           }
         }
@@ -685,10 +708,10 @@ export class RelayService {
           const lastQueued = this.queue.findLast((item) => item.threadId === threadId);
           if (lastQueued?.body === null) continue;
           if (lastQueued) {
-            this.queue.push({ id: message.id, provider: message.provider, threadId, body: null });
+            this.queue.push({ id: message.id, provider: message.provider, threadId, harness: lastQueued.harness, body: null });
             queued = true;
           } else {
-            this.pendingProjectTasks.delete(threadId);
+            this.clearPendingChoices(threadId);
           }
           continue;
         }
@@ -701,12 +724,9 @@ export class RelayService {
           }
           continue;
         }
-        const body = extractMentionBody(message.text, this.harness.mention);
-        if (body === null) continue;
-        if (!this.isHarnessTrigger(message)) {
-          this.log('skipped', message.id, { reason: 'not-an-assistant-trigger' });
-          continue;
-        }
+        const harness = this.taggedHarness(message);
+        if (!harness) continue;
+        const body = extractMentionBody(message.text, harness.mention) ?? '';
         if (!this.accepts(message)) {
           const reason = this.state.processed.includes(message.id) ? 'already-processed'
             : message.ts < this.state.watermark ? 'before-watermark' : 'ineligible-message';
@@ -719,9 +739,9 @@ export class RelayService {
         changed = true;
         // Preserve the full name so invalid characters are rejected.
         const request = /^\/new-project(?:\s|$)/i.test(body)
-          ? stripVendorLabel(message.text).slice(this.harness.mention.length).trim()
+          ? stripVendorLabel(message.text).slice(harness.mention.length).trim()
           : body;
-        if (this.queueItem(message, request)) queued = true;
+        if (this.queueItem(message, harness, request)) queued = true;
       }
     }
     if (changed) this.save();
@@ -766,13 +786,13 @@ export class RelayService {
   private async startWork(queued: RelayWork, work: ActiveWork): Promise<void> {
     const { item, task, projectPath, model } = queued;
     if (!this.canDispatch(item) || !this.projectAvailable(work, projectPath)) return;
-    if (model && this.harness.listModels) {
+    if (model && item.harness.listModels) {
       const catalog = new AbortController();
       work.catalog = catalog;
-      const models = await this.harness.listModels(projectPath, catalog.signal);
+      const models = await item.harness.listModels(projectPath, catalog.signal);
       work.catalog = undefined;
       if (this.closed || !this.canDispatch(item) || !this.projectAvailable(work, projectPath)) return;
-      if (models && !models.includes(model.split('#', 1)[0])) {
+      if (models && !models.includes(item.harness.id === 'opencode' ? model.split('#', 1)[0] : model)) {
         return this.finishChoices(item, formatModelChoices(model, models), work.startedAt);
       }
     }
@@ -782,7 +802,7 @@ export class RelayService {
     const session = this.resolveSession(queued, token);
     if (session) {
       await this.runWork(work, task, {
-        ...session, cwd: projectPath, model: model ?? this.state.modelDefaults[this.config.harnessId],
+        ...session, cwd: projectPath, model: model ?? this.state.modelDefaults[item.harness.id],
       });
     }
   }
@@ -799,11 +819,12 @@ export class RelayService {
   /** Resolve a task or a selection against the current project list. */
   private runOne(item: RelayItem): void {
     if (item.body === null) {
-      this.pendingProjectTasks.delete(item.threadId);
+      this.clearPendingChoices(item.threadId);
       return;
     }
     if (this.closed || !this.canDispatch(item)) return;
-    const pending = this.pendingProjectTasks.get(item.threadId);
+    const pendingKey = sessionKeyPrefix(item.threadId) + item.harness.id;
+    const pending = this.pendingProjectTasks.get(pendingKey);
     if (pending?.body === item.body) return;
     const startedAt = Date.now();
     const body = item.body.trim();
@@ -811,7 +832,7 @@ export class RelayService {
     const action = command.toLowerCase();
     if (action === '/new-project') {
       const result = this.createProject(body.slice(command.length).trim());
-      const mention = this.harness.mention;
+      const mention = item.harness.mention;
       const note = result.kind === 'created'
         ? `Project created. Project ID: $${result.token}.` + (pending
           ? ` Reply with ${projectSelectionFormat(mention, pending.id, `$${result.token}`)} to see its sessions.`
@@ -821,7 +842,7 @@ export class RelayService {
     }
     const allChoices = buildProjectChoices(listProjects(this.config.discoveryRoot));
     const choices = allChoices.slice(0, PROJECT_CHOICE_LIMIT);
-    const options = { ...this.choiceOptions(), total: allChoices.length };
+    const options = { ...this.choiceOptions(item), total: allChoices.length };
     if (['/sessions', '/new', '/resume'].includes(action)) {
       const project = first;
       const value = second;
@@ -842,11 +863,11 @@ export class RelayService {
           task = override[2];
         }
         const session: SessionRequest = action === '/resume' ? { kind: 'resume', selector: value } : { kind: 'new', name: value };
-        this.pendingProjectTasks.delete(item.threadId);
+        this.pendingProjectTasks.delete(pendingKey);
         this.workQueue.push({ item, task, projectPath: choice.path, session, model });
         return;
       }
-      return this.finishChoices(item, [CHOICES_HEADER, '', ...sessionCommands(this.harness.mention)].join('\n'), startedAt);
+      return this.finishChoices(item, [CHOICES_HEADER, '', ...sessionCommands(item.harness.mention)].join('\n'), startedAt);
     }
     if (action === '/select') {
       const requestId = first;
@@ -860,12 +881,12 @@ export class RelayService {
       const selected = !extra && pending.choices.find((choice) => `$${choice.token}` === token?.toLowerCase());
       const current = selected && allChoices.find((choice) => choice.path === selected.path);
       if (current) {
-        this.pendingProjectTasks.delete(item.threadId);
+        this.pendingProjectTasks.delete(pendingKey);
         return this.showSessions(item, current, startedAt);
       }
       const available = pending.choices.filter((choice) => allChoices.some((current) => current.path === choice.path));
       return this.finishChoices(item, formatProjectList(available.slice(0, PROJECT_CHOICE_LIMIT), {
-        ...this.choiceOptions(),
+        ...this.choiceOptions(item),
         total: available.length,
         requestId: pending.id,
         note: 'Choose an available project ID from this request, or send a new task.',
@@ -876,7 +897,7 @@ export class RelayService {
     this.log('project-match', item.id, { result: match.kind, projectCount: allChoices.length });
 
     if (match.kind === 'project') {
-      this.pendingProjectTasks.delete(item.threadId);
+      this.pendingProjectTasks.delete(pendingKey);
       return this.showSessions(item, match.choice, startedAt);
     }
 
@@ -886,9 +907,9 @@ export class RelayService {
     const id = task ? randomBytes(6).toString('hex') : undefined;
     const sent = this.tellChoices(item, formatProjectList(choices, { ...options, note, requestId: id }));
     if (sent && task) {
-      this.pendingProjectTasks.delete(item.threadId);
+      this.pendingProjectTasks.delete(pendingKey);
       if (id && this.knownThreads.has(item.threadId)) {
-        this.pendingProjectTasks.set(item.threadId, { id, body: item.body, choices });
+        this.pendingProjectTasks.set(pendingKey, { id, body: item.body, choices });
       }
     }
     this.finishRun(item.id, startedAt, sent, sent ? undefined : 'outbox write failed');
@@ -900,10 +921,10 @@ export class RelayService {
     this.save();
 
     this.log('harness-start', item.id, {
-      harness: this.config.harnessId,
+      harness: item.harness.id,
       model: options.model ?? 'default',
     });
-    const run = this.harness.start(buildPrompt(task), options);
+    const run = item.harness.start(buildPrompt(task), options);
     work.run = run;
     let ok = false;
     let error: string | undefined;
@@ -917,7 +938,7 @@ export class RelayService {
         ...result.diagnostics,
       });
       if (result.ok) {
-        const reply = harnessMessage(result.reply, harnessKind(this.config.harnessId).name);
+        const reply = harnessMessage(result.reply, harnessKind(item.harness.id).name);
         ok = reply ? this.tellProvider(item, reply) : false;
         if (!ok) error = 'outbox write failed';
       }
@@ -928,7 +949,7 @@ export class RelayService {
     if (!ok) {
       this.tellFailure(
         item,
-        `The ${harnessKind(this.config.harnessId).name} harness failed: ${error ?? 'unknown error'}`,
+        `The ${harnessKind(item.harness.id).name} harness failed: ${error ?? 'unknown error'}`,
       );
     }
     this.finishRun(item.id, startedAt, ok, ok ? undefined : (error ?? 'harness failed'));

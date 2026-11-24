@@ -492,16 +492,30 @@ export async function launch(options: LaunchOptions = {}): Promise<E2EApp> {
   // The relay runs the harness only after it matches a project.
   const fakeHarness = path.join(tempDir, 'fake-harness.mjs');
   writeFileSync(fakeHarness, `import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { createInterface } from 'node:readline';
 const args = process.argv.slice(2);
 if (args.at(-1) === 'models') {
   if (!existsSync('models.txt')) process.exit(1);
   process.stdout.write(readFileSync('models.txt', 'utf8'));
   process.exit(0);
 }
-const prompt = args.at(-1) || '';
+if (args[0] === 'app-server') {
+  for await (const line of createInterface({input: process.stdin})) {
+    const { id, method } = JSON.parse(line);
+    if (method === 'initialize') console.log(JSON.stringify({ id, result: {} }));
+    if (method === 'model/list') {
+      const models = existsSync('models.txt') ? readFileSync('models.txt', 'utf8').trim().split('\\n') : [];
+      console.log(JSON.stringify({ id, result: { data: models.map((model) => ({ model })), nextCursor: null } }));
+    }
+  }
+  process.exit(0);
+}
+const codex = args[0] === 'exec';
+const prompt = codex ? readFileSync(0, 'utf8') : args.at(-1) || '';
 const json = args.includes('--format') && args[args.indexOf('--format') + 1] === 'json';
-const session = args.includes('--session') ? args[args.indexOf('--session') + 1] : 'ses_' + randomBytes(12).toString('hex');
+const session = codex ? (args.includes('resume') ? args.at(-3) : randomUUID()) : args.includes('--session') ? args[args.indexOf('--session') + 1] : 'ses_' + randomBytes(12).toString('hex');
+if (codex) console.log(JSON.stringify({ type: 'thread.started', thread_id: session }));
 if (json) process.stdout.write(JSON.stringify({ type: 'step_start', sessionID: session }) + '\\n');
 if (prompt.endsWith('Create hello.txt with exactly Hello from blibs.')) {
   writeFileSync('hello.txt', 'Hello from blibs.');
@@ -512,6 +526,11 @@ if (fileTask) {
   appendFileSync('session-runs.jsonl', JSON.stringify(session) + '\\n');
 }
 const reply = 'harness reply: ' + (prompt.split('\\n').at(-1) || '');
+if (codex) {
+  writeFileSync(args[args.indexOf('--output-last-message') + 1], reply);
+  console.log(JSON.stringify({ type: 'turn.completed' }));
+  process.exit(0);
+}
 process.stdout.write((json ? JSON.stringify({ type: 'text', sessionID: session, part: { text: reply } }) : reply) + '\\n');
 if (json) process.stdout.write(JSON.stringify({ type: 'step_finish', sessionID: session, part: { reason: 'stop' } }) + '\\n');
 `);
@@ -534,7 +553,10 @@ if (json) process.stdout.write(JSON.stringify({ type: 'step_finish', sessionID: 
   if (options.projectsDir === null) delete env.BLIBS_RELAY_PROJECTS_DIR;
   else if (options.projectsDir !== undefined) env.BLIBS_RELAY_PROJECTS_DIR = options.projectsDir;
   if (options.mockLogin === false) delete env.BLIBS_MOCK_LOGIN;
-  else env.BLIBS_MOCK_LOGIN = '1';
+  else {
+    env.BLIBS_MOCK_LOGIN = '1';
+    env.BLIBS_CODEX_COMMAND = JSON.stringify([process.execPath, fakeHarness, 'exec']);
+  }
   delete env.BLIBS_NO_AUTOSTART;
   delete env.ELECTRON_RUN_AS_NODE;
 

@@ -245,7 +245,7 @@ test(
 );
 
 test(
-  'Settings saves and clears the OpenCode default model',
+  'Settings saves and clears the OpenCode and Codex default models',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {
     assert.ok(app, 'The E2E app must start.');
@@ -254,12 +254,20 @@ test(
     const model = page.getByRole('textbox', { name: 'OpenCode default model' });
     const save = page.getByRole('button', { name: 'Save OpenCode default' });
     assert.equal(await model.inputValue(), '');
+    const codexModel = page.getByRole('textbox', { name: 'Codex default model' });
+    await codexModel.fill('codex-test');
+    await page.getByRole('button', { name: 'Save Codex default' }).click();
+    await page.getByText('Codex default saved.').waitFor();
     await model.fill('provider/custom');
     await save.click();
     await page.getByText('OpenCode default saved.').waitFor();
     await page.getByRole('button', { name: 'Back', exact: true }).click();
     await openSettings(page);
     assert.equal(await model.inputValue(), 'provider/custom');
+    assert.equal(await codexModel.inputValue(), 'codex-test');
+    await codexModel.fill('');
+    await page.getByRole('button', { name: 'Save Codex default' }).click();
+    await page.getByText('Codex default saved.').waitFor();
     await selectTheme(page, 'dark');
     assertImage(await app.screenshot('settings-harness-model-dark.png'));
     await selectTheme(page, 'light');
@@ -531,8 +539,8 @@ test(
     const switchControl = page.getByRole('checkbox', { name: 'OpenCode for Muse' });
     await switchControl.waitFor();
     assert.equal(await switchControl.isChecked(), true);
-    assert.equal(await page.locator('.connections-matrix input[type="checkbox"]').count(), 1);
-    assert.equal(await page.locator('.connections-matrix').getByText('Unsupported', { exact: true }).count(), 8);
+    assert.equal(await page.locator('.connections-matrix input[type="checkbox"]').count(), 2);
+    assert.equal(await page.locator('.connections-matrix').getByText('Unsupported', { exact: true }).count(), 7);
     const folder = page.locator('.connections-folder-path');
     const previousFolder = await folder.innerText();
     assert.equal(statSync(previousFolder).isDirectory(), true);
@@ -551,7 +559,7 @@ test(
     await switchControl.waitFor();
     assert.equal(await switchControl.isChecked(), false);
     await switchControl.click();
-    await page.locator('.connections-matrix input:checked:enabled').waitFor();
+    await switchControl.and(page.locator(':checked:enabled')).waitFor();
 
     await page.getByRole('button', { name: 'Change folder' }).click();
     const filePath = path.join(previousFolder, 'not-a-directory.txt');
@@ -800,8 +808,8 @@ test(
       await waitForSavedMessage('blibs introduction');
       const introText = (await savedMessages())?.find((item) => item.text.startsWith('blibs introduction'))?.text;
       assert.ok(introText);
-      assert.match(introText, /Available harnesses: OpenCode\./);
-      assert.match(introText, /Enabled for this assistant: OpenCode\./);
+      assert.match(introText, /Available harnesses: OpenCode, Codex\./);
+      assert.match(introText, /Enabled for this assistant: OpenCode, Codex\./);
       assert.match(introText, /How tagging works:/);
       assert.match(introText, /sends that task to OpenCode/);
       assert.ok(introText.includes('@opencode /new $<project> <name> <task>'));
@@ -974,97 +982,102 @@ test(
   },
 );
 
-test(
-  'scripted Muse starts two sessions and resumes the first from the composer',
-  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
-  async (t) => {
-    const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-sessions-'));
-    t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
-    const alpha = path.join(projectsDir, 'alpha');
-    mkdirSync(alpha);
-    writeFileSync(path.join(alpha, 'models.txt'), 'provider/gpt-6.1-sol\nprovider/gpt-6.2-sol\n');
-    const first = 'Start a session named first in alpha and write first.txt using sol.';
-    const second = 'Start a session named second in alpha and write second.txt.';
-    const resume = 'Continue the same session that created first.txt and update it.';
-    const museChatHtml = `<!doctype html>
-      <div role="log"></div>
-      <form><textarea aria-label="Message"></textarea><button type="submit">Send</button></form>
-      <script>
-        const log = document.querySelector('[role="log"]');
-        const composer = document.querySelector('textarea');
-        function append(role, text) {
-          const row = document.createElement('div');
-          row.dataset.messageAuthorRole = role;
-          row.style.whiteSpace = 'pre-wrap';
-          row.textContent = text;
-          log.append(row);
-        }
-        document.querySelector('form').addEventListener('submit', (event) => {
-          event.preventDefault();
-          const text = composer.value;
-          composer.value = '';
-          append('user', text);
-          if (text === ${JSON.stringify(first)}) append('assistant', '@opencode /new $alpha first --model sol Write first.txt with exactly initial');
-          if (text.includes('Closest available model IDs:') && text.includes('- provider/gpt-6.2-sol')) {
-            append('assistant', '@opencode /new $alpha first --model provider/gpt-6.2-sol Write first.txt with exactly initial');
+for (const [harnessId, harnessName] of [['opencode', 'OpenCode'], ['codex', 'Codex']]) {
+  test(
+    `scripted Muse starts two ${harnessName} sessions and resumes the first from the composer`,
+    { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+    async (t) => {
+      const projectsDir = mkdtempSync(path.join(tmpdir(), 'blibs-e2e-sessions-'));
+      t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
+      const alpha = path.join(projectsDir, 'alpha');
+      mkdirSync(alpha);
+      const modelPrefix = harnessId === 'opencode' ? 'provider/' : '';
+      const model = modelPrefix + 'gpt-6.2-sol';
+      writeFileSync(path.join(alpha, 'models.txt'), modelPrefix + 'gpt-6.1-sol\n' + model + '\n');
+      const first = 'Start a session named first in alpha and write first.txt using sol.';
+      const second = 'Start a session named second in alpha and write second.txt.';
+      const resume = 'Continue the same session that created first.txt and update it.';
+      const museChatHtml = `<!doctype html>
+        <div role="log"></div>
+        <form><textarea aria-label="Message"></textarea><button type="submit">Send</button></form>
+        <script>
+          const log = document.querySelector('[role="log"]');
+          const composer = document.querySelector('textarea');
+          function append(role, text) {
+            const row = document.createElement('div');
+            row.dataset.messageAuthorRole = role;
+            row.style.whiteSpace = 'pre-wrap';
+            row.textContent = text;
+            log.append(row);
           }
-          if (text === ${JSON.stringify(second)}) append('assistant', '@opencode /new $alpha second Write second.txt with exactly separate');
-          if (text === ${JSON.stringify(resume)}) append('assistant', '@opencode /resume $alpha first Write first.txt with exactly updated');
-        });
-      </script>`;
-    const testApp = await launch({ projectsDir, museChatHtml });
-    try {
-      let muse: Page | undefined;
-      const deadline = Date.now() + 15_000;
-      while (!muse && Date.now() < deadline) {
-        muse = testApp.context.pages().find((page) => page.url() === 'https://muse.ai/');
-        if (!muse) await delay(100);
-      }
-      assert.ok(muse, 'The Muse vendor view must start.');
-      const threadUrl = 'https://muse.ai/chat/e2e-sessions';
-      await muse.goto(threadUrl);
-      const baseline = await fetch(testApp.backendUrl + '/api/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: [{
-          provider: 'muse', role: 'user', text: 'Session test baseline.',
-          url: threadUrl, sourceId: 'session-baseline', ts: Date.now(),
-        }] }),
-      });
-      assert.equal(baseline.status, 200);
-      const log = muse.getByRole('log');
-      const composer = muse.getByRole('textbox', { name: 'Message' });
-      const send = muse.getByRole('button', { name: 'Send' });
-      for (const [request, name] of [[first, 'first'], [second, 'second'], [resume, 'first']]) {
-        const replies = log.getByText("Sent from user's harness (OpenCode).", { exact: false });
-        const count = await replies.count();
-        const notices = log.getByText(`Active session for $alpha: ${name}.`, { exact: false });
-        const noticeCount = await notices.count();
-        await composer.fill(request);
-        await send.click();
-        await notices.nth(noticeCount).waitFor({ timeout: 45_000 });
-        await replies.nth(count).waitFor({ timeout: 45_000 });
-        if (request === first) {
-          assert.equal(await log.getByText('Closest available model IDs:', { exact: false }).count(), 1);
-          assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'initial');
+          document.querySelector('form').addEventListener('submit', (event) => {
+            event.preventDefault();
+            const text = composer.value;
+            composer.value = '';
+            append('user', text);
+            if (text === ${JSON.stringify(first)}) append('assistant', '@${harnessId} /new $alpha first --model sol Write first.txt with exactly initial');
+            if (text.includes('Closest available model IDs:') && text.includes('- ${model}')) {
+              append('assistant', '@${harnessId} /new $alpha first --model ${model} Write first.txt with exactly initial');
+            }
+            if (text === ${JSON.stringify(second)}) append('assistant', '@${harnessId} /new $alpha second Write second.txt with exactly separate');
+            if (text === ${JSON.stringify(resume)}) append('assistant', '@${harnessId} /resume $alpha first Write first.txt with exactly updated');
+          });
+        </script>`;
+      const testApp = await launch({ projectsDir, museChatHtml });
+      try {
+        let muse: Page | undefined;
+        const deadline = Date.now() + 15_000;
+        while (!muse && Date.now() < deadline) {
+          muse = testApp.context.pages().find((page) => page.url() === 'https://muse.ai/');
+          if (!muse) await delay(100);
         }
+        assert.ok(muse, 'The Muse vendor view must start.');
+        const threadUrl = 'https://muse.ai/chat/e2e-sessions';
+        await muse.goto(threadUrl);
+        const baseline = await fetch(testApp.backendUrl + '/api/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: [{
+            provider: 'muse', role: 'user', text: 'Session test baseline.',
+            url: threadUrl, sourceId: 'session-baseline', ts: Date.now(),
+          }] }),
+        });
+        assert.equal(baseline.status, 200);
+        const log = muse.getByRole('log');
+        const composer = muse.getByRole('textbox', { name: 'Message' });
+        const send = muse.getByRole('button', { name: 'Send' });
+        for (const [request, name] of [[first, 'first'], [second, 'second'], [resume, 'first']]) {
+          const replies = log.getByText(`Sent from user's harness (${harnessName}).`, { exact: false });
+          const count = await replies.count();
+          const notices = log.getByText(`Active session for $alpha: ${name}.`, { exact: false });
+          const noticeCount = await notices.count();
+          await composer.fill(request);
+          await send.click();
+          await notices.nth(noticeCount).waitFor({ timeout: 45_000 });
+          await replies.nth(count).waitFor({ timeout: 45_000 });
+          if (request === first) {
+            assert.equal(await log.getByText('Closest available model IDs:', { exact: false }).count(), 1);
+            assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'initial');
+          }
+        }
+        const ids = readFileSync(path.join(alpha, 'session-runs.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+        assert.equal(ids.length, 3);
+        const idPattern = harnessId === 'codex' ? /^[a-f0-9-]{36}$/i : /^ses_/;
+        assert.ok(ids.every((id) => typeof id === 'string' && idPattern.test(id)));
+        assert.notEqual(ids[0], ids[1]);
+        assert.equal(ids[0], ids[2]);
+        assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'updated');
+        assert.equal(readFileSync(path.join(alpha, 'second.txt'), 'utf8'), 'separate');
+        assertImage(await screenshot(muse, `named-sessions-${harnessId}.png`));
+      } catch (error) {
+        const outbox = await (await fetch(testApp.backendUrl + '/api/outbox')).text();
+        throw new Error(`${String(error)}\nMock Muse outbox: ${outbox}`, { cause: error });
+      } finally {
+        await testApp.close();
       }
-      const ids = readFileSync(path.join(alpha, 'session-runs.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-      assert.equal(ids.length, 3);
-      assert.ok(ids.every((id) => typeof id === 'string' && id.startsWith('ses_')));
-      assert.notEqual(ids[0], ids[1]);
-      assert.equal(ids[0], ids[2]);
-      assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'updated');
-      assert.equal(readFileSync(path.join(alpha, 'second.txt'), 'utf8'), 'separate');
-      assertImage(await screenshot(muse, 'named-sessions.png'));
-    } catch (error) {
-      const outbox = await (await fetch(testApp.backendUrl + '/api/outbox')).text();
-      throw new Error(`${String(error)}\nMock Muse outbox: ${outbox}`, { cause: error });
-    } finally {
-      await testApp.close();
-    }
-  },
-);
+    },
+  );
+}
 
 test(
   'Connections applies the saved folder and harness setting to Muse requests',
@@ -1116,6 +1129,7 @@ test(
     const openConnections = () => page.getByRole('button', { name: 'Connections', exact: true }).click();
     const back = () => page.getByRole('button', { name: 'Back to chats' }).click();
     const openCode = page.getByRole('checkbox', { name: 'OpenCode for Muse' });
+    const codex = page.getByRole('checkbox', { name: 'Codex for Muse' });
 
     try {
       await post('/api/relay/projects', { discoveryRoot: oldFolder });
@@ -1129,12 +1143,13 @@ test(
       await page.locator('.connections-folder-path').filter({ hasText: realpathSync(newFolder) }).waitFor();
 
       await openCode.click();
-      await page.locator('.connections-matrix input:not(:checked):enabled').waitFor();
+      await openCode.and(page.locator(':not(:checked):enabled')).waitFor();
+      assert.equal(await codex.isChecked(), true);
       await back();
       const previousRun = (await status()).lastRun;
       await importTurn('muse', 'user', prompt, 'connections-user-disabled');
       await importTurn('muse', 'user', '@blibs Which tools can you use?', 'connections-intro-disabled');
-      await waitForQueuedText('Enabled for this assistant: no harness yet.', threadId);
+      await waitForQueuedText('Enabled for this assistant: Codex.', threadId);
       await importTurn('muse', 'agent', '@opencode ' + task, 'connections-disabled');
       await waitForQueuedText('OpenCode harness is disabled', threadId);
       assert.deepEqual((await status()).lastRun, previousRun);
@@ -1143,12 +1158,12 @@ test(
 
       await openConnections();
       await openCode.click();
-      await page.locator('.connections-matrix input:checked:enabled').waitFor();
+      await openCode.and(page.locator(':checked:enabled')).waitFor();
       await back();
       await importTurn('muse', 'user', prompt, 'connections-user-enabled');
       await importTurn('grok', 'user', prompt, 'connections-grok-user');
       await importTurn('grok', 'agent', '@opencode ' + task, 'connections-grok-opencode');
-      await importTurn('muse', 'agent', '@codex ' + task, 'connections-muse-codex');
+      await importTurn('grok', 'agent', '@codex ' + task, 'connections-grok-codex');
       assert.deepEqual((await status()).lastRun, previousRun);
       assert.equal(existsSync(newFile), false);
       assert.equal(existsSync(oldFile), false);
