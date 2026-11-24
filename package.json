@@ -26,7 +26,7 @@
     "lint": "eslint . --max-warnings=0",
     "test:desktop": "node scripts/test-search-desktop.mjs",
     "icons": "node assets/build-icons.mjs",
-    "test:specs": "cd tests/specs && java -XX:+UseParallelGC -jar .tlc/tla2tools.jar -metadir .tlc/states -config MentionRelay.cfg MentionRelay.tla && java -XX:+UseParallelGC -jar .tlc/tla2tools.jar -metadir .tlc/states -config MentionRelay.sessions.cfg MentionRelay.tla"
+    "test:specs": "cd tests/specs && java -XX:+UseParallelGC -jar .tlc/tla2tools.jar -metadir .tlc/states -config MentionRelay.cfg MentionRelay.tla && java -XX:+UseParallelGC -jar .tlc/tla2tools.jar -metadir .tlc/states -config MentionRelay.sessions.cfg MentionRelay.tla && java -XX:+UseParallelGC -jar .tlc/tla2tools.jar -metadir .tlc/states -config MentionRelay.models.cfg MentionRelay.tla"
   },
   "dependencies": {
     "react": "^19.2.8",

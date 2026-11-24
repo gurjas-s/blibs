@@ -7,4 +7,3 @@ import os from 'node:os';
 import path from 'node:path';
 
 export const DEFAULT_DISCOVERY_ROOT = path.join(os.homedir(), 'Projects');
-export const DEFAULT_RELAY_MODEL = 'opencode-go/beam-free';

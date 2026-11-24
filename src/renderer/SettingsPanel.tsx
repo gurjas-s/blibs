@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchIndexStatus, updateIndex } from './client';
-import type { IndexStatus } from './client';
+import type { IndexStatus, RelayStatus } from './client';
 import type { SearchDefaults } from './search';
 import type { ThemePreference } from './theme';
 import { Button } from './components/Button';
@@ -23,6 +23,10 @@ export interface SettingsPanelProps {
   /** True when the topbar has query text to send to the local answer path. */
   canAsk: boolean;
   onAsk: () => void;
+  modelDefaults: RelayStatus['modelDefaults'];
+  savingModels: boolean;
+  modelError: string;
+  onSaveModel: (harnessId: string, model: string | null) => Promise<boolean>;
   onBack: () => void;
 }
 
@@ -38,9 +42,14 @@ export default function SettingsPanel({
   onPullSecsChange,
   canAsk,
   onAsk,
+  modelDefaults,
+  savingModels,
+  modelError,
+  onSaveModel,
   onBack,
 }: SettingsPanelProps) {
   const [status, setStatus] = useState<IndexStatus | null>(null);
+  const [modelNotice, setModelNotice] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -66,6 +75,27 @@ export default function SettingsPanel({
     </div>
 
     <div className="settings-body">
+      {modelDefaults.length > 0 && <Card className="settings-card">
+        <h2>Harness models</h2>
+        <p className="settings-model-help">Leave a model ID blank to use the harness default.</p>
+        {modelDefaults.map(({ id, name, model }) => (
+          <form className="settings-model-form" key={`${id}:${model ?? ''}`} onSubmit={(event) => {
+            event.preventDefault();
+            const value = String(new FormData(event.currentTarget).get('model') ?? '').trim();
+            setModelNotice('');
+            void onSaveModel(id, value || null).then((saved) => {
+              if (saved) setModelNotice(`${name} default saved.`);
+            });
+          }}>
+            <TextField label={`${name} default model`} name="model" defaultValue={model ?? ''}
+              placeholder="Harness default" maxLength={200} disabled={savingModels} />
+            <div className="settings-actions">
+              <Button type="submit" variant="secondary" disabled={savingModels}>Save {name} default</Button>
+            </div>
+          </form>
+        ))}
+        <div role="status">{modelError || modelNotice}</div>
+      </Card>}
       <Card className="settings-card">
         <h2>Sync</h2>
         <div className="settings-sync">

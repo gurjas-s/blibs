@@ -25,6 +25,7 @@ export interface HarnessRun {
 /** Per-run overrides. The harness falls back to its configured values. */
 export interface HarnessStartOptions {
   sessionId?: string;
+  onSessionCreated?: (sessionId: string) => void;
   cwd?: string;
   model?: string;
 }
@@ -33,5 +34,6 @@ export interface Harness {
   readonly id: string;
   /** Chat trigger that routes one task to this harness, for example `@opencode`. */
   readonly mention: string;
+  listModels?(cwd: string, signal: AbortSignal): Promise<readonly string[] | undefined>;
   start(prompt: string, options?: HarnessStartOptions | string): HarnessRun;
 }

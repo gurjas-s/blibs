@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HistoryMessage } from './history.js';
-import { DEFAULT_DISCOVERY_ROOT, DEFAULT_RELAY_MODEL } from './relay-defaults.js';
-import type { Harness, HarnessRun } from './harness/types.js';
+import { DEFAULT_DISCOVERY_ROOT } from './relay-defaults.js';
+import type { Harness, HarnessRun, HarnessStartOptions } from './harness/types.js';
 import { extractMentionBody, isUserTurn, sanitizeReply, startsWithMention } from './harness/mention.js';
 import { stripVendorLabel } from '../shared/vendor-label.js';
 import { BLIBS_MENTION, isBlibsMention, isIntroMessage, introMessage } from './harness/intro.js';
@@ -16,13 +16,14 @@ import {
   CHOICES_HEADER,
   PROJECT_CHOICE_LIMIT,
   formatProjectList,
+  formatModelChoices,
   projectSelectionFormat,
   sessionCommands,
   unknownProjectNote,
   isChoicesMessage,
 } from './harness/project-reply.js';
 import type { ProjectChoice, ReplyOptions } from './harness/project-reply.js';
-import { harnessKind } from './harness/registry.js';
+import { HARNESS_KINDS, harnessKind } from './harness/registry.js';
 import {
   RELAY_PROCESSED_LIMIT,
   RELAY_SESSION_LIMIT,
@@ -86,6 +87,7 @@ export interface RelayStatus {
   harness: { id: string; command: string; cwd: string; model?: string };
   /** Harnesses supported by the configured provider. */
   harnesses: HarnessChoice[];
+  modelDefaults: Array<{ id: string; name: string; model?: string }>;
   discoveryRoot: string;
   projects: Array<{ name: string; token: string }>;
   pending: number;
@@ -115,11 +117,13 @@ interface RelayWork {
   task: string;
   projectPath: string;
   session: SessionRequest;
+  model?: string;
 }
 
 interface ActiveWork {
   item: RelayItem;
   startedAt: number;
+  catalog?: AbortController;
   run?: HarnessRun;
 }
 
@@ -176,7 +180,6 @@ export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig
     provider: RELAY_PROVIDER,
     cwd: path.join(dataDir, 'harness'),
     ...overrides,
-    model: overrides.model ?? DEFAULT_RELAY_MODEL,
     discoveryRoot: overrides.discoveryRoot ?? envProjectsDir ?? DEFAULT_DISCOVERY_ROOT,
     harnessId: kind.id,
     command: overrides.command ?? (envCommand ? envCommand.slice(0, RELAY_COMMAND_LIMIT) : kind.defaultCommand),
@@ -186,13 +189,6 @@ export function buildRelayConfig(dataDir: string, overrides: Partial<RelayConfig
     cwd: canonicalDir(safeHarnessCwd(path.resolve(config.cwd), dataDir)),
     discoveryRoot: canonicalDir(projectsRoot(config.discoveryRoot)),
   };
-}
-
-export function newSessionId(): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let suffix = '';
-  for (let i = 0; i < 24; i++) suffix += alphabet[Math.floor(Math.random() * alphabet.length)];
-  return `ses_${suffix}`;
 }
 
 export function isTimeLabel(text: string): boolean {
@@ -268,13 +264,12 @@ export class RelayService {
           sessions: {},
           namedSessions: [],
           discoveryRoot: canonicalDir(options.config.discoveryRoot),
-          model: options.config.model,
+          modelDefaults: options.config.model ? { [options.config.harnessId]: options.config.model } : {},
           harnesses: [],
           runs: 0,
           lastRun: null,
         };
     if (loaded) this.config = { ...this.config, discoveryRoot: loaded.discoveryRoot };
-    if (loaded?.model) this.config = { ...this.config, model: loaded.model };
     this.knownThreads = new Set([...(options.knownThreads ?? []), ...this.state.threads].slice(-RELAY_THREAD_LIMIT));
     this.state.threads = [...this.knownThreads];
     this.interruptLastRun('interrupted by restart');
@@ -288,6 +283,14 @@ export class RelayService {
     const root = typeof raw.discoveryRoot === 'string' && raw.discoveryRoot.trim()
       ? raw.discoveryRoot
       : this.config.discoveryRoot;
+    const modelDefaults: RelayState['modelDefaults'] = {};
+    for (const { id } of HARNESS_KINDS) {
+      // Older builds stored their built-in OpenCode model as if it were a user setting.
+      const legacy = id === 'opencode' && raw.model !== 'opencode-go/beam-free' ? raw.model : undefined;
+      const configured = id === this.config.harnessId ? this.config.model : undefined;
+      const model = parseModel(raw.modelDefaults ? raw.modelDefaults[id] : legacy ?? configured);
+      if (model) modelDefaults[id] = model;
+    }
     return {
       version: RELAY_STATE_VERSION,
       watermark: typeof raw.watermark === 'number' && Number.isFinite(raw.watermark) ? raw.watermark : Date.now(),
@@ -296,7 +299,7 @@ export class RelayService {
       sessions: parseSessions(raw.sessions),
       namedSessions: parseNamedSessions(raw.namedSessions),
       discoveryRoot: canonicalDir(projectsRoot(root)),
-      model: parseModel(raw.model),
+      modelDefaults,
       harnesses: parseHarnesses(raw.harnesses),
       runs: typeof raw.runs === 'number' && raw.runs >= 0 ? raw.runs : 0,
       lastRun: parseRelayRun(raw.lastRun),
@@ -386,8 +389,8 @@ export class RelayService {
     this.finishChoices(item, this.sessionList(sessions, note, project.token), startedAt);
   }
 
-  /** Resolve the session when the project is ready to run the task. */
-  private resolveSession(work: RelayWork, token: string): string | undefined {
+  /** Resolve a saved session or prepare to save the ID OpenCode creates. */
+  private resolveSession(work: RelayWork, token: string): Pick<HarnessStartOptions, 'sessionId' | 'onSessionCreated'> | undefined {
     const { item, projectPath, session } = work;
     const sessions = this.sessionsFor(item.threadId, projectPath);
     if (session?.kind === 'new') {
@@ -400,16 +403,18 @@ export class RelayService {
         this.finishChoices(item, this.sessionList(sessions, 'The session limit has been reached.', token), Date.now());
         return;
       }
-      const id = newSessionId();
-      this.state.namedSessions.push({ scope: sessionKey(item.threadId, projectPath), id, name: session.name });
-      try {
-        this.writeState(this.state);
-      } catch (error) {
-        this.state.namedSessions.pop();
-        throw error;
-      }
-      this.announceSession(item, session.name, token);
-      return id;
+      return { onSessionCreated: (id) => {
+        if (this.closed) return;
+        if (this.state.namedSessions.length >= RELAY_SESSION_LIMIT) throw new Error('The session limit has been reached.');
+        if (this.state.namedSessions.some((entry) => entry.id === id) || Object.values(this.state.sessions).includes(id)) {
+          throw new Error('OpenCode returned an existing session ID.');
+        }
+        const named = { scope: sessionKey(item.threadId, projectPath), id, name: session.name };
+        const namedSessions = [...this.state.namedSessions, named];
+        this.writeState({ ...this.state, namedSessions });
+        this.state.namedSessions = namedSessions;
+        this.announceSession(item, session.name, token);
+      } };
     }
     // Keep ID selectors valid for commands sent before session names were shown.
     const selected = sessions.find(({ name }) => name.toLowerCase() === session.selector.toLowerCase())
@@ -420,7 +425,7 @@ export class RelayService {
       return;
     }
     this.announceSession(item, selected.name, token);
-    return selected.id;
+    return { sessionId: selected.id };
   }
 
   private announceSession(item: RelayItem, name: string, token: string): void {
@@ -464,7 +469,7 @@ export class RelayService {
   }
 
   /** Change the projects directory and the harness model. Omit a field to keep it. */
-  updateProjects(discoveryRoot?: string, model?: string | null): RelayStatus {
+  updateProjects(discoveryRoot?: string, model?: string | null, harnessId = this.config.harnessId): RelayStatus {
     let resolved = this.state.discoveryRoot;
     if (discoveryRoot !== undefined) {
       try {
@@ -476,12 +481,14 @@ export class RelayService {
         throw new InvalidProjectsFolder('Could not save the projects folder. Enter a path to an accessible directory.');
       }
     }
-    const nextModel = model === undefined ? this.state.model : model ?? DEFAULT_RELAY_MODEL;
-    this.writeState({ ...this.state, discoveryRoot: resolved, model: nextModel });
+    const modelDefaults = { ...this.state.modelDefaults };
+    if (model === null) delete modelDefaults[harnessId];
+    else if (model !== undefined) modelDefaults[harnessId] = model;
+    this.writeState({ ...this.state, discoveryRoot: resolved, modelDefaults });
     if (resolved !== this.state.discoveryRoot) this.pendingProjectTasks.clear();
     this.state.discoveryRoot = resolved;
-    this.state.model = nextModel;
-    this.config = { ...this.config, discoveryRoot: resolved, model: nextModel };
+    this.state.modelDefaults = modelDefaults;
+    this.config = { ...this.config, discoveryRoot: resolved };
     return this.status();
   }
 
@@ -744,35 +751,49 @@ export class RelayService {
       const index = this.workQueue.findIndex(({ projectPath }) => !this.active.has(projectPath));
       if (index === -1) return;
       const [queued] = this.workQueue.splice(index, 1);
-      const { item, task, projectPath } = queued;
-      let sessionId: string | undefined;
-      try {
-        if (!this.canDispatch(item)) continue;
-        if (path.dirname(projectPath) !== this.config.discoveryRoot
-          || !fs.lstatSync(projectPath, { throwIfNoEntry: false })?.isDirectory()) {
-          const error = 'The selected project is no longer available. Send a new task.';
-          this.tellFailure(item, error);
-          this.finishRun(item.id, Date.now(), false, error);
-          continue;
-        }
-        const token = buildProjectChoices(listProjects(this.config.discoveryRoot))
-          .find((choice) => choice.path === projectPath)?.token;
-        if (!token) throw new Error('Could not find project ID.');
-        sessionId = this.resolveSession(queued, token);
-        if (!sessionId) continue;
-      } catch {
-        this.failDispatch(item);
-        continue;
-      }
+      const { item, projectPath } = queued;
       const work = { item, startedAt: Date.now() };
       this.active.set(projectPath, work);
-      void this.runWork(work, task, projectPath, sessionId).catch(() => {
+      void this.startWork(queued, work).catch(() => {
         if (!this.closed) this.failDispatch(item);
       }).finally(() => {
         this.active.delete(projectPath);
         this.dispatchWork();
       });
     }
+  }
+
+  private async startWork(queued: RelayWork, work: ActiveWork): Promise<void> {
+    const { item, task, projectPath, model } = queued;
+    if (!this.canDispatch(item) || !this.projectAvailable(work, projectPath)) return;
+    if (model && this.harness.listModels) {
+      const catalog = new AbortController();
+      work.catalog = catalog;
+      const models = await this.harness.listModels(projectPath, catalog.signal);
+      work.catalog = undefined;
+      if (this.closed || !this.canDispatch(item) || !this.projectAvailable(work, projectPath)) return;
+      if (models && !models.includes(model.split('#', 1)[0])) {
+        return this.finishChoices(item, formatModelChoices(model, models), work.startedAt);
+      }
+    }
+    const token = buildProjectChoices(listProjects(this.config.discoveryRoot))
+      .find((choice) => choice.path === projectPath)?.token;
+    if (!token) throw new Error('Could not find project ID.');
+    const session = this.resolveSession(queued, token);
+    if (session) {
+      await this.runWork(work, task, {
+        ...session, cwd: projectPath, model: model ?? this.state.modelDefaults[this.config.harnessId],
+      });
+    }
+  }
+
+  private projectAvailable({ item, startedAt }: ActiveWork, projectPath: string): boolean {
+    if (path.dirname(projectPath) === this.config.discoveryRoot
+      && fs.lstatSync(projectPath, { throwIfNoEntry: false })?.isDirectory()) return true;
+    const error = 'The selected project is no longer available. Send a new task.';
+    this.tellFailure(item, error);
+    this.finishRun(item.id, startedAt, false, error);
+    return false;
   }
 
   /** Resolve a task or a selection against the current project list. */
@@ -805,15 +826,24 @@ export class RelayService {
       const project = first;
       const value = second;
       const choice = allChoices.find(({ token }) => `$${token}` === project?.toLowerCase());
-      const task = body.match(/^\S+\s+\S+\s+\S+\s+([\s\S]+)$/)?.[1];
+      let task = body.match(/^\S+\s+\S+\s+\S+\s+([\s\S]+)$/)?.[1];
       if (!choice) {
         return this.finishChoices(item, formatProjectList(choices, { ...options, note: 'Use an available project ID.' }), startedAt);
       }
       if (action === '/sessions' && !value) return this.showSessions(item, choice, startedAt);
       if (extra && task && (action === '/resume' || (action === '/new' && SESSION_NAME.test(value)))) {
+        let model: string | undefined;
+        if (/^--model(?:\s|=|$)/.test(task)) {
+          const override = /^--model\s+(\S+)\s+([\s\S]+)$/.exec(task);
+          model = parseModel(override?.[1]);
+          if (!override || !model) {
+            return this.finishChoices(item, `${CHOICES_HEADER}\n\nUse --model <model-id> followed by the full task.`, startedAt);
+          }
+          task = override[2];
+        }
         const session: SessionRequest = action === '/resume' ? { kind: 'resume', selector: value } : { kind: 'new', name: value };
         this.pendingProjectTasks.delete(item.threadId);
-        this.workQueue.push({ item, task, projectPath: choice.path, session });
+        this.workQueue.push({ item, task, projectPath: choice.path, session, model });
         return;
       }
       return this.finishChoices(item, [CHOICES_HEADER, '', ...sessionCommands(this.harness.mention)].join('\n'), startedAt);
@@ -864,20 +894,16 @@ export class RelayService {
     this.finishRun(item.id, startedAt, sent, sent ? undefined : 'outbox write failed');
   }
 
-  private async runWork(work: ActiveWork, task: string, projectPath: string, sessionId: string): Promise<void> {
+  private async runWork(work: ActiveWork, task: string, options: HarnessStartOptions): Promise<void> {
     const { item, startedAt } = work;
     this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
     this.save();
 
     this.log('harness-start', item.id, {
       harness: this.config.harnessId,
-      model: this.config.model ?? 'default',
+      model: options.model ?? 'default',
     });
-    const run = this.harness.start(buildPrompt(task), {
-      sessionId,
-      cwd: projectPath,
-      model: this.config.model,
-    });
+    const run = this.harness.start(buildPrompt(task), options);
     work.run = run;
     let ok = false;
     let error: string | undefined;
@@ -920,6 +946,7 @@ export class RelayService {
   }
 
   status(): RelayStatus {
+    const model = this.state.modelDefaults[this.config.harnessId];
     return {
       enabled: this.config.enabled,
       provider: this.config.provider,
@@ -927,8 +954,9 @@ export class RelayService {
         id: this.config.harnessId,
         command: this.config.command,
         cwd: this.config.cwd,
-        ...(this.config.model ? { model: this.config.model } : {}),
+        ...(model ? { model } : {}),
       },
+      modelDefaults: HARNESS_KINDS.map(({ id, name }) => ({ id, name, model: this.state.modelDefaults[id] })),
       harnesses: this.harnesses(),
       discoveryRoot: this.state.discoveryRoot,
       projects: buildProjectChoices(listProjects(this.config.discoveryRoot)).map(({ path: projectPath, token }) => ({
@@ -949,8 +977,10 @@ export class RelayService {
     this.closed = true;
     this.queue.length = 0;
     this.workQueue.length = 0;
-    for (const { item, startedAt, run } of this.active.values()) {
-      run?.kill();
+    for (const { item, startedAt, catalog, run } of this.active.values()) {
+      catalog?.abort();
+      if (!run) continue;
+      run.kill();
       this.log('harness-interrupted', item.id, { elapsedMs: Date.now() - startedAt });
       this.state.lastRun = { state: 'running', messageId: item.id, startedAt };
     }

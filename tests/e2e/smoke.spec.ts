@@ -245,6 +245,35 @@ test(
 );
 
 test(
+  'Settings saves and clears the OpenCode default model',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    assert.ok(app, 'The E2E app must start.');
+    const { page } = app;
+    await openSettings(page);
+    const model = page.getByRole('textbox', { name: 'OpenCode default model' });
+    const save = page.getByRole('button', { name: 'Save OpenCode default' });
+    assert.equal(await model.inputValue(), '');
+    await model.fill('provider/custom');
+    await save.click();
+    await page.getByText('OpenCode default saved.').waitFor();
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    await openSettings(page);
+    assert.equal(await model.inputValue(), 'provider/custom');
+    await selectTheme(page, 'dark');
+    assertImage(await app.screenshot('settings-harness-model-dark.png'));
+    await selectTheme(page, 'light');
+    assertImage(await app.screenshot('settings-harness-model-light.png'));
+    await selectTheme(page, 'system');
+    await model.fill('');
+    await save.click();
+    await page.getByText('OpenCode default saved.').waitFor();
+    assert.equal(await model.inputValue(), '');
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
+  },
+);
+
+test(
   'topbar search runs one global search with a provider tag and settings',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {
@@ -953,7 +982,8 @@ test(
     t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
     const alpha = path.join(projectsDir, 'alpha');
     mkdirSync(alpha);
-    const first = 'Start a session named first in alpha and write first.txt.';
+    writeFileSync(path.join(alpha, 'models.txt'), 'provider/gpt-6.1-sol\nprovider/gpt-6.2-sol\n');
+    const first = 'Start a session named first in alpha and write first.txt using sol.';
     const second = 'Start a session named second in alpha and write second.txt.';
     const resume = 'Continue the same session that created first.txt and update it.';
     const museChatHtml = `<!doctype html>
@@ -974,7 +1004,10 @@ test(
           const text = composer.value;
           composer.value = '';
           append('user', text);
-          if (text === ${JSON.stringify(first)}) append('assistant', '@opencode /new $alpha first Write first.txt with exactly initial');
+          if (text === ${JSON.stringify(first)}) append('assistant', '@opencode /new $alpha first --model sol Write first.txt with exactly initial');
+          if (text.includes('Closest available model IDs:') && text.includes('- provider/gpt-6.2-sol')) {
+            append('assistant', '@opencode /new $alpha first --model provider/gpt-6.2-sol Write first.txt with exactly initial');
+          }
           if (text === ${JSON.stringify(second)}) append('assistant', '@opencode /new $alpha second Write second.txt with exactly separate');
           if (text === ${JSON.stringify(resume)}) append('assistant', '@opencode /resume $alpha first Write first.txt with exactly updated');
         });
@@ -1011,7 +1044,10 @@ test(
         await send.click();
         await notices.nth(noticeCount).waitFor({ timeout: 45_000 });
         await replies.nth(count).waitFor({ timeout: 45_000 });
-        if (request === first) assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'initial');
+        if (request === first) {
+          assert.equal(await log.getByText('Closest available model IDs:', { exact: false }).count(), 1);
+          assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'initial');
+        }
       }
       const ids = readFileSync(path.join(alpha, 'session-runs.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
       assert.equal(ids.length, 3);

@@ -177,6 +177,7 @@ export interface RelayStatus {
   enabled: boolean;
   provider: string;
   harness: { id: string; command: string; cwd: string; model?: string };
+  modelDefaults: Array<{ id: string; name: string; model?: string }>;
   /** Harness rows that the introduction reply lists. */
   harnesses: Array<{ id: string; name: string; enabled: boolean }>;
   discoveryRoot: string;
@@ -203,7 +204,7 @@ export function updateRelayHarnesses(
 
 /** Set the projects directory and relay model. Omit a field to keep its value. */
 export function updateRelayProjects(
-  body: { discoveryRoot?: string; model?: string | null },
+  body: { discoveryRoot?: string; harnessId?: string; model?: string | null },
 ): Promise<RelayStatus> {
   return request<RelayStatus>('/api/relay/projects', {
     method: 'POST',

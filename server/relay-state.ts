@@ -47,7 +47,9 @@ export interface RelayState {
   namedSessions: NamedSession[];
   /** Directory whose immediate subfolders are the projects. */
   discoveryRoot: string;
-  /** Persisted harness model default. Empty means the harness default. */
+  /** User model defaults by harness ID. Missing entries use the harness default. */
+  modelDefaults: Record<string, string>;
+  /** Model stored by older builds for OpenCode. */
   model?: string;
   /** Harness rows that the panel last reported. Empty means the build default. */
   harnesses: HarnessChoice[];
@@ -83,14 +85,17 @@ export function parseSessions(value: unknown): Record<string, string> {
   return sessions;
 }
 
+export function isSessionId(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= SESSION_ID_LIMIT && /^ses_[a-z0-9]+$/i.test(value);
+}
+
 export function parseNamedSessions(value: unknown): NamedSession[] {
   if (!Array.isArray(value)) return [];
   const sessions: NamedSession[] = [];
   for (const entry of value.slice(0, RELAY_SESSION_LIMIT)) {
     if (!entry || typeof entry !== 'object') continue;
     const { scope, id, name } = entry as Partial<NamedSession>;
-    if (typeof scope !== 'string' || typeof id !== 'string' || !/^ses_[a-z0-9]+$/i.test(id)
-      || id.length > SESSION_ID_LIMIT || typeof name !== 'string' || !SESSION_NAME.test(name)) continue;
+    if (typeof scope !== 'string' || !isSessionId(id) || typeof name !== 'string' || !SESSION_NAME.test(name)) continue;
     sessions.push({ scope, id, name });
   }
   return sessions;
@@ -98,7 +103,8 @@ export function parseNamedSessions(value: unknown): NamedSession[] {
 
 /** Keep one bounded model id. Undefined means the harness default. */
 export function parseModel(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.slice(0, RELAY_MODEL_LIMIT) : undefined;
+  const id = typeof value === 'string' ? value.trim() : '';
+  return id.length <= RELAY_MODEL_LIMIT && /^[^-\s\p{C}][^\s\p{C}]*$/u.test(id) ? id : undefined;
 }
 
 export function parseHarnesses(value: unknown): HarnessChoice[] {

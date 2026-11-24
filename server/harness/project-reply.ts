@@ -92,6 +92,8 @@ export function sessionCommands(mention: string, project = '$<project>'): string
     `For a separate task, start a clean session with ${mention} /new ${project} <name> <task>. Use one name with letters, numbers, underscores, or hyphens. Start with a letter or number.`,
     `If you need the available names, list sessions with ${mention} /sessions ${project}.`,
     `For a follow-up, use the session name from the conversation. Send ${mention} /resume ${project} <name> <task> with the full task.`,
+    'If blibs lists model IDs, choose an exact ID from the list and resend the full command and task.',
+    'If the user requests a model, put --model <model-id> after the session name and before the task. For OpenCode, use provider/model. Omit the option to use the configured default.',
   ];
 }
 
@@ -123,4 +125,49 @@ export function formatProjectList(
 
 export function unknownProjectNote(name: string, options: ReplyOptions): string {
   return `The project "${name.slice(0, REASON_LIMIT)}" is unavailable in ${displayPath(options.root)}.`;
+}
+
+function modelDistance(left: string, right: string): number {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current = [row];
+    for (let column = 1; column <= right.length; column += 1) {
+      current[column] = Math.min(
+        previous[column] + 1,
+        current[column - 1] + 1,
+        previous[column - 1] + Number(left[row - 1] !== right[column - 1]),
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+/** Offer exact IDs that the assistant can use in a replacement command. */
+export function formatModelChoices(requested: string, models: readonly string[]): string {
+  const query = requested.split('#', 1)[0].toLowerCase();
+  const slash = query.indexOf('/');
+  const provider = slash === -1 ? undefined : query.slice(0, slash);
+  const name = query.slice(slash + 1);
+  const matches = models.map((id) => {
+    const candidate = id.toLowerCase();
+    const separator = candidate.indexOf('/');
+    const key = candidate.slice(separator + 1);
+    let distance = 0;
+    if (!key.split(/[-_.:/]+/).includes(name)) {
+      distance = key.includes(name) ? 1 : 2 + modelDistance(name, key);
+    }
+    return { id, distance, providerMatches: candidate.slice(0, separator) === provider };
+  }).sort((left, right) =>
+    left.distance - right.distance || Number(right.providerMatches) - Number(left.providerMatches)
+    || right.id.localeCompare(left.id, 'en', { numeric: true }),
+  ).slice(0, 5);
+  return [
+    CHOICES_HEADER,
+    '',
+    'The requested model is unavailable in this project. Closest available model IDs:',
+    ...matches.map(({ id }) => `- ${id}`),
+    '',
+    'Choose an exact ID and resend the same /new or /resume command with --model <model-id> and the full task.',
+  ].join('\n');
 }

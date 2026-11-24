@@ -10,8 +10,6 @@ import { HistoryStore } from '../server/history.ts';
 import { buildProjectChoices, formatProjectList } from '../server/harness/project-reply.ts';
 import { listProjects, matchProject, sessionKey, taskAfterProject } from '../server/harness/projects.ts';
 import { introMessage } from '../server/harness/intro.ts';
-import { buildRelayConfig, newSessionId } from '../server/relay.ts';
-import { DEFAULT_RELAY_MODEL } from '../server/relay-defaults.ts';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -31,10 +29,20 @@ interface RelayServer {
 
 const FAKE_HARNESS = `import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 const args = process.argv.slice(2);
+if (args.at(-1) === 'models') {
+  const catalog = path.join(process.cwd(), 'models.txt');
+  if (!fs.existsSync(catalog)) process.exit(1);
+  process.stdout.write(fs.readFileSync(catalog, 'utf8'));
+  process.exit(0);
+}
 const prompt = args.at(-1) || '';
-fs.appendFileSync(path.join('__LOG_DIR__', 'runs.jsonl'), JSON.stringify({ args, prompt, cwd: process.cwd() }) + '\\n');
-const session = args[args.indexOf('--session') + 1];
+const json = args.includes('--format') && args[args.indexOf('--format') + 1] === 'json';
+const session = args.includes('--session') ? args[args.indexOf('--session') + 1] : 'ses_' + randomBytes(12).toString('hex');
+if (prompt.includes('FAIL_BEFORE_SESSION')) process.exit(3);
+if (json) process.stdout.write(JSON.stringify({ type: 'step_start', sessionID: session }) + '\\n');
+fs.appendFileSync(path.join('__LOG_DIR__', 'runs.jsonl'), JSON.stringify({ args, prompt, cwd: process.cwd(), session }) + '\\n');
 const historyFile = path.join('__LOG_DIR__', session + '.txt');
 fs.appendFileSync(historyFile, prompt + '\\n');
 const write = /^write (first|second)\\.txt (.+)$/.exec(prompt);
@@ -46,10 +54,19 @@ if (prompt.includes('WAIT_HARNESS')) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
-process.stdout.write('harness reply: ' + prompt + '\\n');
+if (json && prompt.includes('NOISY_OUTPUT')) {
+  const event = (type, part) => JSON.stringify({ type, sessionID: session, part }) + '\\n';
+  process.stdout.write(event('text', { text: 'Intermediate assistant response' }));
+  process.stdout.write(event('tool_use', { output: 'x'.repeat(9 * 1024 * 1024) }));
+  process.stdout.write(event('step_finish', { reason: 'tool-calls' }));
+  process.stdout.write(event('step_start', {}));
+}
+const reply = prompt.includes('LONG_REPLY') ? '😀'.repeat(100_000) : 'harness reply: ' + prompt;
+process.stdout.write((json ? JSON.stringify({ type: 'text', sessionID: session, part: { text: reply } }) : reply) + '\\n');
+if (json) process.stdout.write(JSON.stringify({ type: 'step_finish', sessionID: session, part: { reason: 'stop' } }) + '\\n');
 `;
 
-async function startRelay(): Promise<RelayServer> {
+async function startRelay(commandArgs: string[] = []): Promise<RelayServer> {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-data-'));
   const harnessDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-harness-'));
   const projectsDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'blibs-relay-projects-')));
@@ -64,7 +81,7 @@ async function startRelay(): Promise<RelayServer> {
   const createServer = () => createProxyServer(dataDir, {}, { relay: {
     enabled: true,
     provider: 'muse',
-    command: JSON.stringify([process.execPath, fake]),
+    command: JSON.stringify([process.execPath, fake, 'run', ...commandArgs]),
     cwd: harnessDir,
     discoveryRoot: projectsDir,
   } });
@@ -113,10 +130,10 @@ async function outbox(server: RelayServer): Promise<Array<{ text: string; thread
   return (await (await fetch(`${server.base}/api/outbox`)).json() as { items: Array<{ text: string; threadId?: string }> }).items;
 }
 
-function runs(server: RelayServer): Array<{ args: string[]; prompt: string; cwd: string }> {
+function runs(server: RelayServer): Array<{ args: string[]; prompt: string; cwd: string; session: string }> {
   try {
     return readFileSync(path.join(server.harnessDir, 'runs.jsonl'), 'utf8').trim().split('\n').filter(Boolean)
-      .map((line) => JSON.parse(line) as { args: string[]; prompt: string; cwd: string });
+      .map((line) => JSON.parse(line) as { args: string[]; prompt: string; cwd: string; session: string });
   } catch { return []; }
 }
 
@@ -177,7 +194,7 @@ test('a project choice lists sessions and an explicit command starts work', asyn
   await waitForRunCount(server, 1);
   assert.equal(runs(server)[0].cwd, server.alpha);
   assert.equal(runs(server)[0].prompt, 'build a small app');
-  assert.ok(runs(server)[0].args.includes(DEFAULT_RELAY_MODEL));
+  assert.ok(!runs(server)[0].args.includes('--model'));
 });
 
 test('each displayed project token selects its own folder and preserves the task', async () => {
@@ -214,15 +231,14 @@ test('a plain project task never starts or reuses a session', async () => {
   await importMuse(server, '@opencode /resume $alpha first second task', 'second-task');
   await waitForRunCount(server, 2);
   const current = runs(server);
-  const sessionArg = (args: string[]): string | undefined => args[args.indexOf('--session') + 1];
-  assert.equal(sessionArg(current[0].args), sessionArg(current[1].args));
-  assert.ok(sessionArg(current[0].args)?.startsWith('ses_'));
-  assert.ok(newSessionId().startsWith('ses_'));
+  assert.ok(!current[0].args.includes('--session'));
+  assert.ok(current[0].session.startsWith('ses_'));
+  assert.equal(current[1].args[current[1].args.indexOf('--session') + 1], current[0].session);
 });
 
 test('named sessions keep separate histories and resume by name after restart', async () => {
   const server = await startRelay();
-  const legacyId = newSessionId();
+  const legacyId = 'ses_legacy123';
   writeFileSync(path.join(server.dataDir, 'relay-state.json'), JSON.stringify({
     version: 2,
     sessions: { [sessionKey('https://muse.ai/chat/relay-test', server.alpha)]: legacyId },
@@ -239,7 +255,7 @@ test('named sessions keep separate histories and resume by name after restart', 
   await importMuse(server, '@opencode /new $alpha first write first.txt initial', 'named-first');
   await importMuse(server, '@opencode /new $alpha second write second.txt separate', 'named-second');
   await waitForRunCount(server, 2);
-  const [firstId, secondId] = runs(server).map(({ args }) => args[args.indexOf('--session') + 1]);
+  const [firstId, secondId] = runs(server).map(({ session }) => session);
   assert.notEqual(firstId, secondId);
   assert.notEqual(firstId, legacyId);
   const deadline = Date.now() + 5000;
@@ -276,6 +292,55 @@ test('named sessions keep separate histories and resume by name after restart', 
     ['write first.txt initial', 'write first.txt updated']);
   assert.deepEqual(readFileSync(path.join(server.harnessDir, secondId + '.txt'), 'utf8').trim().split('\n'),
     ['write second.txt separate', 'check second.txt']);
+});
+
+test('new and resumed runs forward only the final reply after large tool output', async () => {
+  const server = await startRelay();
+  const header = "Sent from user's harness (OpenCode).";
+  const replies = async () => (await outbox(server)).filter(({ text }) => text.startsWith(header));
+  const waitForReplies = async (count: number) => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const items = await replies();
+      if (items.length >= count) return items;
+      await sleep(25);
+    }
+    assert.fail(`Expected ${count} final replies.`);
+  };
+
+  await importMuse(server, '@opencode /new $alpha noisy NOISY_OUTPUT first', 'noisy-new');
+  assert.equal((await waitForReplies(1))[0].text, header + '\n\nharness reply: NOISY_OUTPUT first');
+  await importMuse(server, '@opencode /resume $alpha noisy NOISY_OUTPUT second', 'noisy-resume');
+  assert.equal((await waitForReplies(2))[1].text, header + '\n\nharness reply: NOISY_OUTPUT second');
+
+  await importMuse(server, '@opencode /resume $alpha noisy LONG_REPLY', 'long-reply');
+  assert.equal((await waitForReplies(3))[2].text, header + '\n\n' + '😀'.repeat(100_000));
+  assert.ok(runs(server).every(({ args }) => args[args.indexOf('--format') + 1] === 'json'));
+});
+
+test('a failure before OpenCode returns an ID leaves the session name reusable', async () => {
+  const server = await startRelay();
+  await importMuse(server, '@opencode /new $alpha retry FAIL_BEFORE_SESSION', 'failed-new');
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if ((await outbox(server)).some(({ text }) => text.includes('harness exited with code 3'))) break;
+    await sleep(25);
+  }
+  const failed = await outbox(server);
+  assert.ok(failed.some(({ text }) => text.includes('harness exited with code 3')));
+  assert.ok(!failed.some(({ text }) => text.includes('Active session for $alpha: retry.')));
+  assert.equal(runs(server).length, 0);
+
+  await importMuse(server, '@opencode /new $alpha retry FAIL_HARNESS', 'failed-after-id');
+  await waitForRunCount(server, 1);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if ((await outbox(server)).filter(({ text }) => text.includes('harness exited with code 3')).length === 2) break;
+    await sleep(25);
+  }
+  assert.equal((await outbox(server)).filter(({ text }) => text.includes('harness exited with code 3')).length, 2);
+  await server.restart();
+  await importMuse(server, '@opencode /resume $alpha retry Continue the task', 'resume-after-failure');
+  await waitForRunCount(server, 2);
+  const [created, resumed] = runs(server);
+  assert.equal(resumed.args[resumed.args.indexOf('--session') + 1], created.session);
 });
 
 test('a user-authored harness tag does not start a run', async () => {
@@ -325,7 +390,7 @@ test('different projects run together and same-project tasks wait and reuse the 
   assert.match(items[3].text, /WAIT_HARNESS/);
   assert.match(items[4].text, /Active session for \$alpha: waiting/);
   assert.match(items[5].text, /next task/);
-  const sessionArg = (run: ReturnType<typeof runs>[number]) => run.args[run.args.indexOf('--session') + 1];
+  const sessionArg = (run: ReturnType<typeof runs>[number]) => run.session;
   const [first, independent, followUp] = runs(server);
   assert.equal(sessionArg(first), sessionArg(followUp));
   assert.notEqual(sessionArg(first), sessionArg(independent));
@@ -497,10 +562,108 @@ test('project replies and the introduction use the same task format', () => {
   assert.ok(intro.includes('@opencode /select <request-id> $<project>'));
 });
 
-test('the default relay model uses the personal Beam Free provider', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-config-'));
-  try { assert.equal(buildRelayConfig(dir).model, DEFAULT_RELAY_MODEL); }
-  finally { rmSync(dir, { recursive: true, force: true }); }
+test('model defaults persist by harness and an explicit model applies to one run', async () => {
+  const server = await startRelay();
+  const configure = (model: unknown, harnessId = 'opencode') => fetch(server.base + '/api/relay/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ harnessId, model }),
+  });
+  const modelFlags = () => runs(server).map(({ args }) => {
+    const index = args.indexOf('--model');
+    return index === -1 ? undefined : args[index + 1];
+  });
+  assert.equal((await configure('provider/default', 'unknown')).status, 400);
+  assert.equal((await configure('--flag')).status, 400);
+  const saved = await configure(' provider/default ');
+  assert.equal(saved.status, 200);
+  assert.deepEqual((await saved.json()).modelDefaults, [
+    { id: 'opencode', name: 'OpenCode', model: 'provider/default' },
+  ]);
+
+  await server.restart();
+  await importMuse(server, '@opencode /new $alpha app --model provider/other Build it', 'override-model');
+  await waitForRunCount(server, 1);
+  assert.equal(runs(server)[0].prompt, 'Build it');
+  await importMuse(server, '@opencode /resume $alpha app --model provider/third Check it', 'resume-override');
+  await waitForRunCount(server, 2);
+  assert.equal(runs(server)[1].prompt, 'Check it');
+  await importMuse(server, '@opencode /new $alpha invalid --model provider/other', 'missing-task');
+  assert.ok((await outbox(server)).some(({ text }) => text.includes('followed by the full task')));
+  assert.equal(runs(server).length, 2);
+
+  await importMuse(server, '@opencode /resume $alpha app Continue it', 'configured-model');
+  await waitForRunCount(server, 3);
+  assert.equal((await configure(null)).status, 200);
+  await server.restart();
+  await importMuse(server, '@opencode /resume $alpha app Finish it', 'native-model');
+  await waitForRunCount(server, 4);
+  assert.deepEqual(modelFlags(), ['provider/other', 'provider/third', 'provider/default', undefined]);
+});
+
+test('an unknown model returns closest project model IDs and allows a corrected retry', async () => {
+  const server = await startRelay();
+  writeFileSync(path.join(server.alpha, 'models.txt'), [
+    'provider/gpt-6.2-sol', 'provider/gpt-6.1-sol', 'provider/gpt-6.0-sol', 'provider/gpt-5.5-sol',
+    'provider/gpt-5.4-sol', 'provider/gpt-5.3-sol', 'provider/other',
+  ].join('\n'));
+  writeFileSync(path.join(server.projectsDir, 'beta', 'models.txt'), 'other/project-model\n');
+
+  async function suggest(command: string, id: string): Promise<string> {
+    const choices = async () => (await outbox(server)).filter(({ text }) => text.includes('Closest available model IDs:'));
+    const before = (await choices()).length;
+    await importMuse(server, command, id);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const replies = await choices();
+      if (replies.length > before) return replies.at(-1)!.text;
+      await sleep(25);
+    }
+    assert.fail('Expected model choices.');
+  }
+
+  const reply = await suggest('@opencode /new $alpha app --model sol Build it', 'shorthand-model');
+  assert.match(reply, /- provider\/gpt-6\.2-sol/);
+  assert.match(reply, /- provider\/gpt-6\.1-sol/);
+  assert.equal(reply.split('\n').filter((line) => line.startsWith('- ')).length, 5);
+  assert.doesNotMatch(reply, /project-model|provider\/other/);
+  assert.equal(runs(server).length, 0);
+
+  await importMuse(server, '@opencode /new $alpha app --model provider/gpt-6.2-sol Build it', 'exact-model');
+  await waitForRunCount(server, 1);
+  assert.equal(runs(server)[0].prompt, 'Build it');
+  const args = runs(server)[0].args;
+  assert.equal(args[args.indexOf('--model') + 1], 'provider/gpt-6.2-sol');
+
+  await suggest('@opencode /resume $alpha app --model provider/sol Try again', 'unknown-resume-model');
+  assert.equal(runs(server).length, 1);
+  await importMuse(server, '@opencode /resume $alpha app --model provider/gpt-6.1-sol Try again', 'exact-resume-model');
+  await waitForRunCount(server, 2);
+  const resumed = runs(server)[1].args;
+  assert.equal(resumed[resumed.indexOf('--session') + 1], runs(server)[0].session);
+  assert.equal(resumed[resumed.indexOf('--model') + 1], 'provider/gpt-6.1-sol');
+});
+
+test('an explicit launch model overrides a model in the configured command', async () => {
+  const server = await startRelay(['--model', 'provider/command']);
+  await importMuse(server, '@opencode /new $alpha app --model provider/request Build it', 'command-model-override');
+  await waitForRunCount(server, 1);
+  const { args } = runs(server)[0];
+  assert.equal(args.filter((arg) => arg === '--model').length, 1);
+  assert.equal(args[args.indexOf('--model') + 1], 'provider/request');
+  assert.ok(!args.includes('provider/command'));
+});
+
+test('legacy model settings keep custom IDs and release the former built-in default', async () => {
+  const server = await startRelay();
+  const stateFile = path.join(server.dataDir, 'relay-state.json');
+  const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+  delete state.modelDefaults;
+  for (const [legacy, expected] of [['opencode-go/beam-free', undefined], ['provider/custom', 'provider/custom']]) {
+    writeFileSync(stateFile, JSON.stringify({ ...state, model: legacy }));
+    await server.restart();
+    const status = await (await fetch(server.base + '/api/relay')).json();
+    assert.equal(status.modelDefaults[0].model, expected);
+  }
 });
 
 test('relay settings reject invalid folders and keep the previous settings when persistence fails', async () => {
@@ -512,6 +675,7 @@ test('relay settings reject invalid folders and keep the previous settings when 
   });
   const readStatus = async () => await (await fetch(server.base + '/api/relay')).json() as {
     discoveryRoot: string;
+    harness: { model?: string };
     harnesses: Array<{ id: string; name: string; enabled: boolean }>;
   };
   const blocked = path.join(server.dataDir, 'relay-state.json.tmp');
@@ -519,8 +683,10 @@ test('relay settings reject invalid folders and keep the previous settings when 
   writeFileSync(file, '');
   assert.equal((await post('/api/relay/projects', { discoveryRoot: file })).status, 400);
 
+  assert.equal((await post('/api/relay/projects', { model: 'provider/saved' })).status, 200);
   mkdirSync(blocked);
-  assert.equal((await post('/api/relay/projects', { discoveryRoot: server.alpha })).status, 500);
+  assert.equal((await post('/api/relay/projects', { discoveryRoot: server.alpha, model: null })).status, 500);
+  assert.equal((await readStatus()).harness.model, 'provider/saved');
   const opencode = { id: 'opencode', name: 'OpenCode', enabled: false };
   assert.equal((await post('/api/relay/harnesses', { harnesses: [opencode] })).status, 500);
   assert.equal((await readStatus()).discoveryRoot, server.projectsDir);

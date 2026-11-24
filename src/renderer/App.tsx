@@ -946,6 +946,10 @@ export default function App() {
               onAutoPullChange={setAutoPull}
               pullSecs={pullSecs}
               onPullSecsChange={setPullSecs}
+              modelDefaults={relay?.modelDefaults ?? []}
+              savingModels={relaySaving}
+              modelError={relayError}
+              onSaveModel={(harnessId, model) => saveRelay(() => updateRelayProjects({ harnessId, model }))}
               onBack={closeSettings}
             />
           ) : view === 'results' && searchCommand ? (
