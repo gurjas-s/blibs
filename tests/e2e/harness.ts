@@ -512,9 +512,11 @@ if (args[0] === 'app-server') {
   process.exit(0);
 }
 const codex = args[0] === 'exec';
-const prompt = codex ? readFileSync(0, 'utf8') : args.at(-1) || '';
+const claude = args.includes('--print');
+const prompt = codex || claude ? readFileSync(0, 'utf8') : args.at(-1) || '';
 const json = args.includes('--format') && args[args.indexOf('--format') + 1] === 'json';
-const session = codex ? (args.includes('resume') ? args.at(-3) : randomUUID()) : args.includes('--session') ? args[args.indexOf('--session') + 1] : 'ses_' + randomBytes(12).toString('hex');
+const session = claude ? (args.includes('--resume') ? args[args.indexOf('--resume') + 1] : randomUUID()) : codex ? (args.includes('resume') ? args.at(-3) : randomUUID()) : args.includes('--session') ? args[args.indexOf('--session') + 1] : 'ses_' + randomBytes(12).toString('hex');
+if (claude) console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: session }));
 if (codex) console.log(JSON.stringify({ type: 'thread.started', thread_id: session }));
 if (json) process.stdout.write(JSON.stringify({ type: 'step_start', sessionID: session }) + '\\n');
 if (prompt.endsWith('Create hello.txt with exactly Hello from blibs.')) {
@@ -526,6 +528,10 @@ if (fileTask) {
   appendFileSync('session-runs.jsonl', JSON.stringify(session) + '\\n');
 }
 const reply = 'harness reply: ' + (prompt.split('\\n').at(-1) || '');
+if (claude) {
+  console.log(JSON.stringify({ type: 'result', subtype: 'success', session_id: session, result: reply }));
+  process.exit(0);
+}
 if (codex) {
   writeFileSync(args[args.indexOf('--output-last-message') + 1], reply);
   console.log(JSON.stringify({ type: 'turn.completed' }));
@@ -555,6 +561,7 @@ if (json) process.stdout.write(JSON.stringify({ type: 'step_finish', sessionID: 
   if (options.mockLogin === false) delete env.BLIBS_MOCK_LOGIN;
   else {
     env.BLIBS_MOCK_LOGIN = '1';
+    env.BLIBS_CLAUDE_CODE_COMMAND = JSON.stringify([process.execPath, fakeHarness]);
     env.BLIBS_CODEX_COMMAND = JSON.stringify([process.execPath, fakeHarness, 'exec']);
   }
   delete env.BLIBS_NO_AUTOSTART;

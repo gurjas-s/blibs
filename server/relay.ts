@@ -54,7 +54,6 @@ export const RELAY_QUEUE_LIMIT = 20;
 export const RELAY_PROVIDER = 'muse';
 /** Environment override for the harness command. Tests and e2e stub the harness with it. */
 export const RELAY_COMMAND_ENV = 'BLIBS_RELAY_COMMAND';
-export const CODEX_COMMAND_ENV = 'BLIBS_CODEX_COMMAND';
 /** Environment override for the projects directory. */
 export const RELAY_PROJECTS_DIR_ENV = 'BLIBS_RELAY_PROJECTS_DIR';
 /** Length limit for one stored or env harness command. */
@@ -253,7 +252,7 @@ export class RelayService {
     if (this.config.provider === RELAY_PROVIDER) {
       for (const kind of HARNESS_KINDS) {
         if (kind.id === options.harness.id) continue;
-        const command = kind.id === 'codex' ? process.env[CODEX_COMMAND_ENV]?.trim() : undefined;
+        const command = kind.commandEnv ? process.env[kind.commandEnv]?.trim() : undefined;
         this.harnessAdapters.push(kind.create({
           command: command ? command.slice(0, RELAY_COMMAND_LIMIT) : kind.defaultCommand,
           cwd: this.config.cwd,

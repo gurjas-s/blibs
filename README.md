@@ -38,12 +38,15 @@ correctly`. After changing `package-lock.json`, use `npm install` locally and
 commit the updated lockfile; everyone else and CI use `npm ci`.
 
 The first start opens the **Connections** screen. It shows one row for each
-local harness and one column for each assistant. Muse supports OpenCode and
-Codex. Turn each on or off independently. Set the shared folder and select
-**Start chatting**.
+local harness and one column for each assistant. Muse supports OpenCode,
+Codex, and Claude Code. Turn each on or off independently. Set the shared
+folder and select **Start chatting**.
 
 Install and sign in to the Codex CLI before you use Codex. Start blibs from
-a shell that can find the `codex` executable on `PATH`.
+a shell that can find the `codex` executable on `PATH`. For Claude Code,
+install a CLI version that supports `--restricted` and put `claude` on
+`PATH`. Use a signed-in CLI or
+[a local model server](#use-a-local-model-with-claude-code).
 
 Select **Connect another assistant** on the Connections screen to sign in to
 Muse, Dots, or Grok (once each). The **Agents** item in the sidebar opens the
@@ -68,8 +71,9 @@ a task with a harness tag. It suggests the first enabled harness. When no
 harness is enabled, it says to turn one on in Connections.
 
 **Choose a project and session:** the examples use `@opencode`. Use
-`@codex` for the same commands with Codex. Send `@opencode` by itself to list
-project IDs. Send `@opencode /sessions $alpha` to list the session names for the
+`@codex` or `@claude-code` for the same commands with those harnesses. Send
+`@opencode` by itself to list project IDs. Send
+`@opencode /sessions $alpha` to list the session names for the
 `alpha` project in this chat. Only `/new` and `/resume` start a harness task.
 
 - Start with fresh context using `@opencode /new $alpha first <task>`. A
@@ -85,7 +89,8 @@ project IDs. Send `@opencode /sessions $alpha` to list the session names for the
 **Choose a harness model:** Open **Settings → Harness models**. Leave the
 model ID blank to use the harness default. Enter a model ID and save to set a
 blibs default for that harness. For OpenCode, enter `provider/model`. For
-Codex, enter a Codex model ID.
+Codex, enter a Codex model ID. For Claude Code, enter a model ID that your
+Claude Code endpoint accepts.
 
 To use a different model for one task, ask Muse to use that model. Muse can
 send `@opencode /new $alpha first --model provider/model <task>` or
@@ -116,13 +121,53 @@ came from. blibs sends the final assistant response. Harness tool output
 and intermediate responses stay out of the chat. blibs sends the full final
 response, including long replies.
 
-To change a default through the local API, send `harnessId: "opencode"` or
-`harnessId: "codex"` and a `model` ID to `POST /api/relay/projects`. Send
-`model: null` to use the selected harness default. Set the projects directory with
+To change a default through the local API, send the `harnessId`
+(`opencode`, `codex`, or `claude-code`) and a `model` ID to
+`POST /api/relay/projects`. Send `model: null` to use the selected harness
+default. Set the projects directory with
 `discoveryRoot`. The relay uses only its immediate subfolders. A run that
 fails posts a short failure note into the chat. Set `BLIBS_CODEX_COMMAND` to use a
 custom command prefix that ends in `exec`. Codex uses the selected project
 as its working directory and runs with the Codex workspace-write sandbox.
+
+Claude Code runs in restricted mode and can edit files in the selected
+project. Restricted mode disables shell commands. Set
+`BLIBS_CLAUDE_CODE_COMMAND` to run a custom command in place of `claude`.
+blibs adds the options for headless runs and named sessions.
+
+### Use a local model with Claude Code
+
+On a 24 GB Apple Silicon Mac, use the text-only
+[Inkling 2 Mini IQ4_NL GGUF](https://huggingface.co/ggml-org/Inkling-2-Mini-GGUF)
+(17.6 GB) with a
+[llama.cpp build that supports Inkling 2](https://github.com/ggml-org/llama.cpp/releases/tag/b12670).
+Start its Anthropic-compatible server on loopback with one inference slot.
+
+```sh
+llama-server -m /path/to/Inkling-2-Mini-IQ4_NL.gguf \
+  --alias inkling-2-mini --host 127.0.0.1 --port 18388 \
+  --ctx-size 16384 --parallel 1 --n-cpu-moe 3
+```
+
+Set the gateway URL when you start blibs so the relay and Claude Code use
+the same endpoint.
+Disable tool search for this endpoint so Claude Code sends tool definitions
+that the Inkling chat template can read. Load only the project file tools
+to leave room for session history in the 16,384-token context.
+
+```sh
+ANTHROPIC_BASE_URL=http://127.0.0.1:18388 ANTHROPIC_AUTH_TOKEN=local ANTHROPIC_API_KEY= \
+BLIBS_CLAUDE_CODE_COMMAND='env ENABLE_TOOL_SEARCH=false CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude --tools Read,Write,Edit,Glob,Grep' npm start
+```
+
+In **Settings → Harness models**, save `inkling-2-mini` as the Claude Code
+default. Turn on **Claude Code for Muse** in **Connections**. In Muse, ask
+it to send `@claude-code /new $alpha first Create hello.txt` as its own
+message. Use a project ID that is in your shared folder.
+
+blibs reads model IDs from the gateway's `/v1/models` endpoint when you
+specify a model in a Muse command. If the catalog is unavailable or
+incomplete, Claude Code validates the model when it runs.
 
 ## Relay logs
 
@@ -203,7 +248,8 @@ Check their side effects before running them.
 ### Live Muse relay check
 
 Run `BLIBS_LIVE_LOGIN=1 npm run e2e:live` with a signed-in Muse profile
-and both harnesses configured. The checks use the current Muse conversation.
+and the harnesses under test configured. The checks use the current Muse
+conversation.
 They verify the harness reply and exact bytes in `alpha/hello.txt` for a
 new and an existing project. The named-session checks refresh the `@blibs` introduction and verify two
 new sessions and a follow-up for each harness. The checks remove their

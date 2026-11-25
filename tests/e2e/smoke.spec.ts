@@ -245,7 +245,7 @@ test(
 );
 
 test(
-  'Settings saves and clears the OpenCode and Codex default models',
+  'Settings saves and clears the default model for each harness',
   { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
   async () => {
     assert.ok(app, 'The E2E app must start.');
@@ -255,6 +255,11 @@ test(
     const save = page.getByRole('button', { name: 'Save OpenCode default' });
     assert.equal(await model.inputValue(), '');
     const codexModel = page.getByRole('textbox', { name: 'Codex default model' });
+    const claudeModel = page.getByRole('textbox', { name: 'Claude Code default model' });
+    const saveClaude = page.getByRole('button', { name: 'Save Claude Code default' });
+    await claudeModel.fill('inkling-2-mini');
+    await saveClaude.click();
+    await page.getByText('Claude Code default saved.').waitFor();
     await codexModel.fill('codex-test');
     await page.getByRole('button', { name: 'Save Codex default' }).click();
     await page.getByText('Codex default saved.').waitFor();
@@ -265,6 +270,10 @@ test(
     await openSettings(page);
     assert.equal(await model.inputValue(), 'provider/custom');
     assert.equal(await codexModel.inputValue(), 'codex-test');
+    assert.equal(await claudeModel.inputValue(), 'inkling-2-mini');
+    await claudeModel.fill('');
+    await saveClaude.click();
+    await page.getByText('Claude Code default saved.').waitFor();
     await codexModel.fill('');
     await page.getByRole('button', { name: 'Save Codex default' }).click();
     await page.getByText('Codex default saved.').waitFor();
@@ -539,8 +548,9 @@ test(
     const switchControl = page.getByRole('checkbox', { name: 'OpenCode for Muse' });
     await switchControl.waitFor();
     assert.equal(await switchControl.isChecked(), true);
-    assert.equal(await page.locator('.connections-matrix input[type="checkbox"]').count(), 2);
-    assert.equal(await page.locator('.connections-matrix').getByText('Unsupported', { exact: true }).count(), 7);
+    assert.equal(await page.getByRole('checkbox', { name: 'Claude Code for Muse' }).isChecked(), true);
+    assert.equal(await page.locator('.connections-matrix input[type="checkbox"]').count(), 3);
+    assert.equal(await page.locator('.connections-matrix').getByText('Unsupported', { exact: true }).count(), 6);
     const folder = page.locator('.connections-folder-path');
     const previousFolder = await folder.innerText();
     assert.equal(statSync(previousFolder).isDirectory(), true);
@@ -808,8 +818,8 @@ test(
       await waitForSavedMessage('blibs introduction');
       const introText = (await savedMessages())?.find((item) => item.text.startsWith('blibs introduction'))?.text;
       assert.ok(introText);
-      assert.match(introText, /Available harnesses: OpenCode, Codex\./);
-      assert.match(introText, /Enabled for this assistant: OpenCode, Codex\./);
+      assert.match(introText, /Available harnesses: OpenCode, Codex, Claude Code\./);
+      assert.match(introText, /Enabled for this assistant: OpenCode, Codex, Claude Code\./);
       assert.match(introText, /How tagging works:/);
       assert.match(introText, /sends that task to OpenCode/);
       assert.ok(introText.includes('@opencode /new $<project> <name> <task>'));
@@ -982,7 +992,7 @@ test(
   },
 );
 
-for (const [harnessId, harnessName] of [['opencode', 'OpenCode'], ['codex', 'Codex']]) {
+for (const [harnessId, harnessName] of [['opencode', 'OpenCode'], ['codex', 'Codex'], ['claude-code', 'Claude Code']]) {
   test(
     `scripted Muse starts two ${harnessName} sessions and resumes the first from the composer`,
     { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
@@ -992,7 +1002,7 @@ for (const [harnessId, harnessName] of [['opencode', 'OpenCode'], ['codex', 'Cod
       const alpha = path.join(projectsDir, 'alpha');
       mkdirSync(alpha);
       const modelPrefix = harnessId === 'opencode' ? 'provider/' : '';
-      const model = modelPrefix + 'gpt-6.2-sol';
+      const model = harnessId === 'claude-code' ? 'inkling-2-mini' : modelPrefix + 'gpt-6.2-sol';
       writeFileSync(path.join(alpha, 'models.txt'), modelPrefix + 'gpt-6.1-sol\n' + model + '\n');
       const first = 'Start a session named first in alpha and write first.txt using sol.';
       const second = 'Start a session named second in alpha and write second.txt.';
@@ -1015,7 +1025,7 @@ for (const [harnessId, harnessName] of [['opencode', 'OpenCode'], ['codex', 'Cod
             const text = composer.value;
             composer.value = '';
             append('user', text);
-            if (text === ${JSON.stringify(first)}) append('assistant', '@${harnessId} /new $alpha first --model sol Write first.txt with exactly initial');
+            if (text === ${JSON.stringify(first)}) append('assistant', '@${harnessId} /new $alpha first --model ${harnessId === 'claude-code' ? model : 'sol'} Write first.txt with exactly initial');
             if (text.includes('Closest available model IDs:') && text.includes('- ${model}')) {
               append('assistant', '@${harnessId} /new $alpha first --model ${model} Write first.txt with exactly initial');
             }
@@ -1056,13 +1066,14 @@ for (const [harnessId, harnessName] of [['opencode', 'OpenCode'], ['codex', 'Cod
           await notices.nth(noticeCount).waitFor({ timeout: 45_000 });
           await replies.nth(count).waitFor({ timeout: 45_000 });
           if (request === first) {
-            assert.equal(await log.getByText('Closest available model IDs:', { exact: false }).count(), 1);
+            assert.equal(await log.getByText('Closest available model IDs:', { exact: false }).count(),
+              harnessId === 'claude-code' ? 0 : 1);
             assert.equal(readFileSync(path.join(alpha, 'first.txt'), 'utf8'), 'initial');
           }
         }
         const ids = readFileSync(path.join(alpha, 'session-runs.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
         assert.equal(ids.length, 3);
-        const idPattern = harnessId === 'codex' ? /^[a-f0-9-]{36}$/i : /^ses_/;
+        const idPattern = harnessId === 'opencode' ? /^ses_/ : /^[a-f0-9-]{36}$/i;
         assert.ok(ids.every((id) => typeof id === 'string' && idPattern.test(id)));
         assert.notEqual(ids[0], ids[1]);
         assert.equal(ids[0], ids[2]);
@@ -1149,7 +1160,7 @@ test(
       const previousRun = (await status()).lastRun;
       await importTurn('muse', 'user', prompt, 'connections-user-disabled');
       await importTurn('muse', 'user', '@blibs Which tools can you use?', 'connections-intro-disabled');
-      await waitForQueuedText('Enabled for this assistant: Codex.', threadId);
+      await waitForQueuedText('Enabled for this assistant: Codex, Claude Code.', threadId);
       await importTurn('muse', 'agent', '@opencode ' + task, 'connections-disabled');
       await waitForQueuedText('OpenCode harness is disabled', threadId);
       assert.deepEqual((await status()).lastRun, previousRun);

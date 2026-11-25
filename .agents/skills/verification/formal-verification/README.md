@@ -16,8 +16,9 @@ queue work. It also checks ownership, rejection of unavailable sessions,
 session notices, and persistence across restart. It checks that the relay
 saves a new session only after the harness reports its ID. Apply the same checks to each
 harness. The model represents one harness. The relay tests check that the
-same chat and project can use separate Codex and OpenCode session names and
-project selections. It also checks model
+same chat and project can use separate harness session names and project
+selections. They check that Claude Code session IDs survive restart and
+that a failure before the CLI reports an ID leaves the name available. It also checks model
 selection at dispatch, preservation of the chosen model after dispatch,
 and changes to the saved default. The model uses symbolic model IDs.
 The model checks that an unavailable model produces choices without a session
