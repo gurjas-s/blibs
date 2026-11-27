@@ -1177,3 +1177,169 @@ test(
     }
   },
 );
+
+test(
+  'Muse side chat messages sync under the side chat URL',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    const museChatHtml = `<!doctype html>
+      <button id="open">Open side chat</button>
+      <div data-testid="message-sidebar">Sidebar label</div>
+      <div role="log" data-hatch-chat-column></div>
+      <script>
+        document.querySelector('#open').onclick = () => {
+          history.pushState(null, '', '/thread/test-side-chat');
+          document.querySelector('[role="log"]').innerHTML = \`
+            <div data-message-item data-message-id="side-user" data-message-role="user">Side chat question</div>
+            <div data-message-item data-message-id="side-agent" data-message-role="assistant">
+              <div data-hatch-assistant-message-body>Side chat answer</div>
+              <button>Copy response</button>
+            </div>
+            <div data-message-item>Thinking</div>
+          \`;
+        };
+      </script>`;
+    const app = await launch({ museChatHtml });
+    try {
+      const root = 'https://muse.ai/';
+      const thread = root + 'thread/test-side-chat';
+      await app.context.waitForEvent('page', { timeout: 1000 }).catch(() => undefined);
+      const muse = app.context.pages().find((page) => page.url() === root);
+      assert.ok(muse, 'The Muse vendor view must start.');
+      const open = muse.getByRole('button', { name: 'Open side chat' });
+      const sideMessages = async () => {
+        const response = await fetch(app.backendUrl + '/api/imports');
+        const { imports } = await response.json() as {
+          imports: Array<{ url: string; threadId: string; role: string; text: string }>;
+        };
+        return imports.filter((item) => item.url === thread)
+          .map(({ threadId, role, text }) => ({ threadId, role, text }))
+          .sort((a, b) => a.role.localeCompare(b.role));
+      };
+      await open.click();
+      const deadline = Date.now() + 15_000;
+      while ((await sideMessages()).length < 2 && Date.now() < deadline) await delay(200);
+      const expected = [
+        { threadId: thread, role: 'agent', text: 'Side chat answer' },
+        { threadId: thread, role: 'user', text: 'Side chat question' },
+      ];
+      assert.deepEqual(await sideMessages(), expected);
+      await muse.reload();
+      await open.click();
+      // The preload pushes four seconds after each load.
+      await delay(4500);
+      assert.deepEqual(await sideMessages(), expected);
+    } finally {
+      await app.close();
+    }
+  },
+);
+
+test(
+  'Muse refresh syncs phone messages from side chats while the main chat is open',
+  { skip: displayAvailable() ? false : NO_DISPLAY_MESSAGE },
+  async () => {
+    const museChatHtml = `<!doctype html>
+      <button data-testid="hatch-chat-switcher-trigger">Chats</button>
+      <div role="log" data-hatch-chat-column></div>
+      <form><textarea aria-label="Message"></textarea><button type="submit">Send</button></form>
+      <script>
+        const log = document.querySelector('[role="log"]');
+        const thread = location.pathname.split('/').pop();
+        function append(id, role, text) {
+          const row = document.createElement('div');
+          row.setAttribute('data-message-item', '');
+          row.dataset.messageId = id;
+          row.dataset.messageRole = role;
+          row.textContent = text;
+          log.append(row);
+        }
+        const phoneMessage = localStorage.getItem('phone-' + thread);
+        if (thread) append('phone-' + thread, 'user', phoneMessage || 'Earlier message');
+        if (thread === 'first' && phoneMessage) {
+          append('phone-task', 'assistant',
+            '@opencode /new $alpha phone Create hello.txt with exactly Hello from blibs.');
+        }
+        document.querySelector('form').onsubmit = (event) => {
+          event.preventDefault();
+          localStorage.setItem('delivered-' + thread, document.querySelector('textarea').value);
+        };
+        document.querySelector('button').onclick = () => {
+          const list = document.createElement('div');
+          list.dataset.testid = 'hatch-side-chats-panel-content';
+          for (const name of ['main', 'first', 'second']) {
+            const row = document.createElement('div');
+            row.dataset.testid = 'hatch-thread-row';
+            row.textContent = name;
+            if (name !== 'main') {
+              const options = document.createElement('button');
+              options.setAttribute('aria-label', 'More thread actions');
+              row.append(options);
+              if (name === thread) row.setAttribute('aria-current', 'page');
+              row.onclick = () => {
+                history.pushState(null, '', '/thread/' + name);
+                list.remove();
+              };
+            }
+            list.append(row);
+          }
+          document.body.append(list);
+        };
+      </script>`;
+    const app = await launch({ museChatHtml });
+    try {
+      await completeOnboarding(app.page);
+      await seedConnections(app.page, mockConnections({ setup: { muse: 'connected' } }));
+      await selectAgent(app.page, 'Muse');
+      const visibleMuse = await mockWebsite(app, 'Muse');
+      await visibleMuse.goto('https://muse.ai/');
+      const firstThread = 'https://muse.ai/thread/first';
+      mkdirSync(path.join(app.projectsDir, 'alpha'));
+      const projects = await fetch(app.backendUrl + '/api/relay/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ discoveryRoot: app.projectsDir }),
+      });
+      assert.equal(projects.status, 200);
+      const baseline = await fetch(app.backendUrl + '/api/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [{
+          provider: 'muse', role: 'user', text: 'Earlier message', url: firstThread,
+          sourceId: 'side-chat-baseline', ts: Date.now(),
+        }] }),
+      });
+      assert.equal(baseline.status, 200);
+      // Change the shared data without rendering either side chat in the visible view.
+      await visibleMuse.evaluate(() => {
+        localStorage.setItem('phone-first', 'First phone message');
+        localStorage.setItem('phone-second', 'Second phone message');
+      });
+      const imported = async (): Promise<string[]> => {
+        const response = await fetch(app.backendUrl + '/api/imports');
+        const { imports } = await response.json() as {
+          imports: Array<{ role: string; text: string; threadId: string }>;
+        };
+        return imports.filter((item) => item.role === 'user' && item.text.endsWith('phone message'))
+          .map((item) => item.threadId + ' ' + item.text).sort();
+      };
+      const deadline = Date.now() + 45_000;
+      while ((await imported()).length < 2 && Date.now() < deadline) await delay(200);
+      assert.deepEqual(await imported(), [
+        'https://muse.ai/thread/first First phone message',
+        'https://muse.ai/thread/second Second phone message',
+      ]);
+      await visibleMuse.waitForFunction(() =>
+        localStorage.getItem('delivered-first')?.startsWith("Sent from user's harness (OpenCode)."),
+      undefined, { timeout: 45_000 });
+      assert.equal(readFileSync(path.join(app.projectsDir, 'alpha', 'hello.txt'), 'utf8'), 'Hello from blibs.');
+      assert.equal(visibleMuse.url(), 'https://muse.ai/');
+      assert.equal(await visibleMuse.getByTestId('hatch-side-chats-panel-content').count(), 0);
+    } catch (error) {
+      const outbox = await (await fetch(app.backendUrl + '/api/outbox')).text();
+      throw new Error(`${String(error)}\nMock Muse outbox: ${outbox}`, { cause: error });
+    } finally {
+      await app.close();
+    }
+  },
+);

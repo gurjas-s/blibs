@@ -59,6 +59,17 @@ See [shared setup](README.md#shared-setup).
    Open the current conversation in the provider and check that its
    messages appear once in the matching blibs thread after sync.
 
+8. In signed-in Muse, open the chat switcher and select an existing side
+   chat. Check that its messages appear under its `/thread/` URL in blibs.
+   Open the same side chat again and check that each message still appears
+   once.
+
+9. In blibs, leave Muse on the main chat. From a phone signed in to the
+   same Muse account, send a test message to an existing side chat. Wait
+   for the next background refresh and panel sync. Check that the message
+   appears under the side chat URL and that the visible Muse pane stays on
+   the main chat.
+
 ## Diagnostics
 
 - The terminal prints `[blibs] proxy exited` or a backend schema error.
@@ -80,3 +91,10 @@ Artifacts: the `/api/health`, `/api/import`, and `/api/imports` responses.
   `npm run e2e`.
 - `src/main/index.ts` owns the 60-second sweep and the 30-second outbox drain.
   No unit test covers the timer values.
+- `tests/e2e/smoke.spec.ts`, test
+  `Muse side chat messages sync under the side chat URL`, checks message roles,
+  thread assignment, and deduplication on reopen.
+- `tests/e2e/smoke.spec.ts`, test
+  `Muse refresh syncs phone messages from side chats while the main chat is open`,
+  checks background imports from two side chats and delivery of a harness
+  reply to the side chat that requested it.

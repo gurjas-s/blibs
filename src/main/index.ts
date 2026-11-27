@@ -334,10 +334,7 @@ function closeVendorViews(): void {
   _views.clear();
 }
 
-/**
- * Read one vendor page in a disposable window. The long-lived hidden view is
- * never reloaded; a temporary window is destroyed after the preload scrapes.
- */
+/** Read fresh vendor messages in a disposable window. */
 async function refreshVendorView(providerId: string): Promise<void> {
   if (vendorSending || vendorRefreshing) return;
   const vendor = VENDORS.find((entry) => entry.id === providerId);
@@ -353,24 +350,33 @@ async function refreshVendorView(providerId: string): Promise<void> {
     show: false,
     width: 1280,
     height: 860,
-    webPreferences: { preload: PRELOAD, partition: vendor.partition, backgroundThrottling: false },
+    webPreferences: {
+      preload: PRELOAD,
+      partition: vendor.partition,
+      backgroundThrottling: false,
+      additionalArguments: providerId === 'muse' ? ['--blibs-muse-refresh'] : [],
+    },
   });
   vendorRefreshing = true;
   let cleanup = (): void => {};
-  const scraped = new Promise<void>((resolve) => {
-    const finish = (): void => {
-      clearTimeout(timer);
-      ipcMain.removeListener('blibs:scrape', onScrape);
-      resolve();
-    };
-    const timer = setTimeout(finish, 15000);
-    const onScrape = (event: IpcMainEvent): void => {
-      if (event.sender === view.webContents) finish();
-    };
-    cleanup = finish;
-    ipcMain.on('blibs:scrape', onScrape);
-  });
   try {
+    if (providerId === 'muse') {
+      await refreshMuseChats(view, vendor);
+      return;
+    }
+    const scraped = new Promise<void>((resolve) => {
+      const finish = (): void => {
+        clearTimeout(timer);
+        ipcMain.removeListener('blibs:scrape', onScrape);
+        resolve();
+      };
+      const timer = setTimeout(finish, 15000);
+      const onScrape = (event: IpcMainEvent): void => {
+        if (event.sender === view.webContents) finish();
+      };
+      cleanup = finish;
+      ipcMain.on('blibs:scrape', onScrape);
+    });
     await view.loadURL(url);
     await scraped;
   } catch { /* the next pass retries */ }
@@ -378,6 +384,53 @@ async function refreshVendorView(providerId: string): Promise<void> {
     cleanup();
     try { view.destroy(); } catch { /* already gone */ }
     vendorRefreshing = false;
+  }
+}
+
+function askMuseRefresh(
+  view: BrowserWindow, channel: string, replyChannel: string, payload: Record<string, unknown>,
+): Promise<CollectResult | undefined> {
+  const contents = view.webContents;
+  const reqId = `muse-${reqSeq++}`;
+  return new Promise((resolve) => {
+    const finish = (result?: CollectResult): void => {
+      clearTimeout(timer);
+      ipcMain.removeListener(replyChannel, onReply);
+      resolve(result);
+    };
+    const onReply = (event: IpcMainEvent, reply: CollectResult | null): void => {
+      if (event.sender !== contents || event.senderFrame !== contents.mainFrame || reply?.reqId !== reqId) return;
+      finish(reply);
+    };
+    const timer = setTimeout(finish, 12000);
+    ipcMain.on(replyChannel, onReply);
+    try {
+      contents.send(channel, { reqId, ...payload });
+    } catch {
+      finish();
+    }
+  });
+}
+
+async function refreshMuseChats(view: BrowserWindow, vendor: Vendor): Promise<void> {
+  view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const read = async (url: string): Promise<void> => {
+    await view.loadURL(url);
+    const result = await askMuseRefresh(view, 'blibs:collect-now', 'blibs:collect-result', {});
+    if (result?.url !== url || !Array.isArray(result.items)) return;
+    await relayScrape(result);
+    void drainOutbox('muse-refresh');
+  };
+  await read(vendor.url);
+  const seen = new Set<string>();
+  for (let index = 0; !view.isDestroyed(); index++) {
+    const result = await askMuseRefresh(view, 'blibs:muse:open-side-chat', 'blibs:muse:side-chat', { index });
+    const url = result?.url;
+    if (typeof url !== 'string' || !isProviderSource(vendor, url) || !new URL(url).pathname.startsWith('/thread/')) break;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    // Reload the selected URL so the page reads messages sent from other devices.
+    await read(url);
   }
 }
 
