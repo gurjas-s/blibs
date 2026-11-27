@@ -40,6 +40,15 @@ const SELECTORS: string[] = [
   '[class*="bubble"]',
 ];
 
+const MUSE_SIDE_CHAT_LOG = '[role="log"][data-hatch-chat-column]';
+const MUSE_MESSAGE_ROWS = '[data-message-item][data-message-id][data-message-role]';
+const MUSE_THREAD_ROW = '[data-testid="hatch-thread-row"]:has(button[aria-label="More thread actions"])';
+const museRefresh = process.argv.includes('--blibs-muse-refresh');
+
+function isMuseSideChat(): boolean {
+  return location.hostname === 'muse.ai' && location.pathname.startsWith('/thread/');
+}
+
 type Role = 'user' | 'agent';
 
 function roleOf(el: Element): Role {
@@ -88,10 +97,13 @@ function collect(): CollectPayload {
   const counts: Record<string, number> = {};
   let nodes: Element[] = [];
   let used = '(none matched)';
-  for (const sel of SELECTORS) {
+  const sideChat = isMuseSideChat();
+  const scope = sideChat ? document.querySelector(MUSE_SIDE_CHAT_LOG) : document;
+  const selectors = sideChat ? [MUSE_MESSAGE_ROWS] : SELECTORS;
+  for (const sel of selectors) {
     let n: Element[];
     try {
-      n = [...document.querySelectorAll(sel)];
+      n = scope ? [...scope.querySelectorAll(sel)] : [];
     } catch {
       n = [];
     }
@@ -104,9 +116,12 @@ function collect(): CollectPayload {
   const items: ScrapeItem[] = [];
   for (const [index, el] of nodes.entries()) {
     if (index < nodes.length - 100) continue;
-    const text = ((el as HTMLElement).innerText || '').trim().replace(/\n{3,}/g, '\n\n').slice(0, 4000);
+    const museRole = sideChat ? el.getAttribute('data-message-role') : null;
+    if (sideChat && museRole !== 'user' && museRole !== 'assistant') continue;
+    const body = museRole === 'assistant' ? el.querySelector('[data-hatch-assistant-message-body]') || el : el;
+    const text = ((body as HTMLElement).innerText || '').trim().replace(/\n{3,}/g, '\n\n').slice(0, 4000);
     if (text.length < 2) continue;
-    const role = roleOf(el);
+    const role = museRole ? (museRole === 'user' ? 'user' : 'agent') : roleOf(el);
     const vendorId = el.getAttribute('data-message-id') || el.getAttribute('data-turn-id') || el.id;
     items.push({ provider, role, text, ts: Date.now(), url: location.href,
       sourceId: vendorId ? `${vendorId}:${role}` : `rendered:${role}:${index}`, identity: vendorId ? 'source-id' : 'rendered-position' });
@@ -205,13 +220,52 @@ function trySend(text: string): SendOutcome {
   return { ok: true, method: 'enter-key', debug };
 }
 
-setTimeout(() => push('load'), 4000);
-setTimeout(() => push('load-late'), 12000);
+async function waitForMuse<T>(read: () => T | undefined, timeoutMs: number): Promise<T | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const value = read();
+    if (value !== undefined) return value;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  } while (Date.now() < deadline);
+}
 
-ipcRenderer.on('blibs:collect-now', (_e, msg: { reqId?: string }) => {
-  const payload = collect();
+if (museRefresh) {
+  ipcRenderer.on('blibs:muse:open-side-chat', async (_e, { reqId, index }: { reqId: string; index: number }) => {
+    const reply = (url?: string): void => ipcRenderer.send('blibs:muse:side-chat', { reqId, url });
+    if (location.origin !== 'https://muse.ai' || !Number.isSafeInteger(index) || index < 0) return reply();
+    const trigger = await waitForMuse(() =>
+      document.querySelector<HTMLElement>('[data-testid="hatch-chat-switcher-trigger"]') ?? undefined, 4000);
+    if (!trigger) return reply();
+    if (!document.querySelector('[data-testid="hatch-side-chats-panel-content"]')) trigger.click();
+    const rows = await waitForMuse(() => {
+      const list = document.querySelector('[data-testid="hatch-side-chats-panel-content"]');
+      if (!list || list.querySelector('[data-testid="hatch-side-chats-panel-loading"]')) return undefined;
+      const candidates = [...list.querySelectorAll<HTMLElement>(MUSE_THREAD_ROW)];
+      return candidates.length ? candidates : undefined;
+    }, 4000);
+    const row = rows?.[index];
+    if (!row) return reply();
+    const before = location.href;
+    row.click();
+    const url = await waitForMuse(() => {
+      if (isMuseSideChat() && (location.href !== before || row.getAttribute('aria-current') === 'page')) {
+        return location.href;
+      }
+    }, 3000);
+    reply(url);
+  });
+} else {
+  setTimeout(() => push('load'), 4000);
+  setTimeout(() => push('load-late'), 12000);
+}
+
+ipcRenderer.on('blibs:collect-now', async (_e, msg: { reqId?: string }) => {
+  const payload = museRefresh ? (await waitForMuse(() => {
+    const snapshot = collect();
+    if (snapshot.items.length) return snapshot;
+  }, 10000)) ?? collect() : collect();
   ipcRenderer.send('blibs:collect-result', { reqId: msg?.reqId, ok: true, ...payload });
-  push('manual');
+  if (!museRefresh) push('manual');
 });
 
 ipcRenderer.on('blibs:send', (_e, msg: { reqId?: string; text?: unknown }) => {
@@ -229,8 +283,13 @@ let mutTimer: ReturnType<typeof setTimeout> | null = null;
 let lastSig = '';
 function sigNow(): string {
   try {
+    if (isMuseSideChat()) {
+      const log = document.querySelector(MUSE_SIDE_CHAT_LOG);
+      const rows = log ? [...log.querySelectorAll<HTMLElement>(MUSE_MESSAGE_ROWS)].slice(-100) : [];
+      return JSON.stringify([location.href, rows.map((row) => [row.dataset.messageId, row.innerText])]);
+    }
     const t = document.body ? document.body.innerText || '' : '';
-    return `${t.length}:${t.slice(-300)}`;
+    return `${location.href}:${t.length}:${t.slice(-300)}`;
   } catch {
     return '';
   }
@@ -247,8 +306,8 @@ try {
       }
     }, 8000);
   });
-  obs.observe(document, { childList: true, subtree: true, characterData: true });
+  if (!museRefresh) obs.observe(document, { childList: true, subtree: true, characterData: true });
 } catch {
   /* observer unavailable — sweep covers us */
 }
-setInterval(() => push('interval'), 60000);
+if (!museRefresh) setInterval(() => push('interval'), 60000);
