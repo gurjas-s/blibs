@@ -104,7 +104,28 @@ if (args[0] === 'app-server') {
 }
 `;
 
-async function startRelay(commandArgs: string[] = [], fakeCodex = false): Promise<RelayServer> {
+const FAKE_CLAUDE_CODE = `import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
+const args = process.argv.slice(2);
+const prompt = fs.readFileSync(0, 'utf8');
+const option = (flag) => args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
+const resumed = option('--resume');
+const session_id = resumed ?? randomUUID();
+const send = (event) => console.log(JSON.stringify({ session_id, ...event }));
+if (prompt === 'fail before session') process.exit(1);
+send({ type: 'system', subtype: 'init' });
+if (prompt === 'fail turn') {
+  send({ type: 'result', subtype: 'success', is_error: true, result: 'private failure details' });
+  process.exit(0);
+}
+const history = session_id + '.txt';
+const previous = resumed ? fs.readFileSync(history, 'utf8') : '';
+fs.writeFileSync(history, prompt);
+send({ type: 'assistant', message: 'intermediate response' });
+send({ type: 'result', subtype: 'success', result: [option('--model'), previous, prompt].join('|') });
+`;
+
+async function startRelay(commandArgs: string[] = [], extraHarness?: 'codex' | 'claude-code'): Promise<RelayServer> {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-data-'));
   const harnessDir = mkdtempSync(path.join(tmpdir(), 'blibs-relay-harness-'));
   const projectsDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'blibs-relay-projects-')));
@@ -116,11 +137,13 @@ async function startRelay(commandArgs: string[] = [], fakeCodex = false): Promis
   const seed = new HistoryStore(dataDir);
   seed.import([{ provider: 'muse', role: 'user', text: 'Earlier message.', ts: 1, url: 'https://muse.ai/chat/relay-test', sourceId: 'seed-user', identity: 'source-id' }]);
   seed.close();
-  const codex = path.join(harnessDir, 'fake-codex.mjs');
-  if (fakeCodex) writeFileSync(codex, FAKE_CODEX);
+  const executable = path.join(harnessDir, 'extra-harness.mjs');
+  const commandEnv = extraHarness === 'codex' ? 'BLIBS_CODEX_COMMAND' : 'BLIBS_CLAUDE_CODE_COMMAND';
+  if (extraHarness) writeFileSync(executable, extraHarness === 'codex' ? FAKE_CODEX : FAKE_CLAUDE_CODE);
   const createServer = () => {
-    const original = process.env.BLIBS_CODEX_COMMAND;
-    if (fakeCodex) process.env.BLIBS_CODEX_COMMAND = JSON.stringify([process.execPath, codex, 'exec']);
+    const original = process.env[commandEnv];
+    const args = extraHarness === 'codex' ? ['exec'] : [];
+    if (extraHarness) process.env[commandEnv] = JSON.stringify([process.execPath, executable, ...args]);
     try {
       return createProxyServer(dataDir, {}, { relay: {
         enabled: true,
@@ -130,8 +153,8 @@ async function startRelay(commandArgs: string[] = [], fakeCodex = false): Promis
         discoveryRoot: projectsDir,
       } });
     } finally {
-      if (original === undefined) delete process.env.BLIBS_CODEX_COMMAND;
-      else process.env.BLIBS_CODEX_COMMAND = original;
+      if (original === undefined) delete process.env[commandEnv];
+      else process.env[commandEnv] = original;
     }
   };
   let server = createServer();
@@ -629,6 +652,7 @@ test('model defaults persist by harness and an explicit model applies to one run
   assert.deepEqual((await saved.json()).modelDefaults, [
     { id: 'opencode', name: 'OpenCode', model: 'provider/default' },
     { id: 'codex', name: 'Codex' },
+    { id: 'claude-code', name: 'Claude Code' },
   ]);
 
   await server.restart();
@@ -739,23 +763,24 @@ test('relay settings reject invalid folders and keep the previous settings when 
   assert.equal((await readStatus()).harness.model, 'provider/saved');
   const opencode = { id: 'opencode', name: 'OpenCode', enabled: false };
   const codex = { id: 'codex', name: 'Codex', enabled: true };
+  const claude = { id: 'claude-code', name: 'Claude Code', enabled: true };
   assert.equal((await post('/api/relay/harnesses', { harnesses: [opencode] })).status, 500);
   assert.equal((await readStatus()).discoveryRoot, server.projectsDir);
-  assert.deepEqual((await readStatus()).harnesses, [{ ...opencode, enabled: true }, codex]);
+  assert.deepEqual((await readStatus()).harnesses, [{ ...opencode, enabled: true }, codex, claude]);
   rmSync(blocked, { recursive: true });
 
   assert.equal((await post('/api/relay/harnesses', { harnesses: [opencode] })).status, 200);
   assert.equal((await post('/api/relay/harnesses', {
     harnesses: [{ id: 'codex', name: 'Codex', enabled: true }],
   })).status, 200);
-  assert.deepEqual((await readStatus()).harnesses, [opencode, codex]);
+  assert.deepEqual((await readStatus()).harnesses, [opencode, codex, claude]);
   await importMuse(server, '@opencode /new $alpha greeting hello', 'settings-disabled');
   assert.ok((await outbox(server)).some((item) => item.text.includes('OpenCode harness is disabled')));
   assert.equal(runs(server).length, 0);
 });
 
 test('Muse routes Codex projects, models, and durable sessions independently of OpenCode', async () => {
-  const server = await startRelay([], true);
+  const server = await startRelay([], 'codex');
   const post = (route: string, body: unknown) => fetch(server.base + route, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
@@ -815,4 +840,44 @@ native|Follow up|Use native model`);
 
 ${'😀'.repeat(100_000)}`);
   assert.ok((await outbox(server)).every(({ text }) => !/private tool output|intermediate response|private failure details/.test(text)));
+});
+
+test('Muse runs Claude Code, preserves its sessions across restart, and hides errors', async () => {
+  const server = await startRelay([], 'claude-code');
+  const post = (route: string, body: unknown) => fetch(server.base + route, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  let sequence = 0;
+  const request = async (command: string, expected: string): Promise<string> => {
+    const count = (await outbox(server)).filter(({ text }) => text.includes(expected)).length;
+    await importMuse(server, command, `claude-${++sequence}`);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const matches = (await outbox(server)).filter(({ text }) => text.includes(expected));
+      if (matches.length > count) return matches.at(-1)!.text;
+      await sleep(25);
+    }
+    assert.fail(`Expected ${expected} after ${command}`);
+  };
+
+  const header = "Sent from user's harness (Claude Code).";
+  const claude = { id: 'claude-code', name: 'Claude Code' };
+  assert.equal((await post('/api/relay/harnesses', { harnesses: [{ ...claude, enabled: false }] })).status, 200);
+  await request('@claude-code /new $alpha first Set context', 'Claude Code harness is disabled');
+  assert.equal((await post('/api/relay/harnesses', { harnesses: [{ ...claude, enabled: true }] })).status, 200);
+  assert.equal((await post('/api/relay/projects', { harnessId: claude.id, model: 'local-default' })).status, 200);
+
+  assert.equal(await request('@claude-code /new $alpha first --model local-override Set context', header),
+    header + '\n\nlocal-override||Set context');
+  await request('@claude-code /new $alpha early fail before session', 'harness exited with code 1');
+  await request('@claude-code /new $alpha later fail turn', 'Claude Code reported a run error');
+
+  await server.restart();
+  await request('@opencode /resume $alpha first Wrong harness', 'That session is unavailable');
+  const sessions = await request('@claude-code /sessions $alpha', 'Sessions for $alpha');
+  assert.match(sessions, /- first/);
+  assert.match(sessions, /- later/);
+  assert.doesNotMatch(sessions, /- early/);
+  assert.equal(await request('@claude-code /resume $alpha FIRST Follow up', header),
+    header + '\n\nlocal-default|Set context|Follow up');
+  assert.ok((await outbox(server)).every(({ text }) => !/intermediate response|private failure details/.test(text)));
 });

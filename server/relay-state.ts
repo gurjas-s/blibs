@@ -90,7 +90,7 @@ export function isSessionId(value: unknown): value is string {
   return typeof value === 'string' && value.length <= SESSION_ID_LIMIT && /^ses_[a-z0-9]+$/i.test(value);
 }
 
-export function isCodexSessionId(value: unknown): value is string {
+export function isUuidSessionId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
 }
 
@@ -101,8 +101,8 @@ export function parseNamedSessions(value: unknown): NamedSession[] {
     if (!entry || typeof entry !== 'object') continue;
     const { scope, id, name, harnessId } = entry as Partial<NamedSession>;
     if (typeof scope !== 'string' || typeof name !== 'string' || !SESSION_NAME.test(name)) continue;
-    if (harnessId === 'codex') {
-      if (isCodexSessionId(id)) sessions.push({ scope, id, name, harnessId });
+    if (harnessId === 'codex' || harnessId === 'claude-code') {
+      if (isUuidSessionId(id)) sessions.push({ scope, id, name, harnessId });
     } else if ((harnessId === undefined || harnessId === 'opencode') && isSessionId(id)) {
       sessions.push({ scope, id, name });
     }

@@ -29,7 +29,7 @@ Only a valid `/new` or `/resume` can queue harness work. A project match or
 `/select` returns the sessions for that project. A new session gets a fresh ID,
 a resume resolves to an ID from the chat and project, and the relay records a
 notice for the selected ID. An unavailable session rejects the task. The relay
-adds a mapping only when OpenCode reports the new ID. A failure before that
+adds a mapping only when the harness reports the new ID. A failure before that
 point leaves the name available. Saved IDs survive restart.
 
 For the enabled harness, dispatch uses the request model, the saved model,
@@ -56,7 +56,7 @@ inputs. It represents a session name or a legacy ID selector by the symbolic
 ID it addresses. The relay tests check case-insensitive name lookup within
 the chat and project, legacy ID compatibility, and the text shown to Muse.
 For a new session, the model uses the creating request slot as the symbolic
-ID OpenCode returns. The model treats saving that ID and queuing the notice
+ID the harness returns. The model treats saving that ID and queuing the notice
 as one step. It allows any eligible queued job to dispatch. It assumes
 successful storage and notice writes. It omits FIFO order, cache
 eviction, capacity limits, storage failures, and provider delivery after a

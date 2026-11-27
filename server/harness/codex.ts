@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
-import { isCodexSessionId, parseModel } from '../relay-state.js';
+import { isUuidSessionId, parseModel } from '../relay-state.js';
 import { failedRun, killTree, normalizeStartOptions, splitCommand } from './process.js';
 import type { Harness, HarnessResult, HarnessRun, HarnessStartOptions } from './types.js';
 
@@ -87,7 +87,7 @@ export class CodexHarness implements Harness {
     const cwd = run.cwd ?? this.options.cwd;
     const [file, ...args] = splitCommand(this.options.command);
     if (!file || args.at(-1) !== 'exec') return failedRun('the Codex command must end with exec');
-    if (run.sessionId && !isCodexSessionId(run.sessionId)) return failedRun('invalid Codex session ID');
+    if (run.sessionId && !isUuidSessionId(run.sessionId)) return failedRun('invalid Codex session ID');
 
     const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'blibs-codex-'));
     const output = path.join(outputDir, 'reply.txt');
@@ -141,7 +141,7 @@ export class CodexHarness implements Harness {
       if (error) return;
       let event: { type?: unknown; thread_id?: unknown } | null;
       try { event = JSON.parse(line); } catch { return; }
-      if (event?.type === 'thread.started' && isCodexSessionId(event.thread_id)) {
+      if (event?.type === 'thread.started' && isUuidSessionId(event.thread_id)) {
         if (session && session !== event.thread_id) {
           error = 'Codex returned a different session ID';
           stop();

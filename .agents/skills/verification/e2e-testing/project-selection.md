@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document covers the project selection flow for OpenCode and Codex in Muse. The relay uses
+This document covers the project selection flow for OpenCode, Codex, and Claude Code in Muse. The relay uses
 only immediate folders in the configured projects directory. Each chat and
 project can have named sessions for each harness. OpenCode also supports a
 legacy session called `Default`. Different projects can
@@ -33,7 +33,7 @@ See [shared setup](README.md#shared-setup).
    file. Set `BLIBS_LIVE_CREATION_CHAT` to use another Muse chat URL for the
    creation test.
 
-   The named-session checks for OpenCode and Codex ask for the current commands with `@blibs`. It
+   The named-session checks for each harness ask for the current commands with `@blibs`. It
    asks Muse to start two sessions in `alpha` and write separate files. It
    checks that Muse resumes by name when asked to continue the work that
    created `first.txt` and verifies that only `first.txt` changes. Set
@@ -45,6 +45,22 @@ See [shared setup](README.md#shared-setup).
    ```sh
    BLIBS_LIVE_LOGIN=1 node --import tsx --test --test-name-pattern 'Codex named sessions' tests/e2e/live-muse.spec.ts
    ```
+
+   For Claude Code, configure the CLI and start the local endpoint as shown
+   in the [README](../../../../README.md#use-a-local-model-with-claude-code).
+   Run the following command from the repository root.
+
+   ```sh
+   BLIBS_LIVE_LOGIN=1 BLIBS_LIVE_CLAUDE_CODE_MODEL=inkling-2-mini \
+   ANTHROPIC_BASE_URL=http://127.0.0.1:18388 ANTHROPIC_AUTH_TOKEN=local ANTHROPIC_API_KEY= \
+   BLIBS_CLAUDE_CODE_COMMAND='env ENABLE_TOOL_SEARCH=false CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude --tools Read,Write,Edit,Glob,Grep' \
+   node --import tsx --test --test-name-pattern 'Claude Code' tests/e2e/live-muse.spec.ts
+   ```
+
+   This runs the signed-in project creation, file write, named-session
+   continuation, unavailable-session, and misspelled-model correction paths
+   against local Inkling. Muse retries the rejected model command using the
+   exact model ID from the relay choices.
 
 2. Start the mock app with the shared command. Expected: the panel opens.
 
@@ -118,6 +134,10 @@ See [shared setup](README.md#shared-setup).
 The live check stops Electron and removes its temporary projects when it ends. Use the shared cleanup steps for the manual mock app.
 
 ## Automated coverage
+
+- The Claude Code test in `tests/relay.test.ts` checks enablement, model
+  selection, failure replies, and resume after restart. The mock desktop
+  test checks the Connections and Settings controls and session flow.
 
 - The Codex test in `tests/relay.test.ts` checks project commands, exact
   model IDs, session isolation, resume after restart, final replies, and

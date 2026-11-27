@@ -3,6 +3,7 @@
 // The relay modules stay harness-generic: the relay config names a harness id,
 // and this registry turns the id into the default command and the adapter. The
 // relay uses the registry to find the available adapters.
+import { CLAUDE_CODE_COMMAND, CLAUDE_CODE_MENTION, ClaudeCodeHarness } from './claude-code.js';
 import { CODEX_COMMAND, CODEX_MENTION, CodexHarness } from './codex.js';
 import { OPENCODE_COMMAND, OpenCodeHarness } from './opencode.js';
 import { OPENCODE_MENTION } from './mention.js';
@@ -24,6 +25,7 @@ export interface HarnessKind {
   readonly mention: string;
   /** Default harness command when no override is set. */
   readonly defaultCommand: string;
+  readonly commandEnv?: string;
   /** Build one adapter from the relay config values. */
   create(options: HarnessOptions): Harness;
 }
@@ -42,7 +44,15 @@ export const HARNESS_KINDS: readonly HarnessKind[] = [OPENCODE_KIND, {
   name: 'Codex',
   mention: CODEX_MENTION,
   defaultCommand: CODEX_COMMAND,
+  commandEnv: 'BLIBS_CODEX_COMMAND',
   create: (options) => new CodexHarness(options),
+}, {
+  id: 'claude-code',
+  name: 'Claude Code',
+  mention: CLAUDE_CODE_MENTION,
+  defaultCommand: CLAUDE_CODE_COMMAND,
+  commandEnv: 'BLIBS_CLAUDE_CODE_COMMAND',
+  create: (options) => new ClaudeCodeHarness(options),
 }];
 
 /** The relay default. The relay uses it when no harness id is set. */
